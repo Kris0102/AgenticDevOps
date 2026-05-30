@@ -1,7 +1,18 @@
 from langgraph.graph import StateGraph, START, END
 from typing import Dict, Any
+from dotenv import load_dotenv
 
 from orchestrator.state import BlackboardState, RunStatus
+
+
+import os
+
+
+from agents.Planning.planner import Planner, execute_in_sandbox, read_sandbox_file
+load_dotenv()
+
+
+
 
 # ==========================================
 # 1. Agent Wrapper Nodes
@@ -10,9 +21,14 @@ from orchestrator.state import BlackboardState, RunStatus
 # They project the relevant part of the Blackboard, invoke the LLM or tool,
 # and return dictionary updates that mutate the BlackboardState.
 
+
+
 def planner_node(state: BlackboardState) -> Dict[str, Any]:
     print("[Orchestrator] Invoking Planner...")
-    return {"status": RunStatus.NEEDS_PLAN} 
+    tools = [execute_in_sandbox, read_sandbox_file] if os.getenv("USE_TOOLS", "true").lower() == "true" else []
+    planner = Planner(tools=tools)
+    result = planner.invoke(state)
+    return result
 
 def plan_reviewer_node(state: BlackboardState) -> Dict[str, Any]:
     print("[Orchestrator] Invoking Plan Reviewer (Critic)...")
@@ -53,6 +69,7 @@ def plan_verification_router(state: BlackboardState) -> str:
 def execution_verification_router(state: BlackboardState) -> str:
     """Hierarchical Verification Loop 2: Execution (Grounded) Loop"""
     evidence = state.get("evidence")
+    
     if evidence and getattr(evidence, "checks", None) and evidence.checks.unit_tests and evidence.checks.unit_tests.exit_code == 0:
         return END  
     return "coder"
@@ -69,7 +86,9 @@ builder.add_node("coder", coder_node)
 builder.add_node("tester", tester_node)
 
 builder.add_conditional_edges(START, initial_router)
-builder.add_edge("planner", "plan_reviewer")
+#builder.add_edge("planner", "plan_reviewer")
+builder.add_edge("planner", END)
+# builder.add_edge("planner", "plan_reviewer")
 builder.add_conditional_edges("plan_reviewer", plan_verification_router)
 builder.add_edge("coder", "tester")
 builder.add_conditional_edges("tester", execution_verification_router)

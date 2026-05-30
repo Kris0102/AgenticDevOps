@@ -13,14 +13,14 @@ from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
 
 # POC Minimum Viable Policies (6.1 & 6.2 from POC_instructions.md)
 ROLE_PERMISSIONS = {
-    "PLANNER": [],
-    "CODER": ["fs.write_file", "repo.diff"],
+    "PLANNER": ["sandbox.run", "fs.read_file"],
+    "CODER": ["fs.write_file", "fs.read_file", "repo.diff", "sandbox.run"],
     "TESTER": ["sandbox.run"],
     "ORCHESTRATOR": []
 }
 
 # Strict string match command allowlist
-ALLOWED_SANDBOX_CMDS = ["git", "python", "pytest"]
+ALLOWED_SANDBOX_CMDS = ["git", "python", "pytest", "grep", "ls", "cat", "find"]
 
 class ToolGateway:
     """
@@ -100,6 +100,12 @@ class ToolGateway:
                     content=args.get("content", "")
                 )
                 result = {"status": "wrote_file", "path": args.get("path")}
+            elif tool_name == "fs.read_file":
+                content = self.sandbox_tools.fs_read_file(
+                    sandbox_id=sandbox_id,
+                    path=args.get("path")
+                )
+                result = {"status": "read_file", "path": args.get("path"), "content": content}
             elif tool_name == "repo.diff":
                 diff_out = self.sandbox_tools.repo_diff(
                     sandbox_id=sandbox_id,

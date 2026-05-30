@@ -121,13 +121,11 @@ class DockerSandboxTools:
         )
 
         # Ensure working directory exists
-        self.sandbox_exec(
-            sandbox_id=sandbox_id,
+        start = time.time()
+        res = container.exec_run(
             cmd=["mkdir", "-p", self.workdir],
-            timeout_s=30,
-            cwd="/",
+            workdir="/",
         )
-
         self._sandboxes[sandbox_id] = container.id
         return SandboxCreateResult(sandbox_id=sandbox_id, container_id=container.id)
 

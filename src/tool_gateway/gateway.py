@@ -1,15 +1,14 @@
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any
 from sqlalchemy.orm import Session
-
 import sys
 import os
 # Ensure we can import db.models when running within src module structure
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.models import Event
-from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
+from sandbox.sandbox_tools import DockerSandboxTools
 
 # POC Minimum Viable Policies (6.1 & 6.2 from POC_instructions.md)
 ROLE_PERMISSIONS = {
@@ -150,3 +149,11 @@ class ToolGateway:
         )
 
         return result
+    
+    
+    def check_requested_path(self, path: str) -> bool:
+        """Utility function to check if a requested file path is within allowed directories."""
+        # For simplicity, we only allow reading files within the sandbox's workdir
+        allowed_base = os.path.abspath(self.sandbox_tools.workdir)
+        requested_path = os.path.abspath(os.path.join(allowed_base, path))
+        return requested_path.startswith(allowed_base)

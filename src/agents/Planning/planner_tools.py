@@ -1,16 +1,23 @@
-from tool_gateway.gateway import ToolGateway
-from langchain_core.tools import StructuredTool
 import shlex
+
+from langchain_core.tools import BaseTool, StructuredTool
+
+from tool_gateway.gateway import ToolGateway
 
 class PlannerTools:
     def __init__(self, gateway: ToolGateway):
         self.gateway = gateway
 
-    def build_tools(self):
+    def build_tools(self) -> list[BaseTool]:
         execute_tool = StructuredTool.from_function(
             func=self.execute_in_sandbox,
             name="execute_in_sandbox",
-            description="Run a shell command like 'grep' or 'ls' inside the secure Docker Sandbox. Use this to search the codebase and understand the file structure. Example commands: 'ls -la', 'grep -rn \"class Planner\" src/'"
+            description=(
+                "Run an allowlisted command inside the Docker sandbox at /workspace. "
+                "Pass a single argv string with no shell, pipes, or redirects. "
+                "Allowed bases: ls, find, grep, cat, git, python, pytest. "
+                "Examples: 'ls -la /workspace', 'grep -rn Planner src/'"
+            ),
         )
         
         read_tool = StructuredTool.from_function(

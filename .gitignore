@@ -55,6 +55,8 @@ dev.db
 .idea/
 *.swp
 *.core
+.cursor/
+
 
 # Project Specific
 .rag_cache/

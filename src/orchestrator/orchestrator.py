@@ -1,6 +1,8 @@
-from langgraph.graph import StateGraph, START, END
-from typing import Dict, Any
+from typing import Any, Dict
+
 from dotenv import load_dotenv
+from langchain_core.tools import BaseTool
+from langgraph.graph import END, START, StateGraph
 from orchestrator.state import BlackboardState, RunStatus
 import os
 import sys
@@ -28,43 +30,58 @@ load_dotenv()
 def planner_node(state: BlackboardState) -> Dict[str, Any]:
     print("[Orchestrator] Invoking Planner...")
     run_id = state.get("run_id")
-    
-    # 1. Setup Sandbox dynamically per run using SDK
-    db_session = next(db.get_session(), None)
-    
-    try:
-        sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
-        # Ensure our base image built by docker-compose is available
+    sandbox_tools: DockerSandboxTools | None = None
+    tools: list[BaseTool] = []
+
+    with db.session_scope() as db_session:
         try:
-            sandbox_tools.client.images.get("agentic-sandbox:0.1")
-        except Exception:
-            print("Warning: agentic-sandbox:0.1 not found. Did you run docker-compose build?")
-        
-        sandbox_tools.sandbox_create(run_id=run_id)
-        gateway = ToolGateway(db_session=db_session, run_id=run_id, sandbox_tools=sandbox_tools)
-        
-        planner_tools = PlannerTools(gateway=gateway)
-        tools = planner_tools.build_tools() if os.getenv("USE_TOOLS", "true").lower() == "true" else []
-    except Exception as e:
-        print(f"Warning: Could not initialize Docker Sandbox. Fallback to no tools. Error: {e}")
-        tools = []
-        sandbox_tools = None
-        
-    try:
-        planner = Planner(tools=tools)
-        result = planner.invoke(state)
-        return result
-    except Exception as e:
-        print(f"[Orchestrator] Error caught during Planner execution: {e}")
-        raise e
-    finally:
-        # Best Practice: Tear down the ephemeral container if execution finishes or fails.
-        if sandbox_tools:
+            sandbox_tools = DockerSandboxTools(
+                image="agentic-sandbox:0.1", workdir="/workspace"
+            )
             try:
-                print(f"[Orchestrator] Tearing down sandbox container for run {run_id}...")
-                sandbox_tools.sandbox_destroy(sandbox_id=f"sbox_{run_id}")
-            except Exception as teardown_e:
-                print(f"[Orchestrator] Failed to destroy sandbox container: {teardown_e}")
+                sandbox_tools.client.images.get("agentic-sandbox:0.1")
+            except Exception:
+                print(
+                    "Warning: agentic-sandbox:0.1 not found. "
+                    "Did you run docker-compose build?"
+                )
+
+            sandbox_tools.sandbox_create(run_id=run_id)
+            gateway = ToolGateway(
+                db_session=db_session,
+                run_id=run_id,
+                sandbox_tools=sandbox_tools,
+            )
+            planner_tools = PlannerTools(gateway=gateway)
+            use_tools = os.getenv("USE_TOOLS", "true").lower() == "true"
+            tools = planner_tools.build_tools() if use_tools else []
+        except Exception as e:
+            print(
+                "Warning: Could not initialize Docker Sandbox. "
+                f"Fallback to no tools. Error: {e}"
+            )
+            tools = []
+            sandbox_tools = None
+
+        try:
+            planner = Planner(tools=tools)
+            return planner.invoke(state)
+        except Exception as e:
+            print(f"[Orchestrator] Error caught during Planner execution: {e}")
+            raise
+        finally:
+            if sandbox_tools and run_id:
+                try:
+                    print(
+                        f"[Orchestrator] Tearing down sandbox container "
+                        f"for run {run_id}..."
+                    )
+                    sandbox_tools.sandbox_destroy(sandbox_id=f"sbox_{run_id}")
+                except Exception as teardown_e:
+                    print(
+                        f"[Orchestrator] Failed to destroy sandbox container: "
+                        f"{teardown_e}"
+                    )
 
 def plan_reviewer_node(state: BlackboardState) -> Dict[str, Any]:
     print("[Orchestrator] Invoking Plan Reviewer (Critic)...")
@@ -86,16 +103,21 @@ def tester_node(state: BlackboardState) -> Dict[str, Any]:
 
 def initial_router(state: BlackboardState) -> str:
     """Determines where a run should pick up from its current Status."""
-    
-    db_session = next(db.get_session(), None)
-    
-    run = Run(run_id=state.get("run_id"),repo_url=state.get("repo").repo_url,
-              base_sha = state.get("repo").base_sha, status=state.get("status"), created_at=state.get("created_at"),
-              updated_at=state.get("updated_at"))
-    
-    db_session.add(run)
-    db_session.commit()
-    
+    repo = state.get("repo")
+    if repo is None:
+        raise ValueError("Blackboard state is missing 'repo'")
+
+    with db.session_scope() as db_session:
+        run = Run(
+            run_id=state.get("run_id"),
+            repo_url=repo.repo_url,
+            base_sha=repo.base_sha,
+            status=state.get("status"),
+            created_at=state.get("created_at"),
+            updated_at=state.get("updated_at"),
+        )
+        db_session.add(run)
+
     status = state.get("status")
     if status in (RunStatus.NEEDS_BOOTSTRAP, RunStatus.NEEDS_PLAN):
         return "planner"

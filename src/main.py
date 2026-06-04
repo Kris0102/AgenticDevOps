@@ -1,9 +1,16 @@
 
 from argparse import ArgumentParser
-from orchestrator.orchestrator import BlackboardState
+
 from orchestrator.orchestrator import graph
-from orchestrator.state import RunStatus
-from orchestrator.state import Objective, Constraints, Policy, Trigger, Repo, Sandbox
+from orchestrator.state import (
+    Constraints,
+    Objective,
+    Policy,
+    Repo,
+    RunStatus,
+    Trigger,
+    create_initial_blackboard_state,
+)
 
 parser = ArgumentParser()
 parser.add_argument("--run_id", type=str, required=True, help="Unique identifier for this orchestrator run.")
@@ -71,7 +78,7 @@ if __name__ == "__main__":
     
     
     
-    initial_state = BlackboardState(
+    initial_state = create_initial_blackboard_state(
         run_id=args.run_id,
         trigger=trigger,
         repo=repo,

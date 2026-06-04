@@ -95,14 +95,14 @@ class ToolGateway:
             if tool_name == "fs.write_file":
                 self.sandbox_tools.fs_write_file(
                     sandbox_id=sandbox_id,
-                    path=args.get("path"),
+                    path=args.get("path",""),
                     content=args.get("content", "")
                 )
                 result = {"status": "wrote_file", "path": args.get("path")}
             elif tool_name == "fs.read_file":
                 content = self.sandbox_tools.fs_read_file(
                     sandbox_id=sandbox_id,
-                    path=args.get("path")
+                    path=args.get("path","")
                 )
                 result = {"status": "read_file", "path": args.get("path"), "content": content}
             elif tool_name == "repo.diff":
@@ -114,7 +114,7 @@ class ToolGateway:
             elif tool_name == "sandbox.run":
                 exec_result = self.sandbox_tools.sandbox_exec(
                     sandbox_id=sandbox_id,
-                    cmd=args.get("cmd"),
+                    cmd=args.get("cmd",""),
                     timeout_s=args.get("timeout_s", 60),
                     cwd=args.get("cwd", "/workspace")
                 )

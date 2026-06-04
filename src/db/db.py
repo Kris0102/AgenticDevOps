@@ -1,7 +1,8 @@
+from contextlib import contextmanager
+import os
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-import os
+from sqlalchemy.orm import Session, sessionmaker
 
 class Database:
     def __init__(self, db_url=None):
@@ -19,11 +20,25 @@ class Database:
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
 
     def get_session(self):
-        """Yields a database session"""
+        """Yields a database session (FastAPI-style dependency)."""
         session = self.SessionLocal()
         try:
             yield session
         finally:
             session.close()
+
+    @contextmanager
+    def session_scope(self):
+        """Context manager: commit on success, rollback on error, always close."""
+        session: Session = self.SessionLocal()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
 
 db = Database()   

@@ -1,16 +1,21 @@
 import os
-from typing import Dict, Any, List
-from pydantic import BaseModel
-from langchain_openai import ChatOpenAI
+from typing import Any, Dict, List, Optional, Sequence
 
-
-from langchain_core.messages import HumanMessage
-from langchain.agents import create_agent
 from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
+from pydantic import BaseModel, SecretStr, ValidationError
 
-from agents.Planning.planner_tools import PlannerTools
-from orchestrator.state import BlackboardState, RunStatus, Plan, Microtask
+from orchestrator.state import (
+    BlackboardState,
+    Microtask,
+    MicrotaskStatus,
+    Plan,
+    RunStatus,
+)
 
 # Load environment variables from .env if present
 load_dotenv()
@@ -18,18 +23,52 @@ load_dotenv()
 
 class PlannerOutput(BaseModel):
     """The structured output format expected from the Planner LLM."""
+
     plan: Plan
     microtasks: List[Microtask]
 
+
+def _default_max_tool_steps() -> int:
+    raw = os.getenv("PLANNER_MAX_TOOL_STEPS", "15")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 15
+
+
+def _investigation_recursion_limit(max_tool_steps: int) -> int:
+    # Each tool round is typically model + tools nodes (≈2 supersteps).
+    return max_tool_steps * 2 + 5
+
+
+def _last_ai_text(messages: Sequence[Any]) -> str:
+    for message in reversed(messages):
+        if isinstance(message, AIMessage) and message.content:
+            content = message.content
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                joined = "\n".join(p for p in parts if p)
+                if joined:
+                    return joined
+    return ""
+
+
 class Planner:
-    def __init__(self, tools: List[PlannerTools] = None):
+    def __init__(self, tools: Optional[Sequence[BaseTool]] = None):
         """
         Initializes the Planner Agent.
         In this MAS architecture, environment actions (like semantic search, file reads) 
         must be routed through the Tool Gateway. 
         """
-        self.tools = tools or []
-        
+        self.tools = list(tools or [])
+        self.max_tool_steps = _default_max_tool_steps()
+
         # LLM Initialization
         api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -39,14 +78,14 @@ class Planner:
             
         try:     
             self.llm = ChatOpenAI(
-                model="google/gemma-4-31B-it", 
-                openai_api_key=api_key,
+                model="google/gemma-4-31B-it",
+                api_key=SecretStr(api_key),
                 base_url="http://131.159.60.153:3000/inference",
-                temperature=0.0, 
-                max_tokens=8192,
-                model_kwargs={"top_p": 0.1},
+                temperature=0.0,
+                top_p=0.1,
+                max_completion_tokens=8192,
                 max_retries=0,
-                timeout=60.0
+                timeout=60.0,
             )
             
             # Enforce structured output at the end of the pipeline
@@ -56,35 +95,50 @@ class Planner:
             if self.tools:
                 investigator_prompt = (
                     "You are the Lead Solutions Architect for an Agentic DevOps System. "
-                    "Your job is to use your tools to explore the codebase and gather concrete context "
-                    "for the requested objective. The codebase sandbox is mounted at `/workspace`. "
-                    "First, use the 'execute_in_sandbox' tool to run `ls -A /workspace`. This will tell you if the "
-                    "repository is empty (meaning you must build from scratch) or if a codebase already exists. "
-                    "If files exist, run bash commands like 'find' and 'grep' to discover the structure, "
-                    "and 'read_sandbox_file' to read specific files. "
-                    "Summarize your findings, detailing whether it is a new project or an existing one, "
-                    "and what files, modules, and changes are needed."
+                    "Use only the provided structured tools (execute_in_sandbox, read_sandbox_file). "
+                    "The repository lives at /workspace inside the sandbox. "
+                    "Do not install packages, use network commands, or invoke a shell interpreter. "
+                    "Commands must be simple argv lists (e.g. ls, find, grep, cat) with no pipes or redirects. "
+                    "Start with: ls -la /workspace. "
+                    "If files exist, use find and grep to map structure, then read_sandbox_file for key files. "
+                    "End with a concise summary: greenfield vs existing repo, concrete file paths, "
+                    "and what must change to satisfy the objective."
                 )
-                self.investigator_agent = create_agent(self.llm, tools=self.tools, system_prompt=investigator_prompt)
+                self.investigator_agent = create_agent(
+                    self.llm,
+                    tools=self.tools,
+                    system_prompt=investigator_prompt,
+                )
             else:
                 self.investigator_agent = None
 
-        except Exception as e :
-            print(f"An error ocurred. Error message: {e}")
-            raise e
-            
-                
-                    
-            
+        except Exception as e:
+            print(f"[Planner] Initialization failed: {e}")
+            raise
+
+    def _normalize_output(self, result: PlannerOutput) -> PlannerOutput:
+        microtasks: List[Microtask] = []
+        for idx, task in enumerate(result.microtasks):
+            if not task.acceptance_criteria:
+                raise ValueError(
+                    f"Microtask '{task.title}' ({task.microtask_id}) has no acceptance_criteria"
+                )
+            microtasks.append(
+                task.model_copy(
+                    update={"idx": idx, "status": MicrotaskStatus.PENDING},
+                )
+            )
+        return PlannerOutput(plan=result.plan, microtasks=microtasks)
+
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
         """Runs the planner logic to build the macro Plan and Microtasks."""
         objective = state.get("objective")
         obj_text = ""
         if objective:
-                title = objective.title
-                description = objective.description
-                dod = objective.definition_of_done
-                obj_text = f"Objective: {title}\n{description}\nGoals: {dod}"
+            title = objective.title
+            description = objective.description
+            dod = objective.definition_of_done
+            obj_text = f"Objective: {title}\n{description}\nGoals: {dod}"
         else:
             obj_text = "Objective: Analyze code and prepare next steps."
             
@@ -99,19 +153,39 @@ class Planner:
             )
             
             try:
-                investigative_state = self.investigator_agent.invoke({
-                    "messages": [HumanMessage(content=investigation_prompt)]
-                })
-                investigation_summary = investigative_state["messages"][-1].content
-                print("[Planner] Investigation complete.")
+                investigative_state = self.investigator_agent.invoke(
+                    {"messages": [HumanMessage(content=investigation_prompt)]},
+                    config={
+                        "recursion_limit": _investigation_recursion_limit(
+                            self.max_tool_steps
+                        ),
+                    },
+                )
+                messages = investigative_state.get("messages", [])
+                investigation_summary = _last_ai_text(messages) or (
+                    "Investigation finished but produced no assistant summary."
+                )
+                tool_calls = sum(
+                    1
+                    for m in messages
+                    if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
+                )
+                print(
+                    f"[Planner] Investigation complete "
+                    f"({len(messages)} messages, {tool_calls} tool-call rounds)."
+                )
+                print(f"Investigation summary: {investigation_summary}")
+
+
             except Exception as e:
                 print(f"[Planner] Investigation failed: {e}")
-                investigation_summary = f"Investigation failed: {e}"
-                raise e
+                investigation_summary = (
+                    f"Investigation failed (continuing to synthesis): {e}"
+                )
 
         # 2. Synthesis Phase (Structured Output)
         print("[Planner] Synthesizing final structured Plan...")
-        schema_json = PlannerOutput.schema_json() if hasattr(PlannerOutput, "schema_json") else PlannerOutput.model_json_schema()
+        schema_json = PlannerOutput.model_json_schema()
         synthesis_prompt = f"""You are the Planner Agent for an Agentic DevOps System.
 Your job is to read the Objective and the Investigation Findings, then output a strictly structured Plan and an array of Microtasks.
 
@@ -128,14 +202,27 @@ You must reply with a valid JSON object matching this schema, and nothing else (
 """
         # Since we use `.with_structured_output`, we can just invoke it with the prompt.
         try:
-            result: PlannerOutput = self.structured_llm.invoke(synthesis_prompt)
+            raw = self.structured_llm.invoke(
+                [HumanMessage(content=synthesis_prompt)],
+            )
+            if isinstance(raw, PlannerOutput):
+                result = raw
+            else:
+                result = PlannerOutput.model_validate(raw)
+            result = self._normalize_output(result)
         except (APIConnectionError, APITimeoutError) as exception:
-            print(f"[Planner] Failed to connect to the cluster. Ensure the VPN is connected! Error: {exception}")
-            raise exception
+            print(
+                "[Planner] Failed to connect to the cluster. "
+                f"Ensure the VPN is connected! Error: {exception}"
+            )
+            raise
+        except ValidationError as e:
+            print(f"[Planner] Synthesis output failed validation: {e}")
+            raise
         except Exception as e:
             print(f"[Planner] Error during synthesis: {e}")
-            raise e
-        
+            raise
+
         print("[Planner] Synthesis complete. Returning Plan and Microtasks.")
         print(f"Plan Summary: {result.plan.summary}")
         print("\nMicrotasks:")
@@ -147,7 +234,7 @@ You must reply with a valid JSON object matching this schema, and nothing else (
         
     
         return {
-            "status": RunStatus.NEEDS_REVIEW, # We stay in planning loop for Plan Reviewer to check
+            "status": RunStatus.NEEDS_REVIEW,
             "plan": result.plan,
-            "microtasks": result.microtasks
+            "microtasks": result.microtasks,
         }

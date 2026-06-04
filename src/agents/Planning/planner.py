@@ -1,71 +1,240 @@
 import os
-from typing import Dict, Any, List
-from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.tools import tool
+from typing import Any, Dict, List, Optional, Sequence
 
-# Assuming the state definitions from orchestrator
-from orchestrator.state import BlackboardState, RunStatus, Plan, Microtask
+from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
+from openai import APIConnectionError, APITimeoutError
+from pydantic import BaseModel, SecretStr, ValidationError
+
+from orchestrator.state import (
+    BlackboardState,
+    Microtask,
+    MicrotaskStatus,
+    Plan,
+    RunStatus,
+)
+
+# Load environment variables from .env if present
+load_dotenv()
+
 
 class PlannerOutput(BaseModel):
     """The structured output format expected from the Planner LLM."""
+
     plan: Plan
     microtasks: List[Microtask]
 
+
+def _default_max_tool_steps() -> int:
+    raw = os.getenv("PLANNER_MAX_TOOL_STEPS", "15")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 15
+
+
+def _investigation_recursion_limit(max_tool_steps: int) -> int:
+    # Each tool round is typically model + tools nodes (≈2 supersteps).
+    return max_tool_steps * 2 + 5
+
+
+def _last_ai_text(messages: Sequence[Any]) -> str:
+    for message in reversed(messages):
+        if isinstance(message, AIMessage) and message.content:
+            content = message.content
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                joined = "\n".join(p for p in parts if p)
+                if joined:
+                    return joined
+    return ""
+
+
 class Planner:
-    def __init__(self, tools: List[Any] = None):
+    def __init__(self, tools: Optional[Sequence[BaseTool]] = None):
         """
         Initializes the Planner Agent.
         In this MAS architecture, environment actions (like semantic search, file reads) 
         must be routed through the Tool Gateway. 
         """
-        self.tools = tools or []
-        
+        self.tools = list(tools or [])
+        self.max_tool_steps = _default_max_tool_steps()
+
         # LLM Initialization
-        api_key = os.getenv("CLUSTER_API_KEY", "dummy-key")
-        self.llm = ChatOpenAI(
-            model="google/gemma-4-31B-it", 
-            openai_api_key=api_key,
-            base_url="http://131.159.60.153:3000/v1",
-            temperature=0.0, 
-            max_tokens=2048,
-            model_kwargs={"top_p": 0.1}
-        )
-        
-        # The planner's ultimate job is to produce a strict plan.
-        # If tools are provided, we should use an Agent or run a tool loop first 
-        # to gather context, then enforce structured output.
-        self.structured_llm = self.llm.with_structured_output(PlannerOutput)
-        
+        api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "Missing API key. Set CLUSTER_API_KEY (preferred) or OPENAI_API_KEY before running."
+            )
+            
+        try:     
+            self.llm = ChatOpenAI(
+                model="google/gemma-4-31B-it",
+                api_key=SecretStr(api_key),
+                base_url="http://131.159.60.153:3000/inference",
+                temperature=0.0,
+                top_p=0.1,
+                max_completion_tokens=8192,
+                max_retries=0,
+                timeout=60.0,
+            )
+            
+            # Enforce structured output at the end of the pipeline
+            self.structured_llm = self.llm.with_structured_output(PlannerOutput, method="json_mode")
+            
+            # Setup the investigator ReAct agent if tools are available
+            if self.tools:
+                investigator_prompt = (
+                    "You are the Lead Solutions Architect for an Agentic DevOps System. "
+                    "Use only the provided structured tools (execute_in_sandbox, read_sandbox_file). "
+                    "The repository lives at /workspace inside the sandbox. "
+                    "Do not install packages, use network commands, or invoke a shell interpreter. "
+                    "Commands must be simple argv lists (e.g. ls, find, grep, cat) with no pipes or redirects. "
+                    "Start with: ls -la /workspace. "
+                    "If files exist, use find and grep to map structure, then read_sandbox_file for key files. "
+                    "End with a concise summary: greenfield vs existing repo, concrete file paths, "
+                    "and what must change to satisfy the objective."
+                )
+                self.investigator_agent = create_agent(
+                    self.llm,
+                    tools=self.tools,
+                    system_prompt=investigator_prompt,
+                )
+            else:
+                self.investigator_agent = None
+
+        except Exception as e:
+            print(f"[Planner] Initialization failed: {e}")
+            raise
+
+    def _normalize_output(self, result: PlannerOutput) -> PlannerOutput:
+        microtasks: List[Microtask] = []
+        for idx, task in enumerate(result.microtasks):
+            if not task.acceptance_criteria:
+                raise ValueError(
+                    f"Microtask '{task.title}' ({task.microtask_id}) has no acceptance_criteria"
+                )
+            microtasks.append(
+                task.model_copy(
+                    update={"idx": idx, "status": MicrotaskStatus.PENDING},
+                )
+            )
+        return PlannerOutput(plan=result.plan, microtasks=microtasks)
+
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
         """Runs the planner logic to build the macro Plan and Microtasks."""
         objective = state.get("objective")
         obj_text = ""
         if objective:
-            obj_text = f"Objective: {objective.title}\n{objective.description}\nGoals: {objective.definition_of_done}"
+            title = objective.title
+            description = objective.description
+            dod = objective.definition_of_done
+            obj_text = f"Objective: {title}\n{description}\nGoals: {dod}"
         else:
             obj_text = "Objective: Analyze code and prepare next steps."
             
-        system_prompt = f"""You are the Planner Agent for an Agentic DevOps System.
-Your job is to read the Objective and the existing repository context from your memory or tools, 
-then output a strictly structured Plan and an array of Microtasks.
+        # 1. Investigation Phase
+        investigation_summary = "No investigation performed (no tools provided)."
+        if self.investigator_agent:
+            print("[Planner] Investigating the codebase using tools...")
+            investigation_prompt = (
+                f"Perform a thorough investigation for the following objective:\n\n{obj_text}\n\n"
+                "Use your tools to find relevant files, understand the architecture, and summarize "
+                "exactly what needs to be changed and where. Return a detailed summary."
+            )
+            
+            try:
+                investigative_state = self.investigator_agent.invoke(
+                    {"messages": [HumanMessage(content=investigation_prompt)]},
+                    config={
+                        "recursion_limit": _investigation_recursion_limit(
+                            self.max_tool_steps
+                        ),
+                    },
+                )
+                messages = investigative_state.get("messages", [])
+                investigation_summary = _last_ai_text(messages) or (
+                    "Investigation finished but produced no assistant summary."
+                )
+                tool_calls = sum(
+                    1
+                    for m in messages
+                    if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
+                )
+                print(
+                    f"[Planner] Investigation complete "
+                    f"({len(messages)} messages, {tool_calls} tool-call rounds)."
+                )
+                print(f"Investigation summary: {investigation_summary}")
 
-Microtasks MUST be actionable and grounded in the currently existing files.
+
+            except Exception as e:
+                print(f"[Planner] Investigation failed: {e}")
+                investigation_summary = (
+                    f"Investigation failed (continuing to synthesis): {e}"
+                )
+
+        # 2. Synthesis Phase (Structured Output)
+        print("[Planner] Synthesizing final structured Plan...")
+        schema_json = PlannerOutput.model_json_schema()
+        synthesis_prompt = f"""You are the Planner Agent for an Agentic DevOps System.
+Your job is to read the Objective and the Investigation Findings, then output a strictly structured Plan and an array of Microtasks.
+
+Microtasks MUST be actionable and grounded in the investigation findings. All development happens inside the `/workspace` directory of the sandbox.
+
+You must reply with a valid JSON object matching this schema, and nothing else (no markdown wrapping, no extra text):
+{schema_json}
 
 == OBJECTIVE ==
 {obj_text}
-"""
-        # Note: If this LLM needs to call tools first to fetch architecture context,
-        # we would implement a LangGraph inner loop here (like ReAct).
-        # For now, we assume the planner builds the plan based on the provided state context.
 
-        print("[Planner] Querying LLM...")
+== INVESTIGATION FINDINGS ==
+{investigation_summary}
+"""
         # Since we use `.with_structured_output`, we can just invoke it with the prompt.
-        result: PlannerOutput = self.structured_llm.invoke(system_prompt)
+        try:
+            raw = self.structured_llm.invoke(
+                [HumanMessage(content=synthesis_prompt)],
+            )
+            if isinstance(raw, PlannerOutput):
+                result = raw
+            else:
+                result = PlannerOutput.model_validate(raw)
+            result = self._normalize_output(result)
+        except (APIConnectionError, APITimeoutError) as exception:
+            print(
+                "[Planner] Failed to connect to the cluster. "
+                f"Ensure the VPN is connected! Error: {exception}"
+            )
+            raise
+        except ValidationError as e:
+            print(f"[Planner] Synthesis output failed validation: {e}")
+            raise
+        except Exception as e:
+            print(f"[Planner] Error during synthesis: {e}")
+            raise
+
+        print("[Planner] Synthesis complete. Returning Plan and Microtasks.")
+        print(f"Plan Summary: {result.plan.summary}")
+        print("\nMicrotasks:")
+        for idx, task in enumerate(result.microtasks):
+            print(f"  [{idx + 1}] {task.title} (ID: {task.microtask_id})")
+            print(f"      Description: {task.description}")
+            if task.acceptance_criteria:
+                print(f"      Acceptance Criteria: {', '.join(task.acceptance_criteria)}")
         
+    
         return {
-            "status": RunStatus.NEEDS_REVIEW, # We stay in planning loop for Plan Reviewer to check
+            "status": RunStatus.NEEDS_REVIEW,
             "plan": result.plan,
-            "microtasks": result.microtasks
+            "microtasks": result.microtasks,
         }

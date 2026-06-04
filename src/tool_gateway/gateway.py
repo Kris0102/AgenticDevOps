@@ -1,26 +1,25 @@
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any
 from sqlalchemy.orm import Session
-
 import sys
 import os
 # Ensure we can import db.models when running within src module structure
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.models import Event
-from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
+from sandbox.sandbox_tools import DockerSandboxTools
 
 # POC Minimum Viable Policies (6.1 & 6.2 from POC_instructions.md)
 ROLE_PERMISSIONS = {
-    "PLANNER": [],
-    "CODER": ["fs.write_file", "repo.diff"],
+    "PLANNER": ["sandbox.run", "fs.read_file"],
+    "CODER": ["fs.write_file", "fs.read_file", "repo.diff", "sandbox.run"],
     "TESTER": ["sandbox.run"],
     "ORCHESTRATOR": []
 }
 
 # Strict string match command allowlist
-ALLOWED_SANDBOX_CMDS = ["git", "python", "pytest"]
+ALLOWED_SANDBOX_CMDS = ["git", "python", "pytest", "grep", "ls", "cat", "find"]
 
 class ToolGateway:
     """
@@ -96,10 +95,16 @@ class ToolGateway:
             if tool_name == "fs.write_file":
                 self.sandbox_tools.fs_write_file(
                     sandbox_id=sandbox_id,
-                    path=args.get("path"),
+                    path=args.get("path",""),
                     content=args.get("content", "")
                 )
                 result = {"status": "wrote_file", "path": args.get("path")}
+            elif tool_name == "fs.read_file":
+                content = self.sandbox_tools.fs_read_file(
+                    sandbox_id=sandbox_id,
+                    path=args.get("path","")
+                )
+                result = {"status": "read_file", "path": args.get("path"), "content": content}
             elif tool_name == "repo.diff":
                 diff_out = self.sandbox_tools.repo_diff(
                     sandbox_id=sandbox_id,
@@ -109,7 +114,7 @@ class ToolGateway:
             elif tool_name == "sandbox.run":
                 exec_result = self.sandbox_tools.sandbox_exec(
                     sandbox_id=sandbox_id,
-                    cmd=args.get("cmd"),
+                    cmd=args.get("cmd",""),
                     timeout_s=args.get("timeout_s", 60),
                     cwd=args.get("cwd", "/workspace")
                 )
@@ -144,3 +149,11 @@ class ToolGateway:
         )
 
         return result
+    
+    
+    def check_requested_path(self, path: str) -> bool:
+        """Utility function to check if a requested file path is within allowed directories."""
+        # For simplicity, we only allow reading files within the sandbox's workdir
+        allowed_base = os.path.abspath(self.sandbox_tools.workdir)
+        requested_path = os.path.abspath(os.path.join(allowed_base, path))
+        return requested_path.startswith(allowed_base)

@@ -1,6 +1,7 @@
 import operator
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, List, Optional, Dict, Any, Literal
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
@@ -217,3 +218,56 @@ class BlackboardState(TypedDict):
     
     # Execution diagnostics
     error_logs: List[str]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def create_initial_blackboard_state(
+    *,
+    run_id: str,
+    trigger: Trigger,
+    repo: Repo,
+    objective: Objective,
+    constraints: Constraints,
+    policy: Policy,
+    status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
+) -> BlackboardState:
+    """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
+    now = _utc_now_iso()
+    return BlackboardState(
+        schema_version="1.0.0",
+        run_id=run_id,
+        created_at=now,
+        updated_at=now,
+        trigger=trigger,
+        repo=repo,
+        sandbox=Sandbox(
+            sandbox_id=f"sbox_{run_id}",
+            workspace_path="/workspace",
+            status="not_created",
+        ),
+        objective=objective,
+        constraints=constraints,
+        policy=policy,
+        status=status,
+        phase="bootstrap",
+        iteration={
+            "global_step": 0,
+            "global_iterations_used": 0,
+            "current_loop_reason": None,
+        },
+        plan=None,
+        microtasks=[],
+        current_microtask_id=None,
+        evidence=Evidence(),
+        artifacts_index=[],
+        reflections=[],
+        security=Security(),
+        hitl=HITL(required=False),
+        result=None,
+        events=EventsPointer(stream_id=run_id),
+        messages=[],
+        error_logs=[],
+    )

@@ -7,13 +7,32 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-agentic_devops}
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
-  sandbox:
+
+#add pgadmin service
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-password}
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+  # This service definition is used strictly to BUILD the base sandbox image.
+  # The orchestrator's Docker SDK will spin up the actual containers.
+  # We use a profile so that `docker-compose up` does not run a container for this.
+  sandbox-image-builder:
     image: agentic-sandbox:0.1
     build:
       context: ../src/sandbox
       dockerfile: Dockerfile
-    container_name: agentic-sandbox
-    working_dir: /workspace
-    stdin_open: true
-    tty: true
+    profiles:
+      - donotstart
+volumes:
+    postgres_data:
+    pgadmin_data:

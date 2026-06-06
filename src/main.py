@@ -1,5 +1,7 @@
 
 from argparse import ArgumentParser
+import uuid
+import os
 
 from orchestrator.orchestrator import graph
 from orchestrator.state import (
@@ -13,18 +15,26 @@ from orchestrator.state import (
 )
 
 parser = ArgumentParser()
-parser.add_argument("--run_id", type=str, required=True, help="Unique identifier for this orchestrator run.")
+parser.add_argument("--run_id", type=str, required=False, help="Unique identifier for this orchestrator run. If not provided, a random UUID will be generated.")
 parser.add_argument("--repo_url", type=str, required=True, help="URL of the repository to operate on.")
 parser.add_argument("--base-sha", type=str, required=True, help="Base commit SHA to compare against.")
 parser.add_argument("--task_description", type=str, required=True, help="Natural language description of the task to accomplish.")
 
 args = parser.parse_args()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def check_if_env_files_exist():
+    if not os.path.exists(os.path.join(BASE_DIR, "../.env")):
+        raise FileNotFoundError("The .env file does not exist. Please create it. Check the .env.example file for the required variables.")
+
 
 
 
 if __name__ == "__main__":
-    
+
+    check_if_env_files_exist()
+
     objective = Objective(
         title="Implement Feature X",
         description=args.task_description,
@@ -79,7 +89,7 @@ if __name__ == "__main__":
     
     
     initial_state = create_initial_blackboard_state(
-        run_id=args.run_id,
+        run_id=args.run_id if args.run_id else str(uuid.uuid4()),
         trigger=trigger,
         repo=repo,
         objective=objective,

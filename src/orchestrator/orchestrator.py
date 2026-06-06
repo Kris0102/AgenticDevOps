@@ -3,6 +3,7 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
+from datetime import datetime, timezone
 from orchestrator.state import BlackboardState, RunStatus
 import os
 import sys
@@ -64,13 +65,13 @@ def planner_node(state: BlackboardState) -> Dict[str, Any]:
             sandbox_tools = None
 
         try:
-            planner = Planner(tools=tools)
+            planner = Planner(run_id = state.get("run_id"), tools=tools)
             return planner.invoke(state)
         except Exception as e:
             print(f"[Orchestrator] Error caught during Planner execution: {e}")
             raise
         finally:
-            if sandbox_tools and run_id:
+            if sandbox_tools and run_id and os.getenv("TEAR_DOWN_SANDBOX_AFTER_RUN", "false").lower() == "true":
                 try:
                     print(
                         f"[Orchestrator] Tearing down sandbox container "
@@ -108,15 +109,21 @@ def initial_router(state: BlackboardState) -> str:
         raise ValueError("Blackboard state is missing 'repo'")
 
     with db.session_scope() as db_session:
-        run = Run(
-            run_id=state.get("run_id"),
-            repo_url=repo.repo_url,
-            base_sha=repo.base_sha,
-            status=state.get("status"),
-            created_at=state.get("created_at"),
-            updated_at=state.get("updated_at"),
-        )
-        db_session.add(run)
+        existing_run = db_session.get(Run, state.get("run_id"))
+        if existing_run:
+            existing_run.updated_at = datetime.now(timezone.utc)
+            print(f"Existing run found in DB with status '{existing_run.status}'. Routing accordingly...")
+        else:
+            run = Run(
+                run_id=state.get("run_id"),
+                repo_url=repo.repo_url,
+                base_sha=repo.base_sha,
+                status=state.get("status"),
+                created_at=state.get("created_at"),
+                updated_at=state.get("updated_at"),
+            )
+            db_session.add(run)
+            
 
     status = state.get("status")
     if status in (RunStatus.NEEDS_BOOTSTRAP, RunStatus.NEEDS_PLAN):

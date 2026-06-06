@@ -23,15 +23,17 @@ Security note (PoC):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional
 import io
 import os
 import tarfile
 import time
-import uuid
 
 import docker
 from docker.models.containers import Container
+
+from db.db import db
+from db.models import Sandbox
 
 
 # ----------------------------
@@ -88,30 +90,33 @@ class DockerSandboxTools:
         self.mem_limit = mem_limit
         self.network_mode = network_mode  # e.g. "none" for no network
         self.labels_base = labels_base or {}
-
         self.client = docker.from_env()
-
-        # In-memory mapping for PoC. In production, store container_id in DB keyed by run_id.
-        self._sandboxes: Dict[str, str] = {}
 
     # ---- lifecycle ----
 
     def sandbox_create(self, *, run_id: str) -> SandboxCreateResult:
         """
-        Create a container per run. Return a sandbox_id to be used by other tool calls.
+        Create a container per run. Idempotent: reconnects to existing container if DB record exists.
         """
         sandbox_id = f"sbox_{run_id}"
-        if sandbox_id in self._sandboxes:
-            # Idempotency for PoC
-            cid = self._sandboxes[sandbox_id]
-            return SandboxCreateResult(sandbox_id=sandbox_id, container_id=cid)
+
+        with db.session_scope() as session:
+            existing = session.get(Sandbox, sandbox_id)
+            if existing:
+                cid = existing.container_id
+                print(f"Sandbox {sandbox_id} already exists with container ID {cid}. Checking status...")
+                container = self.client.containers.get(cid)
+                if container.status != "running":
+                    container.start()
+                return SandboxCreateResult(sandbox_id=sandbox_id, container_id=cid)
 
         labels = dict(self.labels_base)
         labels.update({"agentic.run_id": run_id, "agentic.sandbox_id": sandbox_id})
 
         container: Container = self.client.containers.run(
             self.image,
-            command=["sleep", "infinity"],  # keep alive for exec calls
+            name=sandbox_id,
+            command=["sleep", "infinity"],
             detach=True,
             working_dir=self.workdir,
             labels=labels,
@@ -120,29 +125,31 @@ class DockerSandboxTools:
             cpu_quota=self.cpu_quota,
         )
 
-        # Ensure working directory exists
-        start = time.time()
-        res = container.exec_run(
-            cmd=["mkdir", "-p", self.workdir],
-            workdir="/",
-        )
-        self._sandboxes[sandbox_id] = container.id
-        return SandboxCreateResult(sandbox_id=sandbox_id, container_id=container.id)
+        container.exec_run(cmd=["mkdir", "-p", self.workdir], workdir="/")
+
+        container_id = container.id or ""
+        with db.session_scope() as session:
+            session.add(Sandbox(sandbox_id=sandbox_id, run_id=run_id, container_id=container_id))
+
+        return SandboxCreateResult(sandbox_id=sandbox_id, container_id=container_id)
 
     def sandbox_destroy(self, *, sandbox_id: str) -> None:
-        cid = self._sandboxes.get(sandbox_id)
-        if not cid:
-            return
-        c = self.client.containers.get(cid)
+        with db.session_scope() as session:
+            record = session.get(Sandbox, sandbox_id)
+            if not record:
+                return
+            cid = record.container_id
+            session.delete(record)
+
         try:
-            c.kill()
-        except Exception:
-            pass
-        try:
+            c = self.client.containers.get(cid)
+            try:
+                c.kill()
+            except Exception:
+                pass
             c.remove(force=True)
         except Exception:
             pass
-        self._sandboxes.pop(sandbox_id, None)
 
     # ---- core exec ----
 
@@ -193,7 +200,6 @@ class DockerSandboxTools:
         """
         Clone and checkout inside the sandbox using git CLI.
         """
-        # Clone
         clone = self.sandbox_exec(
             sandbox_id=sandbox_id,
             cmd=["git", "clone", repo_url, repo_dir],
@@ -203,7 +209,6 @@ class DockerSandboxTools:
         if clone.exit_code != 0:
             raise SandboxError(f"git clone failed: {clone.stderr or clone.stdout}")
 
-        # Checkout specific SHA
         checkout = self.sandbox_exec(
             sandbox_id=sandbox_id,
             cmd=["git", "checkout", base_sha],
@@ -220,7 +225,6 @@ class DockerSandboxTools:
             timeout_s=60,
             cwd=f"{self.workdir}/{repo_dir}",
         )
-        # git diff exit code is usually 0 even with changes
         return diff.stdout
 
     # ---- File IO (PoC) ----
@@ -248,7 +252,6 @@ class DockerSandboxTools:
         cid = self._require_container_id(sandbox_id)
         container = self.client.containers.get(cid)
 
-        # Build a tar archive in memory containing the file
         dir_name, file_name = os.path.split(path)
         data = content.encode("utf-8")
 
@@ -269,10 +272,11 @@ class DockerSandboxTools:
     # ----------------------------
 
     def _require_container_id(self, sandbox_id: str) -> str:
-        cid = self._sandboxes.get(sandbox_id)
-        if not cid:
-            raise SandboxError(f"Unknown sandbox_id: {sandbox_id}. Did you call sandbox.create?")
-        return cid
+        with db.session_scope() as session:
+            record = session.get(Sandbox, sandbox_id)
+            if not record:
+                raise SandboxError(f"Unknown sandbox_id: {sandbox_id}. Did you call sandbox.create?")
+            return record.container_id
 
     def _validate_sandbox_path(self, path: str) -> None:
         """
@@ -283,6 +287,5 @@ class DockerSandboxTools:
             raise SandboxError("path must be absolute")
         if ".." in path.split("/"):
             raise SandboxError("path traversal is forbidden")
-        # Optional: enforce everything under /workspace
         if not path.startswith(self.workdir + "/"):
             raise SandboxError(f"path must be under {self.workdir}/")

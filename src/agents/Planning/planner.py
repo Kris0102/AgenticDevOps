@@ -1,6 +1,9 @@
+from datetime import date
+from  datetime import datetime
 import os
 from typing import Any, Dict, List, Optional, Sequence
-
+from pathlib import Path
+import sys
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
@@ -26,6 +29,29 @@ class PlannerOutput(BaseModel):
 
     plan: Plan
     microtasks: List[Microtask]
+
+
+def create_plan_file_as_output( investigation_summary : str, result : PlannerOutput, run_id : str) -> None:
+
+   try: 
+    initial_file_path = Path(os.path.abspath(sys.argv[0])).parent # src folder!
+    file_path = Path(initial_file_path, "output", f"{run_id}", f"plan_output_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt")
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    # use w instead of x -> Should never overwrite due to timestamp!
+    with open(file_path, "w") as file:
+        file.write(f"""
+        Investigation Summary: \n {investigation_summary}
+        \n\nPlan: {result.plan.summary}\n\n"""
+        )
+        file.write("Microtasks:\n")
+        for idx, task in enumerate(result.microtasks):
+            file.write(f"  [{idx + 1}] {task.title} (ID: {task.microtask_id})\n")
+            file.write(f"      Description: {task.description}\n")
+            if task.acceptance_criteria:
+                file.write(f"      Acceptance Criteria: {', '.join(task.acceptance_criteria)}\n")
+        file.write("\n")
+   except Exception as e:
+      print(f"Failed to create {file_path}. Exception: {e}")
 
 
 def _default_max_tool_steps() -> int:
@@ -60,12 +86,13 @@ def _last_ai_text(messages: Sequence[Any]) -> str:
 
 
 class Planner:
-    def __init__(self, tools: Optional[Sequence[BaseTool]] = None):
+    def __init__(self, run_id: str, tools: Optional[Sequence[BaseTool]] = None):
         """
         Initializes the Planner Agent.
         In this MAS architecture, environment actions (like semantic search, file reads) 
         must be routed through the Tool Gateway. 
         """
+        self.run_id = run_id
         self.tools = list(tools or [])
         self.max_tool_steps = _default_max_tool_steps()
 
@@ -232,7 +259,8 @@ You must reply with a valid JSON object matching this schema, and nothing else (
             if task.acceptance_criteria:
                 print(f"      Acceptance Criteria: {', '.join(task.acceptance_criteria)}")
         
-    
+        create_plan_file_as_output(investigation_summary, result, self.run_id)
+
         return {
             "status": RunStatus.NEEDS_REVIEW,
             "plan": result.plan,

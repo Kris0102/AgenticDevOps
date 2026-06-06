@@ -41,7 +41,7 @@ class Repo(BaseModel):
     repo_url: str
     default_branch: Optional[str] = None
     base_ref: str
-    base_sha: str
+    base_sha: Optional[str] = None
     workspace_branch: str
     pr_url: Optional[str] = None
 

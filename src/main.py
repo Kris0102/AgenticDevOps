@@ -17,7 +17,7 @@ from orchestrator.state import (
 parser = ArgumentParser()
 parser.add_argument("--run_id", type=str, required=False, help="Unique identifier for this orchestrator run. If not provided, a random UUID will be generated.")
 parser.add_argument("--repo_url", type=str, required=True, help="URL of the repository to operate on.")
-parser.add_argument("--base-sha", type=str, required=True, help="Base commit SHA to compare against.")
+parser.add_argument("--base-sha", type=str, required=False, default=None, help="Base commit SHA. Omit for brand-new repos with no commits.")
 parser.add_argument("--task_description", type=str, required=True, help="Natural language description of the task to accomplish.")
 
 args = parser.parse_args()

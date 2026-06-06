@@ -193,12 +193,13 @@ class DockerSandboxTools:
         *,
         sandbox_id: str,
         repo_url: str,
-        base_sha: str,
+        base_sha: Optional[str] = None,
         repo_dir: str = "repo",
         timeout_s: int = 600,
     ) -> None:
         """
-        Clone and checkout inside the sandbox using git CLI.
+        Clone repo and optionally checkout a specific SHA.
+        If base_sha is None (empty/new repo), clone only — no checkout.
         """
         clone = self.sandbox_exec(
             sandbox_id=sandbox_id,
@@ -208,6 +209,10 @@ class DockerSandboxTools:
         )
         if clone.exit_code != 0:
             raise SandboxError(f"git clone failed: {clone.stderr or clone.stdout}")
+
+        if not base_sha:
+            print(f"[Sandbox] No base_sha provided — cloned {repo_url}, skipping checkout.")
+            return
 
         checkout = self.sandbox_exec(
             sandbox_id=sandbox_id,

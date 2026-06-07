@@ -95,9 +95,20 @@ Below is a precise attribute list. You can implement it as a **Pydantic model** 
   - `require_hitl_for_pr: bool`
   - `require_hitl_for_merge: bool`
   - `require_hitl_for_prod_deploy: bool`
+  - `hitl_checkpoints: list[str]` — phase names that pause the run at
+    `NEEDS_HITL_APPROVAL` for human approval before proceeding, e.g.
+    `["plan", "code", "test"]`. One gate mechanism (`status=NEEDS_HITL_APPROVAL` +
+    `hitl.pending_approvals[]`), configured per-run by risk level — see
+    `ARCHITECTURE_preview.md` §6.2 "General HITL pattern". Empty list = no mid-run gates
+    (only the `require_hitl_for_*` gates at PR/merge/deploy apply).
   - `security_scans_required: list[str]` (e.g., `["gitleaks", "semgrep", "osv"]`)
   - `ci_required: bool`
   - `protected_branches: list[str]`
+  - `security_audit_enabled: bool` — gates the optional Security/Policy Auditor agent
+    (see `ARCHITECTURE_preview.md` §5.6). Default `false`: Phase D routes
+    `READY_FOR_PR` directly, skipping `NEEDS_SECURITY_AUDIT`. `security_scans_required`
+    still applies via the Tester's deterministic checks regardless of this flag — this
+    only controls whether a dedicated LLM-narrated audit *agent* runs.
 
 ### D) State Machine
 
@@ -204,7 +215,10 @@ This section is _critical_ for grounded reflection and reliable debugging.
 - `hitl: object`
   - `required: bool`
   - `pending_approvals: list[object]`
-    - `type: str` (`"plan" | "pr" | "merge" | "prod_deploy" | "security_exception"`)
+    - `type: str` (`"plan" | "code" | "test" | "pr" | "merge" | "prod_deploy" | "security_exception"`)
+      — `"plan"`/`"code"`/`"test"` are mid-run checkpoints driven by
+      `policy.hitl_checkpoints`; the rest are the fixed end-of-pipeline gates driven by
+      `policy.require_hitl_for_*`.
     - `requested_at: str`
     - `status: str` (`"pending" | "approved" | "rejected"`)
     - `reviewer: str | null`
@@ -298,138 +312,6 @@ The Blackboard should include:
   - `store: str` (e.g., `"postgres"`)
   - `stream_id: str` (usually equals `run_id`)
   - `last_event_id: str | null` (cursor for resume)
-  - `tail: list[event]` (optional, last N events only; e.g., 20–100)
-
-### 6.4 Event schema (required fields)
-
-Each Event must be machine-readable and ordered.
-
-- `event_id: str` (unique, e.g., `"evt_000042"`)
-- `run_id: str`
-- `seq: int` (monotonic per run; allows strict ordering)
-- `timestamp: str` (ISO 8601)
-- `actor: str` (e.g., `"orchestrator"`, `"coder_agent"`, `"sandbox"`, `"gitops_service"`, `"human"`)
-- `type: str` (event type name; see examples below)
-- `severity: str` (`"debug" | "info" | "warning" | "error" | "critical"`)
-- `message: str` (human readable)
-- `payload: object` (structured details)
-- `artifact_refs: list[str]` (links to logs/diffs/reports used as evidence)
-
-### 6.5 Recommended event type names (examples)
-
-- `run.created`
-- `sandbox.created`
-- `repo.cloned`
-- `context.baseline_ingested`
-- `context.workspace_synced`
-- `plan.drafted`
-- `plan.reviewed`
-- `microtask.started`
-- `tool.executed`
-- `test.completed`
-- `reflection.created`
-- `security.scan_completed`
-- `hitl.requested`
-- `hitl.decided`
-- `pr.created`
-- `ci.status_changed`
-- `run.completed`
-- `run.failed`
-
-### 6.6 Minimal Postgres table (conceptual)
-
-A simple schema is sufficient:
-
-- `events(event_id TEXT PRIMARY KEY, run_id TEXT, seq INT, timestamp TIMESTAMPTZ, actor TEXT, type TEXT, severity TEXT, message TEXT, payload JSONB, artifact_refs JSONB)`
-
-Add indexes:
-
-- `(run_id, seq)`
-- `(run_id, timestamp)`
-- `(type)` if you want fast filtering
-
----
-
-## 7) Full Blackboard Example + Complete Class (All Attributes)
-
-(Keep your existing example/class here; add the `events` attribute.)
-
-### 7.1 Blackboard addition: `events` field (snapshot pointer + tail)
-
-Add this to the Blackboard schema:
-
-- `events: object`
-  - `store: str`
-  - `stream_id: str`
-  - `last_event_id: str | null`
-  - `tail: list[event]`
-
-Where `event` is the schema defined in Section 6.4.
-
-### 7.2 Pydantic models to include (events)
-
-````python
-from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
-
-ISO8601 = str
-ArtifactRef = str
-
-EventSeverity = Literal["debug", "info", "warning", "error", "critical"]
-
-class Event(BaseModel):
-    event_id: str
-    run_id: str
-    seq: int
-    timestamp: ISO8601
-    actor: str
-    type: str
-    severity: EventSeverity = "info"
-    message: str
-    payload: Dict[str, Any] = Field(default_factory=dict)
-    artifact_refs: List[ArtifactRef] = Field(default_factory=list)
-
-class EventsPointer(BaseModel):
-    store: str = "postgres"
-    stream_id: str
-    last_event_id: Optional[str] = None
-    tail: List[Event] = Field(default_factory=list)
-
-## 6) Events (Append-only Audit Log) — What it needs & where it is stored
-
-### 6.1 Why Events exist (and why they are not the Blackboard)
-
-The Blackboard is the **current snapshot**: “what the system believes right now.”
-
-Events are the **append-only history**: “what happened, in what order, with what evidence.”
-
-You need both:
-
-- Blackboard supports fast decisions and resumption.
-- Events support auditing, debugging, replay, and analytics.
-
-### 6.2 Where Events are stored (recommended)
-
-**Canonical storage location:** an append-only `events` table in **Episodic Memory (Postgres)**.
-
-**Why not store all events inside `blackboard.state_json`?**
-
-- The Blackboard JSON would grow without bound and become slow to read/write.
-- You want fast state transitions; events can be queried separately by time/seq.
-
-### 6.3 How Events connect to the Blackboard
-
-The Blackboard should include:
-
-1. a **pointer/cursor** into the canonical event stream, and
-2. optionally a small **tail buffer** of the most recent events for quick debugging.
-
-**Recommended Blackboard field:**
-
-- `events: object`
-  - `store: str` (e.g., `"postgres"`)
-  - `stream_id: str` (usually equals `run_id`)
-  - `last_event_id: str | null` (cursor for resume)
   - `last_seq: int` (cursor for strict ordering; redundant but useful)
   - `tail: list[event]` (optional, last N events only; e.g., 20–100)
 
@@ -478,7 +360,7 @@ To keep analytics simple and to avoid “one-off” types, event types are group
 
 ---
 
-## 6.7 Event Type Enum + Required Payload Fields (No ambiguity)
+### 6.7 Event Type Enum + Required Payload Fields (No ambiguity)
 
 Below is a recommended event type registry.
 **Rule:** if an event type is emitted, its payload MUST contain the listed fields.

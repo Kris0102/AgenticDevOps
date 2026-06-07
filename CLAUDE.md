@@ -23,21 +23,30 @@ src/
     bootstrap_node.py            # BootStrapper class — always runs first
   agents/
     Planning/
-      planner.py                 # ReAct investigate → structured Plan + Microtasks
-      planner_tools.py           # Tool wrappers for planner
-      reviewer.py                # Plan Reviewer (stub)
+      Planner/
+        planner.py                 # Orchestration only: investigate → synthesize → validate (with retry)
+        planner_tools.py           # Tool wrappers for planner
+        quality.py                 # _quality_report / _normalize_output — microtask quality gate
+        plan_output.py             # create_plan_file_as_output — debug plan dump to disk
+        investigation_support.py   # _default_max_tool_steps, _investigation_recursion_limit, _last_ai_text
+        prompts/                   # Prompt templates (investigator.py, synthesis.py)
+      Reviewer/
+        reviewer.py                # Plan Reviewer (stub)
     Implementing/
       coder.py                   # Coder (stub)
       tester.py                  # Tester (stub)
+  Exceptions/
+    BadMicroTaskExceptions.py    # BadMicroTaskException — raised by quality.py, caught+retried in Planner
   tool_gateway/
-    gateway.py                   # ToolGateway: allowlist enforcement + audit logging
+    gateway.py                   # ToolGateway: allowlist enforcement (ROLE_PERMISSIONS, ALLOWED_SANDBOX_CMDS) + audit logging
     Roles.py                     # AgentRole enum
-    AllowListCommands.py         # Allowlisted shell commands per role
   sandbox/
     sandbox_tools.py             # DockerSandboxTools: create/exec/clone/destroy (DB-backed)
+    Tools.py                     # Tools enum — sandbox tool identifiers, dispatched via match/case in gateway
     Dockerfile                   # Base sandbox image (agentic-sandbox:0.1)
   db/
     db.py                        # SQLAlchemy engine + session_scope
+    event_log.py                 # EventLogger — centralized Event-row construction (session.add only, never commit)
     models.py                    # ORM models: Run, RunState, Event, Artifact, Sandbox, MicrotaskRecord
     migrations/                  # Alembic migrations
   providers/                     # Pluggable LLM provider interface (TODO: implement)
@@ -54,7 +63,19 @@ docs/
   Blackboard.md                  # Blackboard schema + event type registry
   POC_instructions.md            # Step-by-step PoC build guide
   instructions.md                # MVP implementation plan
+
+  decisions/                     # ADRs — WHY decisions were made (read this for cross-session context, see below)
 ```
+
+## Persistent memory across sessions: `docs/decisions/`
+This file (`CLAUDE.md`) tells you **what's true now** — it gets rewritten and loses
+history. `docs/decisions/` tells you **why** — append-only, dated ADRs (`NNNN-title.md`)
+that are never deleted, only superseded. Read it when starting fresh on this project;
+write to it (new `NNNN-title.md`, format in `docs/decisions/README.md`) whenever a
+non-obvious architectural decision is made, an audit finding gets actioned/deferred, or
+an alternative gets seriously considered and rejected — so the next session doesn't
+re-litigate it cold. See `docs/decisions/0001-architecture-audit-2026-06-07.md` for the
+first architecture audit and its remediation order.
 
 ## Graph topology (current)
 ```
@@ -106,6 +127,7 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `CLUSTER_API_KEY` | API key for LLM cluster endpoint |
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
 | `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
+| `PLANNER_MAX_SYNTHESIS_ATTEMPTS` | Max synthesis retries when `_normalize_output` raises `BadMicroTaskException` (default 3) — Planner feeds the validation error back into the next prompt as context |
 | `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
 | `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
 
@@ -145,22 +167,27 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | `reflections` DB table | Not started |
 
 ## Known bugs / remaining TODOs (priority order)
-1. **`planner → END` shortcut**: real wire is `planner → plan_reviewer → coder → tester → (reflect | next_microtask)`.
-2. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
-3. **`plan_verification_router`**: uses `.get()` on review_feedback items — fails if they're Pydantic models. Use attribute access or keep as dicts.
-4. **`run_state` never written**: table exists but blackboard snapshot never persisted after each node.
-5. **`reflections` table missing**: reflections only in LangGraph state (memory), lost on crash.
-6. **Coder / Tester / Reflector**: all stubs returning `{}`.
+See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.
+1. **Stop conditions declared but never enforced** (must-fix, safety): `Constraints.max_total_iterations`/`max_microtask_attempts`/`Microtask.attempts` exist in the schema but `plan_verification_router`/`execution_verification_router` never read them — runaway-loop risk once real agents are wired in (`orchestrator.py:154-167`).
+2. **`run_state` never written** (must-fix, reproducibility): table + ORM model exist, but zero `session.add(RunState(...))` anywhere — a crash mid-run loses the blackboard entirely. Snapshot it alongside the existing `Run.status` update in each node.
+3. ~~**`ToolGateway` commits mid-transaction**~~ — **FIXED**: `_log_event` now delegates to `EventLogger.log()` (`db/event_log.py`), which only ever calls `session.add()`. Commit ownership correctly sits with the lending `session_scope()`.
+4. **`planner → END` shortcut**: real wire is `planner → plan_reviewer → coder → tester → (reflect | next_microtask)`.
+5. **`check_requested_path` dead code** (should-fix, security): defined in `gateway.py` but never called — `fs.read_file`/`fs.write_file` skip the sandbox-path-traversal check entirely.
+6. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
+7. **`reflections` table missing**: reflections only in LangGraph state (memory), lost on crash — depends on fix #2 landing first to be worth doing.
+8. **Coder / Tester / Reflector**: all stubs returning `{}`.
 
 ## Coding conventions
 - All state mutations must go through the LangGraph node return dict — never mutate `state` in place.
 - Every tool invocation must emit a `tool.executed` or `tool.denied` event via `ToolGateway`.
+- Never construct `Event(...)` rows directly — use `EventLogger.log(session, run_id, actor, event_type, payload)` (`db/event_log.py`). It handles id generation + timestamp and only calls `session.add()` — keeps commit-boundary ownership with the caller's `session_scope()`.
 - Agents return `Dict[str, Any]` matching BlackboardState fields — only include changed keys.
 - Tool functions in `sandbox_tools.py` return `ExecResult` dataclasses — never raw strings.
 - New agents go in `src/agents/<Phase>/<agent_name>.py` and must be wired into `orchestrator.py`.
-- New tool types must be registered in `tool_gateway/AllowListCommands.py` and `Roles.py`.
+- New tool types must be registered in `sandbox/Tools.py` (the `Tools` enum), and in `gateway.py`'s `ROLE_PERMISSIONS` / `ALLOWED_SANDBOX_CMDS` plus `Roles.py`.
 - Sandbox is always pre-created by `bootstrapper_node` — agent nodes must never call `sandbox_create()`. Get sandbox_id from `state.get("sandbox").sandbox_id`.
 - `Run.status` must be updated in DB whenever LangGraph status changes — do it in the node, not in a router.
+- Use OOP for new classes. 
 
 ## Adding a new agent
 1. Create `src/agents/<Phase>/<name>.py` with a class that has `invoke(state: BlackboardState) -> Dict[str, Any]`

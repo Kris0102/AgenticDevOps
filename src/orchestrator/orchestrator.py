@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -11,12 +10,14 @@ import sys
 
 # Ensure required imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 from sandbox.sandbox_tools import DockerSandboxTools
 from db.db import db
-from db.models import Artifact, Event, MicrotaskRecord, Run
-from agents.Planning.planner import Planner
-from agents.Planning.planner_tools import PlannerTools
+from db.event_log import EventLogger
+from db.models import Artifact, MicrotaskRecord, Run
+from agents.Planning.Planner.planner import Planner
+from agents.Planning.Planner.planner_tools import PlannerTools
 from orchestrator.bootstrap_node import BootStrapper
 
 load_dotenv()
@@ -76,9 +77,12 @@ def planner_node(state: BlackboardState) -> Dict[str, Any]:
                 idx=mt.idx,
                 title=mt.title,
                 description=mt.description,
+                approach=mt.approach,
                 status=str(mt.status),
                 attempts=mt.attempts,
                 acceptance_criteria=list(mt.acceptance_criteria),
+                target_files=list(mt.target_files),
+                context_files=list(mt.context_files),
                 dependencies=list(mt.dependencies),
                 files_touched=list(mt.files_touched),
                 test_strategy=mt.test_strategy,
@@ -101,20 +105,13 @@ def planner_node(state: BlackboardState) -> Dict[str, Any]:
                 content_text=plan.summary,
                 created_at=now,
             ))
-
+    
         # Emit plan.drafted event
-        db_session.add(Event(
-            event_id=f"evt_{uuid.uuid4().hex[:12]}",
-            run_id=run_id,
-            ts=now,
-            actor="planner_agent",
-            event_type="plan.drafted",
-            payload_json={
-                "microtasks_count": len(microtasks),
-                "plan_version": 1,
-                "plan_summary": plan.summary[:300] if plan else "",
-            },
-        ))
+        EventLogger.log(db_session, run_id, Roles.PLANNER.value, "plan.drafted", {
+            "microtasks_count": len(microtasks),
+            "plan_version": 1,
+            "plan_summary": plan.summary[:300] if plan else "",
+        })
 
     return result
 

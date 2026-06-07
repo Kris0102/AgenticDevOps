@@ -23,6 +23,7 @@ Security note (PoC):
 from __future__ import annotations
 
 from dataclasses import dataclass
+import enum
 from typing import Dict, List, Optional
 import io
 import os
@@ -233,7 +234,7 @@ class DockerSandboxTools:
         return diff.stdout
 
     # ---- File IO (PoC) ----
-
+    # read file is alos possible via `cat` in sandbox_exec, but this is more efficient for large files and avoids shell escaping issues. For production, consider implementing fs.write_file with put_archive for safer file writes.
     def fs_read_file(self, *, sandbox_id: str, path: str) -> str:
         """
         Simple implementation: use `cat`. For production: use Docker archive APIs + strict path normalization.

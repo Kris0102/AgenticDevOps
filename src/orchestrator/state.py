@@ -71,13 +71,20 @@ class Policy(BaseModel):
     require_hitl_for_pr: bool
     require_hitl_for_merge: bool
     require_hitl_for_prod_deploy: bool
+    # Phase names that pause the run at NEEDS_HITL_APPROVAL before proceeding —
+    # e.g. ["plan", "code", "test"]. One gate mechanism, configured per-run/risk-level.
+    hitl_checkpoints: List[str] = Field(default_factory=list)
     security_scans_required: List[str]
     ci_required: bool
     protected_branches: List[str]
+    # Security/Policy Auditor agent is optional (see ARCHITECTURE_preview.md §5.6) —
+    # off by default; Phase D routes READY_FOR_PR directly when disabled.
+    security_audit_enabled: bool = False
 
 class Plan(BaseModel):
     summary: str
     architecture_notes: str
+    data_contracts: List[str] = Field(default_factory=list)  # shared type/schema definitions all microtasks must honour
     assumptions: List[str]
     risks: List[str]
     open_questions: List[str]
@@ -87,14 +94,17 @@ class Microtask(BaseModel):
     """A single deterministic objective given to the execution loop."""
     microtask_id: str
     title: str
-    description: str
+    description: str  # WHAT to build and WHERE — file paths + what goes in them
+    approach: str  # HOW — concrete technical plan: signatures, data shapes, sequencing, edge cases
     acceptance_criteria: List[str]
+    target_files: List[str] = Field(default_factory=list)  # exact paths to create/edit — declared before coding
+    context_files: List[str] = Field(default_factory=list)  # paths the Coder should read (not edit) to match conventions
     status: MicrotaskStatus = MicrotaskStatus.PENDING
     idx: int = 0
     dependencies: List[str] = Field(default_factory=list)
     attempts: int = 0
     max_attempts: Optional[int] = None
-    files_touched: List[str] = Field(default_factory=list)
+    files_touched: List[str] = Field(default_factory=list)  # filled after coding, not before
     test_strategy: Optional[str] = None
     notes: List[str] = Field(default_factory=list)
 

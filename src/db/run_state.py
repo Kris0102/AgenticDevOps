@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from db.models import RunState
@@ -40,4 +41,9 @@ class RunStateStore:
         record = session.get(RunState, run_id)
         if record is None:
             return None
-        return blackboard_state_from_dict(record.state_json)
+        try:
+            return blackboard_state_from_dict(record.state_json)
+        except (ValidationError, KeyError, TypeError) as e:
+            print(f"[RunStateStore] WARNING: failed to reconstruct snapshot for run "
+                  f"{run_id} (schema drift?): {e}. Falling back to a fresh state.")
+            return None

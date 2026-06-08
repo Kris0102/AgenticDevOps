@@ -31,7 +31,7 @@ import tarfile
 import time
 
 import docker
-from docker.models.containers import Container
+from docker import errors as docker_errors
 
 from db.db import db
 from db.models import Sandbox
@@ -106,16 +106,39 @@ class DockerSandboxTools:
             if existing:
                 cid = existing.container_id
                 print(f"Sandbox {sandbox_id} already exists with container ID {cid}. Checking status...")
-                container = self.client.containers.get(cid)
-                if container.status != "running":
-                    container.start()
-                print(f"Reconnected to existing sandbox {sandbox_id} (container {cid[:12]}, status={container.status})")    
-                return SandboxCreateResult(sandbox_id=sandbox_id, container_id=cid)
+                try:
+                    container = self.client.containers.get(cid)
+                except docker_errors.NotFound:
+                    container = None
+                if container is not None:
+                    if container.status != "running":
+                        container.start()
+                    print(f"Reconnected to existing sandbox {sandbox_id} (container {cid[:12]}, status={container.status})")
+                    return SandboxCreateResult(sandbox_id=sandbox_id, container_id=cid)
+                print(f"Tracked container {cid[:12]} for {sandbox_id} no longer exists in Docker — recreating registry entry.")
+                session.delete(existing)
+
+        # The DB record may be missing (e.g. after a DB wipe) while the named container
+        # still exists in Docker — reconnect to it instead of letting `containers.run`
+        # raise a 409 name conflict.
+        try:
+            container = self.client.containers.get(sandbox_id)
+        except docker_errors.NotFound:
+            container = None
+
+        if container is not None:
+            if container.status != "running":
+                container.start()
+            container_id = container.id or ""
+            print(f"Found untracked container {sandbox_id} (container {container_id[:12]}, status={container.status}) — re-registering.")
+            with db.session_scope() as session:
+                session.merge(Sandbox(sandbox_id=sandbox_id, run_id=run_id, container_id=container_id))
+            return SandboxCreateResult(sandbox_id=sandbox_id, container_id=container_id)
 
         labels = dict(self.labels_base)
         labels.update({"agentic.run_id": run_id, "agentic.sandbox_id": sandbox_id})
 
-        container: Container = self.client.containers.run(
+        container = self.client.containers.run(
             self.image,
             name=sandbox_id,
             command=["sleep", "infinity"],

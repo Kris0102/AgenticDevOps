@@ -6,6 +6,7 @@ from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
 from db.run_state import RunStateStore
+from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox, merge_state
 from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
 from tool_gateway.Roles import Roles
@@ -21,13 +22,17 @@ def _authenticated_clone_url(repo_url: str) -> str:
 
 class BootStrapper:
 
+    IMAGE = "agentic-sandbox:0.1"
+    WORKDIR = "/workspace"
+
     def __init__(self, blackboard: BlackboardState):
         self.state = blackboard
         self.name = Roles.BOOTSTRAPPER.value
+        self.sandbox_tools = DockerSandboxTools(image=self.IMAGE, workdir=self.WORKDIR)
 
     def invoke(self) -> Dict[str, Any]:
-        run_id = self.state.get("run_id")
         repo = self.state.get("repo")
+        run_id = self.state.get("run_id")
         sandbox_state: Sandbox = self.state.get("sandbox")
         sandbox_id = sandbox_state.sandbox_id
         status = self.state.get("status")
@@ -36,6 +41,56 @@ class BootStrapper:
             raise ValueError("BlackboardState missing 'repo'")
 
         # 1. Upsert Run in DB — always, regardless of status
+        self._upsert_run_record()  # Add run to db if not exists, else update timestamp (heartbeat for run recovery)
+        # 2. Ensure sandbox container is running — always, regardless of status
+        self._ensure_sandbox_running()
+
+        # 3. Clone repo — retry whenever it hasn't actually happened yet (covers both
+        # the first run and a resume after a clone failure). workspace_path is still
+        # the pre-clone default (WORKDIR) until git_clone_and_checkout succeeds.
+        if sandbox_state.workspace_path == self.WORKDIR:
+            workspace_path = self._clone_repository()
+
+            result = {
+                "status": RunStatus.NEEDS_PLAN,
+                "sandbox": self._sandbox(sandbox_id, workspace_path),
+            }
+            with db.session_scope() as session:
+                run_record = session.get(Run, run_id)
+                if run_record:
+                    run_record.status = RunStatus.NEEDS_PLAN.value
+                    run_record.updated_at = datetime.now(timezone.utc)
+                EventLogger.log(session, run_id, self.name, EventType.REPO_CLONED, {
+                    "repo_url": repo.repo_url,
+                    "base_sha": repo.base_sha,
+                    "workspace_path": workspace_path,
+                })
+                EventLogger.log(session, run_id, self.name, EventType.RUN_STATUS_CHANGED, {
+                    "from": status.value,
+                    "to": RunStatus.NEEDS_PLAN.value,
+                })
+                RunStateStore.save(session, run_id, merge_state(self.state, result))
+
+            return result
+
+        # Resume path — repo already cloned (workspace_path != WORKDIR), sandbox
+        # healthy, keep current status + preserve existing workspace_path
+        result = {
+            "sandbox": self._sandbox(sandbox_id, sandbox_state.workspace_path),
+        }
+        with db.session_scope() as session:
+            RunStateStore.save(session, run_id, merge_state(self.state, result))
+        return result
+
+    @staticmethod
+    def _sandbox(sandbox_id: str, workspace_path: str) -> Sandbox:
+        return Sandbox(sandbox_id=sandbox_id, workspace_path=workspace_path, status="running")
+
+    def _upsert_run_record(self):
+        repo = self.state.get("repo")
+        run_id = self.state.get("run_id")
+        status = self.state.get("status")
+
         with db.session_scope() as session:
             existing = session.get(Run, run_id)
             if existing:
@@ -46,25 +101,25 @@ class BootStrapper:
                     run_id=run_id,
                     repo_url=repo.repo_url,
                     base_sha=repo.base_sha,
-                    status=str(status),
+                    status=status.value,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 ))
                 EventLogger.log(session, run_id, self.name, EventType.RUN_CREATED, {
                     "repo_url": repo.repo_url,
                     "base_sha": repo.base_sha,
-                    "trigger_status": str(status),
+                    "trigger_status": status.value,
                 })
                 print(f"[Bootstrap] Created run {run_id}")
+    def _ensure_sandbox_running(self):
+        run_id = self.state.get("run_id")
 
-        # 2. Ensure sandbox container is running — always, regardless of status
-        sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
         try:
-            sandbox_tools.client.images.get("agentic-sandbox:0.1")
+            self.sandbox_tools.client.images.get(self.IMAGE)
         except Exception:
-            print("Warning: agentic-sandbox:0.1 image not found. Run docker-compose build.")
+            print(f"Warning: {self.IMAGE} image not found. Run docker-compose build.")
 
-        result = sandbox_tools.sandbox_create(run_id=run_id)
+        result = self.sandbox_tools.sandbox_create(run_id=run_id)
         print(f"[Bootstrap] Sandbox ready: {result.sandbox_id} (container={result.container_id[:12]})")
 
         with db.session_scope() as session:
@@ -74,75 +129,24 @@ class BootStrapper:
                 "reconnected": result.container_id != result.sandbox_id,
             })
 
-        # 3. Clone repo — only on first run
-        if status == RunStatus.NEEDS_BOOTSTRAP:
-            repo_dir = "repo"
-            workspace_path = f"/workspace/{repo_dir}"
-            clone_url = _authenticated_clone_url(repo.repo_url)
-            print(f"[Bootstrap] Cloning {repo.repo_url} @ {repo.base_sha}...")
-            try:
-                sandbox_tools.git_clone_and_checkout(
-                    sandbox_id=sandbox_id,
-                    repo_url=clone_url,
-                    base_sha=repo.base_sha,
-                    repo_dir=repo_dir,
-                )
-                print(f"[Bootstrap] Clone complete → {workspace_path}")
-            except SandboxError as e:
-                print(f"[Bootstrap] Clone failed: {e}")
-                print("For private repos, ensure GITHUB_TOKEN is present in environment and has repo access.")
-                result = {
-                    "status": RunStatus.FAILED,
-                    "error_logs": [str(e)],
-                }
-                with db.session_scope() as session:
-                    run_record = session.get(Run, run_id)
-                    if run_record:
-                        run_record.status = str(RunStatus.FAILED)
-                        run_record.updated_at = datetime.now(timezone.utc)
-                    EventLogger.log(session, run_id, self.name, EventType.RUN_STATUS_CHANGED, {
-                        "from": str(status),
-                        "to": str(RunStatus.FAILED),
-                        "reason": str(e),
-                    })
-                    RunStateStore.save(session, run_id, merge_state(self.state, result))
-                return result
-
-            result = {
-                "status": RunStatus.NEEDS_PLAN,
-                "sandbox": Sandbox(
-                    sandbox_id=sandbox_id,
-                    workspace_path=workspace_path,
-                    status="running",
-                ),
-            }
-            with db.session_scope() as session:
-                run_record = session.get(Run, run_id)
-                if run_record:
-                    run_record.status = str(RunStatus.NEEDS_PLAN)
-                    run_record.updated_at = datetime.now(timezone.utc)
-                EventLogger.log(session, run_id, self.name, EventType.REPO_CLONED, {
-                    "repo_url": repo.repo_url,
-                    "base_sha": repo.base_sha,
-                    "workspace_path": workspace_path,
-                })
-                EventLogger.log(session, run_id, self.name, EventType.RUN_STATUS_CHANGED, {
-                    "from": str(RunStatus.NEEDS_BOOTSTRAP),
-                    "to": str(RunStatus.NEEDS_PLAN),
-                })
-                RunStateStore.save(session, run_id, merge_state(self.state, result))
-
-            return result
-
-        # Resume path — sandbox is healthy, keep current status + workspace_path
-        # if state is not NEEDS_BOOTSTRAP, we must be resuming an existing run, so preserve existing workspace_path
-        result = {
-            "sandbox": Sandbox(
+    def _clone_repository(self) -> str:
+        sandbox_state: Sandbox = self.state.get("sandbox")
+        sandbox_id = sandbox_state.sandbox_id
+        repo = self.state.get("repo")
+        repo_dir = "repo"
+        workspace_path = f"{self.WORKDIR}/{repo_dir}"
+        clone_url = _authenticated_clone_url(repo.repo_url)
+        print(f"[Bootstrap] Cloning {repo.repo_url} @ {repo.base_sha}...")
+        try:
+            self.sandbox_tools.git_clone_and_checkout(
                 sandbox_id=sandbox_id,
-                workspace_path=sandbox_state.workspace_path,
-                status="running",
-            ),
-        }
-        with db.session_scope() as session:
-            RunStateStore.save(session, run_id, merge_state(self.state, result))
-        return result
+                repo_url=clone_url,
+                base_sha=repo.base_sha,
+                repo_dir=repo_dir,
+            )
+            print(f"[Bootstrap] Clone complete → {workspace_path}")
+            return workspace_path
+        except SandboxError as e:
+            print(f"[Bootstrap] Clone failed: {e}")
+            print("For private repos, ensure GITHUB_TOKEN is present in environment and has repo access.")
+            raise RunExecutionError(phase="bootstrap.clone", reason=str(e))

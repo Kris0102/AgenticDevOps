@@ -31,6 +31,9 @@ class RunStatus(str, Enum):
     DONE = "DONE"
     FAILED = "FAILED"
     
+    def __str__(self) -> str:
+        return self.value
+    
 class EventType(str, Enum):
     RUN_CREATED = "run.created"
     RUN_STATUS_CHANGED = "run.status_changed"
@@ -41,6 +44,13 @@ class EventType(str, Enum):
     MICROTASK_COMPLETED = "microtask.completed"
     MICROTASK_FAILED = "microtask.failed"
     SANDBOX_CREATED = "sandbox.created"
+    RUN_COMPLETED = "run.completed"
+    RUN_FAILED = "run.failed"
+    TOOL_EXECUTED = "tool.executed"
+    TOOL_DENIED = "tool.denied"
+
+    def __str__(self) -> str:
+        return self.value
   
 
 class Trigger(BaseModel):

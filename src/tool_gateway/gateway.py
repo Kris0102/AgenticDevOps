@@ -6,6 +6,7 @@ import os
 # Ensure we can import db.models when running within src module structure
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.event_log import EventLogger
+from orchestrator.state import EventType
 from sandbox.sandbox_tools import DockerSandboxTools
 from sandbox.Tools import Tools
 from tool_gateway.Roles import Roles
@@ -42,7 +43,7 @@ class ToolGateway:
         if tool_name not in allowed_tools:
             self._log_event(
                 actor=actor_role_str,
-                event_type="tool.denied",
+                event_type=EventType.TOOL_DENIED,
                 payload={
                     "tool_name": tool_name,
                     "args_summary": str(args)[:120],  # simple redaction & truncation
@@ -63,7 +64,7 @@ class ToolGateway:
             if base_cmd not in ALLOWED_SANDBOX_CMDS:
                 self._log_event(
                     actor=actor_role_str,
-                    event_type="tool.denied",
+                    event_type=EventType.TOOL_DENIED,
                     payload={
                         "tool_name": tool_name,
                         "args_summary": str(args)[:120],
@@ -130,7 +131,7 @@ class ToolGateway:
         # 4. Mandatory Execution Logging
         self._log_event(
             actor=actor_role_str,
-            event_type="tool.executed",
+            event_type=EventType.TOOL_EXECUTED,
             payload={
                 "tool_name": tool_name,
                 "args_summary": str(args)[:120],

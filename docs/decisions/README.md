@@ -49,3 +49,4 @@ What this makes easier, harder, or newly possible. What it costs.
 | [0001](0001-architecture-audit-2026-06-07.md) | Architecture audit findings & remediation order | accepted |
 | [0002](0002-design-clarifications-execution-model.md) | Design clarifications: sequential execution, Reviewer scope, HITL placement, optional Auditor | accepted |
 | [0003](0003-event-logger-centralization.md) | Centralize Event-row construction in `EventLogger`; close audit finding #3 (gateway mid-transaction commit) | accepted |
+| [0004](0004-pr9-review-followup-deferrals.md) | PR #9 review follow-up: snapshot persistence deferrals (RunStateStore generalization, cost, merge_state) | accepted |

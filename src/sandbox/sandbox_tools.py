@@ -109,6 +109,7 @@ class DockerSandboxTools:
                 container = self.client.containers.get(cid)
                 if container.status != "running":
                     container.start()
+                print(f"Reconnected to existing sandbox {sandbox_id} (container {cid[:12]}, status={container.status})")    
                 return SandboxCreateResult(sandbox_id=sandbox_id, container_id=cid)
 
         labels = dict(self.labels_base)

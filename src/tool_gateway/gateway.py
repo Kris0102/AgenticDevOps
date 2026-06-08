@@ -15,7 +15,8 @@ ROLE_PERMISSIONS = {
     Roles.PLANNER.value: [Tools.SANDBOX_RUN.value, Tools.FS_READ_FILE.value],
     Roles.CODER.value: [Tools.FS_WRITE_FILE.value, Tools.FS_READ_FILE.value, Tools.REPO_DIFF.value, Tools.SANDBOX_RUN.value],
     Roles.TESTER.value: [Tools.SANDBOX_RUN.value],
-    Roles.ORCHESTRATOR.value: []
+    Roles.ORCHESTRATOR.value: [],
+    Roles.BOOTSTRAPPER.value: [],
 }
 
 # Strict string match command allowlist

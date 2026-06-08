@@ -5,8 +5,10 @@ from typing import Any, Dict
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
-from orchestrator.state import BlackboardState, RunStatus, Sandbox
+from db.run_state import RunStateStore
+from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox, merge_state
 from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
+from tool_gateway.Roles import Roles
 
 
 def _authenticated_clone_url(repo_url: str) -> str:
@@ -21,6 +23,7 @@ class BootStrapper:
 
     def __init__(self, blackboard: BlackboardState):
         self.state = blackboard
+        self.name = Roles.BOOTSTRAPPER.value
 
     def invoke(self) -> Dict[str, Any]:
         run_id = self.state.get("run_id")
@@ -47,7 +50,7 @@ class BootStrapper:
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 ))
-                EventLogger.log(session, run_id, "bootstrapper", "run.created", {
+                EventLogger.log(session, run_id, self.name, EventType.RUN_CREATED, {
                     "repo_url": repo.repo_url,
                     "base_sha": repo.base_sha,
                     "trigger_status": str(status),
@@ -65,7 +68,7 @@ class BootStrapper:
         print(f"[Bootstrap] Sandbox ready: {result.sandbox_id} (container={result.container_id[:12]})")
 
         with db.session_scope() as session:
-            EventLogger.log(session, run_id, "bootstrapper", "sandbox.created", {
+            EventLogger.log(session, run_id, self.name, EventType.SANDBOX_CREATED, {
                 "sandbox_id": result.sandbox_id,
                 "container_id": result.container_id[:12],
                 "reconnected": result.container_id != result.sandbox_id,
@@ -88,37 +91,24 @@ class BootStrapper:
             except SandboxError as e:
                 print(f"[Bootstrap] Clone failed: {e}")
                 print("For private repos, ensure GITHUB_TOKEN is present in environment and has repo access.")
+                result = {
+                    "status": RunStatus.FAILED,
+                    "error_logs": [str(e)],
+                }
                 with db.session_scope() as session:
                     run_record = session.get(Run, run_id)
                     if run_record:
                         run_record.status = str(RunStatus.FAILED)
                         run_record.updated_at = datetime.now(timezone.utc)
-                    EventLogger.log(session, run_id, "bootstrapper", "run.status_changed", {
+                    EventLogger.log(session, run_id, self.name, EventType.RUN_STATUS_CHANGED, {
                         "from": str(status),
                         "to": str(RunStatus.FAILED),
                         "reason": str(e),
                     })
-                return {
-                    "status": RunStatus.FAILED,
-                    "error_logs": [str(e)],
-                }
+                    RunStateStore.save(session, run_id, merge_state(self.state, result))
+                return result
 
-            with db.session_scope() as session:
-                run_record = session.get(Run, run_id)
-                if run_record:
-                    run_record.status = str(RunStatus.NEEDS_PLAN)
-                    run_record.updated_at = datetime.now(timezone.utc)
-                EventLogger.log(session, run_id, "bootstrapper", "repo.cloned", {
-                    "repo_url": repo.repo_url,
-                    "base_sha": repo.base_sha,
-                    "workspace_path": workspace_path,
-                })
-                EventLogger.log(session, run_id, "bootstrapper", "run.status_changed", {
-                    "from": str(RunStatus.NEEDS_BOOTSTRAP),
-                    "to": str(RunStatus.NEEDS_PLAN),
-                })
-
-            return {
+            result = {
                 "status": RunStatus.NEEDS_PLAN,
                 "sandbox": Sandbox(
                     sandbox_id=sandbox_id,
@@ -126,12 +116,33 @@ class BootStrapper:
                     status="running",
                 ),
             }
+            with db.session_scope() as session:
+                run_record = session.get(Run, run_id)
+                if run_record:
+                    run_record.status = str(RunStatus.NEEDS_PLAN)
+                    run_record.updated_at = datetime.now(timezone.utc)
+                EventLogger.log(session, run_id, self.name, EventType.REPO_CLONED, {
+                    "repo_url": repo.repo_url,
+                    "base_sha": repo.base_sha,
+                    "workspace_path": workspace_path,
+                })
+                EventLogger.log(session, run_id, self.name, EventType.RUN_STATUS_CHANGED, {
+                    "from": str(RunStatus.NEEDS_BOOTSTRAP),
+                    "to": str(RunStatus.NEEDS_PLAN),
+                })
+                RunStateStore.save(session, run_id, merge_state(self.state, result))
+
+            return result
 
         # Resume path — sandbox is healthy, keep current status + workspace_path
-        return {
+        # if state is not NEEDS_BOOTSTRAP, we must be resuming an existing run, so preserve existing workspace_path
+        result = {
             "sandbox": Sandbox(
                 sandbox_id=sandbox_id,
                 workspace_path=sandbox_state.workspace_path,
                 status="running",
             ),
         }
+        with db.session_scope() as session:
+            RunStateStore.save(session, run_id, merge_state(self.state, result))
+        return result

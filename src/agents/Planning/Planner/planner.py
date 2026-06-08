@@ -28,6 +28,7 @@ from orchestrator.state import (
     Plan,
     RunStatus,
 )
+from tool_gateway.Roles import Roles
 
 # Load environment variables from .env if present
 load_dotenv()
@@ -51,6 +52,7 @@ class Planner:
         self.tools = list(tools or [])
         self.max_tool_steps = _default_max_tool_steps()
         self.max_synthesis_attempts = int(os.getenv("PLANNER_MAX_SYNTHESIS_ATTEMPTS", "3"))
+        self.name = Roles.PLANNER.value
 
         # LLM Initialization
         api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")

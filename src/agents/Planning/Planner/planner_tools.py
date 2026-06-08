@@ -12,6 +12,7 @@ from tool_gateway.gateway import ALLOWED_SANDBOX_CMDS
 class PlannerTools:
     def __init__(self, gateway: ToolGateway):
         self.gateway = gateway
+        self.role = Roles.PLANNER
 
     def build_tools(self) -> list[BaseTool]:
         execute_tool = StructuredTool.from_function(
@@ -40,7 +41,7 @@ class PlannerTools:
         cmd_list = shlex.split(command)
         
         result = self.gateway.execute_tool(
-            actor_role=Roles.PLANNER, 
+            actor_role=self.role, 
             tool_name=Tools.SANDBOX_RUN, 
             args={"cmd": cmd_list}
         )
@@ -55,7 +56,7 @@ class PlannerTools:
         # Note: check_requested_path should be inside gateway or we can omit it for now if not implemented.
         # Assuming execute_tool handles the policy checks:
         result = self.gateway.execute_tool(
-            actor_role=Roles.PLANNER,
+            actor_role=self.role,
             tool_name=Tools.FS_READ_FILE,
             args={"path": filepath}
         )

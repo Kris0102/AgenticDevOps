@@ -3,6 +3,8 @@ from argparse import ArgumentParser
 import uuid
 import os
 
+from db.db import db
+from db.run_state import RunStateStore
 from orchestrator.orchestrator import graph
 from orchestrator.state import (
     Constraints,
@@ -34,6 +36,20 @@ def check_if_env_files_exist():
 if __name__ == "__main__":
 
     check_if_env_files_exist()
+
+    run_id = args.run_id if args.run_id else str(uuid.uuid4())
+
+    with db.session_scope() as session:
+        restored_state = RunStateStore.load(session, run_id)
+
+    if restored_state is not None:
+        print(f"[Main] Reconstructed blackboard for run {run_id} from run_state snapshot "
+              f"(status={restored_state['status']}).")
+        initial_state = restored_state
+        result = graph.invoke(initial_state)
+        print("Graph execution finished. Final state:")
+        print(result)
+        raise SystemExit(0)
 
     objective = Objective(
         title="Implement Feature X",
@@ -89,7 +105,7 @@ if __name__ == "__main__":
     
     
     initial_state = create_initial_blackboard_state(
-        run_id=args.run_id if args.run_id else str(uuid.uuid4()),
+        run_id=run_id,
         trigger=trigger,
         repo=repo,
         objective=objective,

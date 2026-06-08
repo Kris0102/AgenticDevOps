@@ -4,7 +4,7 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
-from orchestrator.state import BlackboardState, RunStatus
+from orchestrator.state import BlackboardState, EventType, RunStatus, merge_state
 import os
 import sys
 
@@ -16,6 +16,7 @@ from sandbox.sandbox_tools import DockerSandboxTools
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
+from db.run_state import RunStateStore
 from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
 from orchestrator.bootstrap_node import BootStrapper
@@ -107,11 +108,13 @@ def planner_node(state: BlackboardState) -> Dict[str, Any]:
             ))
     
         # Emit plan.drafted event
-        EventLogger.log(db_session, run_id, Roles.PLANNER.value, "plan.drafted", {
+        EventLogger.log(db_session, run_id, Roles.PLANNER.value, EventType.PLAN_DRAFTED, {
             "microtasks_count": len(microtasks),
             "plan_version": 1,
             "plan_summary": plan.summary[:300] if plan else "",
         })
+
+        RunStateStore.save(db_session, run_id, merge_state(state, result))
 
     return result
 

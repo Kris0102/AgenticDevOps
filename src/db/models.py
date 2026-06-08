@@ -19,15 +19,6 @@ class Run(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
-class RunState(Base):
-    __tablename__ = "run_state"
-
-    run_id: Mapped[str] = mapped_column(String, primary_key=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    state_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-
-
 class Event(Base):
     __tablename__ = "events"
 

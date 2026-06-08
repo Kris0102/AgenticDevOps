@@ -234,7 +234,17 @@ class DockerSandboxTools:
         )
         if clone.exit_code != 0:
             raise SandboxError(f"git clone failed: {clone.stderr or clone.stdout}")
-
+        def clean_repo_url(url: str) -> str:
+            if "ghp_" in url:
+                # e.g.   erase ghp_<key>
+                git_token_start = url.find("ghp_")
+                git_token_end = url.find("@", git_token_start)
+                if git_token_end == -1:
+                    git_token_end = len(url)
+                url = url[:git_token_start] + url[git_token_end:]
+               
+            return url
+        repo_url = clean_repo_url(repo_url)
         if not base_sha:
             print(f"[Sandbox] No base_sha provided — cloned {repo_url}, skipping checkout.")
             return

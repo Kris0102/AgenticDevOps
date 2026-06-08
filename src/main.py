@@ -3,9 +3,14 @@ from argparse import ArgumentParser
 import uuid
 import os
 
+from langchain_core.runnables import RunnableConfig
+
 from db.db import db
-from db.run_state import RunStateStore
+from Exceptions.RunExecutionError import RunExecutionError
+from orchestrator.bootstrap_node import BootStrapper
+from orchestrator.checkpointer import setup_checkpointer
 from orchestrator.orchestrator import graph
+from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import (
     Constraints,
     Objective,
@@ -15,6 +20,7 @@ from orchestrator.state import (
     Trigger,
     create_initial_blackboard_state,
 )
+from tool_gateway.Roles import Roles
 
 parser = ArgumentParser()
 parser.add_argument("--run_id", type=str, required=False, help="Unique identifier for this orchestrator run. If not provided, a random UUID will be generated.")
@@ -34,43 +40,87 @@ def check_if_env_files_exist():
 
 
 class RunLauncher:
-    """Owns the CLI run lifecycle: load-or-create state, then invoke the graph."""
+    """Owns the CLI run lifecycle: run bootstrap (always), then load-or-create
+    graph state and invoke/resume the checkpointed graph.
+
+    Persistence is split across two lifecycles that don't fit one mechanism:
+    - bootstrap is an idempotent readiness check that must re-run on EVERY
+      invocation (including resumes) — so it lives outside the checkpointed
+      graph and is invoked directly, here.
+    - planner-onward is multi-step resumable agent work — LangGraph's
+      PostgresSaver checkpointer snapshots it automatically per superstep,
+      keyed by thread_id=run_id. See docs/decisions/0005-bootstrap-outside-checkpointed-graph.md.
+    """
 
     def __init__(self, args):
         self.args = args
         self.run_id = args.run_id if args.run_id else str(uuid.uuid4())
+        self.config: RunnableConfig = {"configurable": {"thread_id": self.run_id}}
 
     def run(self) -> None:
         check_if_env_files_exist()
+        setup_checkpointer()
 
-        restored_state = self._load_snapshot()
-        if restored_state is not None:
-            initial_state = self._resume_from_snapshot(restored_state)
+        checkpoint_values = self._load_checkpoint()
+        if checkpoint_values:
+            seed_state = self._resume_from_checkpoint(checkpoint_values)
+            graph_input = None  # `None` input == "continue from checkpoint"
         else:
-            initial_state = self._build_fresh_state()
+            seed_state = self._build_fresh_state()
+            graph_input = seed_state
 
-        self._invoke_graph(initial_state)
+        bootstrap_result = self._run_bootstrap(seed_state)
+        graph_input = self._apply_bootstrap_result(checkpoint_values, graph_input, bootstrap_result)
 
-    def _load_snapshot(self):
-        with db.session_scope() as session:
-            return RunStateStore.load(session, self.run_id)
+        if bootstrap_result.get("status") == RunStatus.FAILED:
+            print(f"[Main] Bootstrap failed for run {self.run_id} — not invoking graph.")
+            return
 
-    def _resume_from_snapshot(self, restored_state):
-        print(f"[Main] Reconstructed blackboard for run {self.run_id} from run_state snapshot "
-              f"(status={restored_state['status']}).")
+        self._invoke_graph(graph_input)
 
-        repo = restored_state["repo"]
-        objective = restored_state["objective"]
-        not_yet_cloned = restored_state["sandbox"].workspace_path == "/workspace"
-        no_plan_yet = restored_state["plan"] is None
+    def _load_checkpoint(self):
+        snapshot = graph.get_state(self.config)
+        return snapshot.values or None
+
+    def _apply_bootstrap_result(self, checkpoint_values, graph_input, bootstrap_result):
+        if checkpoint_values:
+            # Resuming: graph_input is None ("continue from checkpoint"). Push
+            # only the changed fields (CLI overrides + bootstrap's sandbox/status)
+            # — NOT the whole checkpoint dict. `messages` uses an `operator.add`
+            # reducer; re-submitting the existing list would double-append it.
+            graph.update_state(self.config, {
+                "repo": checkpoint_values["repo"],
+                "objective": checkpoint_values["objective"],
+                **bootstrap_result,
+            })
+            return graph_input
+        # Fresh run: graph_input IS the seed state — merge bootstrap's result
+        # (sandbox/status) into it before it becomes the graph's initial input.
+        return {**graph_input, **bootstrap_result}
+
+    def _run_bootstrap(self, state):
+        try:
+            return BootStrapper(state).invoke()
+        except RunExecutionError as e:
+            with db.session_scope() as session:
+                return RunFailureHandler.handle(session, self.run_id, Roles.BOOTSTRAPPER.value, state, e)
+
+    def _resume_from_checkpoint(self, checkpoint_values):
+        print(f"[Main] Resuming run {self.run_id} from checkpoint "
+              f"(status={checkpoint_values['status']}).")
+
+        repo = checkpoint_values["repo"]
+        objective = checkpoint_values["objective"]
+        not_yet_cloned = checkpoint_values["sandbox"].workspace_path == "/workspace"
+        no_plan_yet = checkpoint_values["plan"] is None
 
         repo = self._override_repo_url(repo, not_yet_cloned)
         repo = self._override_base_sha(repo, not_yet_cloned)
-        objective = self._override_task_description(objective, no_plan_yet, restored_state)
+        objective = self._override_task_description(objective, no_plan_yet, checkpoint_values)
 
-        restored_state["repo"] = repo
-        restored_state["objective"] = objective
-        return restored_state
+        checkpoint_values["repo"] = repo
+        checkpoint_values["objective"] = objective
+        return checkpoint_values
 
     def _override_repo_url(self, repo, not_yet_cloned: bool):
         args = self.args
@@ -163,8 +213,8 @@ class RunLauncher:
             status=RunStatus.NEEDS_BOOTSTRAP,
         )
 
-    def _invoke_graph(self, initial_state) -> None:
-        result = graph.invoke(initial_state)
+    def _invoke_graph(self, graph_input) -> None:
+        result = graph.invoke(graph_input, config=self.config)
         print("Graph execution finished. Final state:")
         print(result)
 

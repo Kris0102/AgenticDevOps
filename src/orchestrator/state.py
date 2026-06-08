@@ -1,7 +1,7 @@
 import operator
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Literal, Optional, cast
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
@@ -254,86 +254,6 @@ class BlackboardState(TypedDict):
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def merge_state(state: BlackboardState, partial: Dict[str, Any]) -> BlackboardState:
-    """Merge a node's partial-update dict into the current state, preserving the
-    BlackboardState TypedDict shape for the type checker (graph.invoke does the
-    same shallow merge internally — this just lets us see the merged view early,
-    e.g. to snapshot it before the framework applies it)."""
-    return cast(BlackboardState, {**state, **partial})
-
-
-def blackboard_state_to_dict(state: BlackboardState) -> Dict[str, Any]:
-    """Serialize BlackboardState to a JSON-safe dict for run_state.state_json.
-
-    `messages` is excluded — it's per-step working memory (langgraph appends to
-    it automatically) and is reset to [] on reconstruction, not persisted.
-    """
-    plan = state["plan"]
-    result = state["result"]
-    return {
-        "schema_version": state["schema_version"],
-        "run_id": state["run_id"],
-        "created_at": state["created_at"],
-        "updated_at": state["updated_at"],
-        "trigger": state["trigger"].model_dump(mode="json"),
-        "repo": state["repo"].model_dump(mode="json"),
-        "sandbox": state["sandbox"].model_dump(mode="json"),
-        "objective": state["objective"].model_dump(mode="json"),
-        "constraints": state["constraints"].model_dump(mode="json"),
-        "policy": state["policy"].model_dump(mode="json"),
-        "status": state["status"].value,
-        "phase": state["phase"],
-        "iteration": state["iteration"],
-        "plan": plan.model_dump(mode="json") if plan else None,
-        "microtasks": [mt.model_dump(mode="json") for mt in state["microtasks"]],
-        "current_microtask_id": state["current_microtask_id"],
-        "evidence": state["evidence"].model_dump(mode="json"),
-        "artifacts_index": [a.model_dump(mode="json") for a in state["artifacts_index"]],
-        "reflections": [r.model_dump(mode="json") for r in state["reflections"]],
-        "security": state["security"].model_dump(mode="json"),
-        "hitl": state["hitl"].model_dump(mode="json"),
-        "result": result.model_dump(mode="json") if result else None,
-        "events": state["events"].model_dump(mode="json"),
-        "error_logs": state["error_logs"],
-    }
-
-
-def blackboard_state_from_dict(data: Dict[str, Any]) -> BlackboardState:
-    """Rehydrate a BlackboardState from a run_state.state_json snapshot.
-
-    `messages` is reset to [] — ephemeral working memory, never persisted.
-    """
-    plan = data.get("plan")
-    result = data.get("result")
-    return BlackboardState(
-        schema_version=data["schema_version"],
-        run_id=data["run_id"],
-        created_at=data["created_at"],
-        updated_at=data["updated_at"],
-        trigger=Trigger(**data["trigger"]),
-        repo=Repo(**data["repo"]),
-        sandbox=Sandbox(**data["sandbox"]),
-        objective=Objective(**data["objective"]),
-        constraints=Constraints(**data["constraints"]),
-        policy=Policy(**data["policy"]),
-        status=RunStatus(data["status"]),
-        phase=data.get("phase"),
-        iteration=data["iteration"],
-        plan=Plan(**plan) if plan else None,
-        microtasks=[Microtask(**mt) for mt in data.get("microtasks", [])],
-        current_microtask_id=data.get("current_microtask_id"),
-        evidence=Evidence(**data["evidence"]),
-        artifacts_index=[Artifact(**a) for a in data.get("artifacts_index", [])],
-        reflections=[Reflection(**r) for r in data.get("reflections", [])],
-        security=Security(**data["security"]),
-        hitl=HITL(**data["hitl"]),
-        result=Result(**result) if result else None,
-        events=EventsPointer(**data["events"]),
-        messages=[],
-        error_logs=data.get("error_logs", []),
-    )
 
 
 def create_initial_blackboard_state(

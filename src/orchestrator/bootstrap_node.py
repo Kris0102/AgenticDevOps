@@ -5,9 +5,8 @@ from typing import Any, Dict
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
-from db.run_state import RunStateStore
 from Exceptions.RunExecutionError import RunExecutionError
-from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox, merge_state
+from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox
 from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
 from tool_gateway.Roles import Roles
 
@@ -69,18 +68,14 @@ class BootStrapper:
                     "from": status.value,
                     "to": RunStatus.NEEDS_PLAN.value,
                 })
-                RunStateStore.save(session, run_id, merge_state(self.state, result))
 
             return result
 
         # Resume path — repo already cloned (workspace_path != WORKDIR), sandbox
         # healthy, keep current status + preserve existing workspace_path
-        result = {
+        return {
             "sandbox": self._sandbox(sandbox_id, sandbox_state.workspace_path),
         }
-        with db.session_scope() as session:
-            RunStateStore.save(session, run_id, merge_state(self.state, result))
-        return result
 
     @staticmethod
     def _sandbox(sandbox_id: str, workspace_path: str) -> Sandbox:

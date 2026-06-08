@@ -7,3 +7,5 @@ class Roles(enum.Enum):
     REVIEWER = "reviewer"
     CODER = "coder"
     TESTER = "tester"
+    ORCHESTRATOR = "orchestrator"
+    BOOTSTRAPPER = "bootstrapper"

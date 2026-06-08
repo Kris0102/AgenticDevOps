@@ -270,8 +270,23 @@ The goal is **zero ambiguity**. This document defines:
 
 ### 5.2 Plan Reviewer (Critic)
 
-**Input:** draft plan  
-**Output:** approve OR critique with concrete missing steps/risks
+**Input:** draft plan + microtasks
+
+**Output:** approve OR critique focused on **plan *quality and detail*** — the
+judgment calls a deterministic check cannot make:
+- Is each microtask **detailed enough** for the Coder to act without guessing
+  (concrete file paths, approach, types/contracts spelled out — not vague intent)?
+- Is the **ordering correct** (no microtask depends on something a later one creates)?
+- Are there **missing steps or edge cases** the plan doesn't cover?
+- Are the **acceptance criteria observable** (testable behaviour, not "file exists")?
+
+**Explicitly NOT this agent's job:** structural/schema validation (every microtask has
+`acceptance_criteria`, `target_files` non-empty and ≤3, `description` length, etc.).
+That is **deterministic** and owned by the Planner's own output validator — re-checking
+it here would be redundant LLM judgment over something already grounded (§2.2). The
+Reviewer should be able to *assume* structural soundness and spend its judgment on the
+genuinely-probabilistic question: "would a competent engineer find this plan clear and
+complete enough to start coding from?"
 
 ### 5.3 Coder (Actor)
 
@@ -293,10 +308,21 @@ The goal is **zero ambiguity**. This document defines:
 **Input:** failing logs + code diff + relevant snippets  
 **Output:** root-cause analysis + minimal fix instructions
 
-### 5.6 Security/Policy Auditor
+### 5.6 Security/Policy Auditor (OPTIONAL — gated by `policy.security_audit_enabled`)
 
-**Input:** final diff + scanner outputs  
-**Output:** pass/fail + mitigation plan + risk summary
+**Status:** not part of the v1 required pipeline. Enabled per-run via policy, not
+hardwired into the state machine — a run with `security_audit_enabled=false` routes
+`READY_FOR_PR` directly from Phase D step 15 (final test), skipping `NEEDS_SECURITY_AUDIT`
+entirely. Build this when there's a concrete need for it (a target repo/org that
+requires it), not speculatively — same reasoning as deferring the Context Engine (§9).
+
+**Input:** final diff + scanner outputs
+
+**Output:** pass/fail + mitigation plan + risk summary. The pass/fail decision itself
+must remain **deterministic** (scanner exit codes vs policy thresholds — §2.2): the LLM
+narrates *why*, it does not *decide*. An LLM-only security gate would be exactly the
+"LLM-only review" the grounded-verification principle forbids — and getting a security
+gate wrong is costlier than getting a test-pass wrong.
 
 ### 5.7 Deployer (Optional)
 
@@ -335,31 +361,73 @@ The goal is **zero ambiguity**. This document defines:
 #### Phase B — Planning (Actor–Critic loop)
 
 6. Orchestrator invokes Planner → writes draft microtasks to Episodic Memory.
-7. Orchestrator invokes Plan Reviewer:
+7. Orchestrator invokes Plan Reviewer (judges **detail and completeness**, not
+   structure — see §5.2):
    - If rejected: record critique event; go back to step 6.
-   - If approved: freeze microtask list; set `status=NEEDS_CODE`.
+   - If approved: freeze microtask list.
+8. **HITL checkpoint** (if `"plan" in policy.hitl_checkpoints`): set
+   `status=NEEDS_HITL_APPROVAL`, pause for human approval of the *frozen plan* before
+   any code is written. This is the cheapest possible veto point — rejecting here costs
+   one planning pass; rejecting after Phase C has run costs the entire execution loop.
+   If approved (or not configured): set `status=NEEDS_CODE`.
 
 **Stop condition (required):**
 
 - Max plan iterations (e.g., 3). If exceeded → require HITL or fail the run.
 
-#### Phase C — Microtask Execution loop
+#### Phase C — Microtask Execution loop (strictly sequential)
 
-For each microtask in order: 8. Orchestrator sets `current_microtask` and sets `status=NEEDS_CODE`. 9. Invoke Coder to implement only that microtask in Sandbox. 10. Context Engine syncs changed files into Semantic Memory (`namespace=workspace, run_id=<run_id>`). 11. Orchestrator sets `status=NEEDS_TEST`. 12. Invoke Tester: - run format/lint/typecheck - run microtask-focused tests - record artifacts/logs 13. If fail → Orchestrator sets `status=REFLECT` and invokes Reflector: - persist fix instructions - increment `attempts` - go back to step 9 (Coder) 14. If pass → mark microtask `DONE` and continue with next microtask.
+Microtasks execute **one at a time, in `idx` order** — never in parallel, never
+reordered at runtime. `Microtask.dependencies` is **reserved for a possible future
+parallel scheduler and is not consulted by this loop**; until such a scheduler is
+designed (a substantially larger architectural commitment — separate sandboxes per
+parallel branch, workspace-merge strategy, parallel verification), treat the field as
+informational only. This keeps the audit trail linear and trivial to reason about: one
+microtask, one diff, one verification cycle, in order.
+
+For each microtask in order:
+
+8. Orchestrator sets `current_microtask` and sets `status=NEEDS_CODE`.
+9. Invoke Coder to implement only that microtask in Sandbox.
+10. **HITL checkpoint** (if `"code" in policy.hitl_checkpoints`): pause at
+    `NEEDS_HITL_APPROVAL` for human review of the diff before testing burns more compute
+    on a change a human would reject outright.
+11. Context Engine syncs changed files into Semantic Memory (`namespace=workspace, run_id=<run_id>`).
+12. Orchestrator sets `status=NEEDS_TEST`.
+13. Invoke Tester:
+    - run format/lint/typecheck
+    - run microtask-focused tests
+    - record artifacts/logs
+14. If fail → Orchestrator sets `status=REFLECT` and invokes Reflector:
+    - persist fix instructions
+    - increment `attempts`
+    - go back to step 9 (Coder)
+15. If pass → **HITL checkpoint** (if `"test" in policy.hitl_checkpoints`): pause for
+    human confirmation the verified change is acceptable before moving on — then mark
+    microtask `DONE` and continue with next microtask.
 
 **Stop condition (required):**
 
 - Max attempts per microtask (e.g., 5). If exceeded → require HITL, re-plan, or fail.
 
+> **General HITL pattern:** every phase boundary in this workflow *may* be gated by
+> adding its phase name to `policy.hitl_checkpoints` (a per-run, per-risk-level choice —
+> see §HITL below). All gates reuse the same `status=NEEDS_HITL_APPROVAL` /
+> `hitl.pending_approvals[]` mechanism; there is exactly one HITL code path, configured
+> differently per run. A `risk_level=high` run might gate every phase; a trusted
+> low-risk run might gate only `merge`.
+
 #### Phase D — Final Validation + Security
 
-15. Tester runs full regression suite / build on the entire workspace.
-16. Orchestrator sets `status=NEEDS_SECURITY_AUDIT` and invokes Auditor.
-17. If security fails:
-    - create remediation microtask(s)
-    - return to Phase C
-18. If security passes:
-    - set `status=READY_FOR_PR`
+16. Tester runs full regression suite / build on the entire workspace.
+17. **If `policy.security_audit_enabled`:** Orchestrator sets
+    `status=NEEDS_SECURITY_AUDIT` and invokes Auditor (optional agent — see §5.6).
+    - If security fails: create remediation microtask(s), return to Phase C.
+    - If security passes: set `status=READY_FOR_PR`.
+
+    **Else (default — Auditor disabled):** set `status=READY_FOR_PR` directly; security
+    scanning is whatever `policy.security_scans_required` wires into the Tester's
+    deterministic checks (no dedicated agent/LLM step).
 
 #### Phase E — PR + CI loop
 

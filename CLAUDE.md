@@ -1,0 +1,209 @@
+
+///# AgenticDevOps — Project Guide for Claude
+
+## What this is
+Multi-agent system that autonomously plans, implements, tests, and proposes code changes to an existing repo. Triggered by CLI (MVP) or GitHub webhook (future). Uses Docker-per-run sandboxing and Postgres for full audit trail.
+
+## Key architecture decisions
+- **Blackboard (run_state)**: single JSON state owned exclusively by Orchestrator. Agents never write state directly.
+- **Grounded verification**: code is only accepted when deterministic checks (lint/tests/build) pass. No LLM-only review.
+- **Tool Gateway**: all environment actions (file reads, shell commands, git) go through `ToolGateway` — deny-by-default, every call logged.
+- **Star topology**: all agent-to-agent communication is mediated by Orchestrator via blackboard, not direct calls.
+- **Docker-per-run**: each run gets its own container. Sandbox is the source of truth for code during a run.
+- **Bootstrap always first**: `bootstrapper_node` runs unconditionally on every invocation (upserts Run, ensures sandbox running, clones on first run). No side effects in routers.
+- **DB-backed sandbox registry**: sandbox container IDs stored in `sandboxes` table — survives process restarts, no in-memory dict.
+
+## Project layout
+```
+src/
+  main.py                        # CLI entrypoint
+  orchestrator/
+    orchestrator.py              # LangGraph graph + routing
+    state.py                     # Pydantic BlackboardState + all models
+    bootstrap_node.py            # BootStrapper class — always runs first
+  agents/
+    Planning/
+      Planner/
+        planner.py                 # Orchestration only: investigate → synthesize → validate (with retry)
+        planner_tools.py           # Tool wrappers for planner
+        quality.py                 # _quality_report / _normalize_output — microtask quality gate
+        plan_output.py             # create_plan_file_as_output — debug plan dump to disk
+        investigation_support.py   # _default_max_tool_steps, _investigation_recursion_limit, _last_ai_text
+        prompts/                   # Prompt templates (investigator.py, synthesis.py)
+      Reviewer/
+        reviewer.py                # Plan Reviewer (stub)
+    Implementing/
+      coder.py                   # Coder (stub)
+      tester.py                  # Tester (stub)
+  Exceptions/
+    BadMicroTaskExceptions.py    # BadMicroTaskException — raised by quality.py, caught+retried in Planner
+  tool_gateway/
+    gateway.py                   # ToolGateway: allowlist enforcement (ROLE_PERMISSIONS, ALLOWED_SANDBOX_CMDS) + audit logging
+    Roles.py                     # AgentRole enum
+  sandbox/
+    sandbox_tools.py             # DockerSandboxTools: create/exec/clone/destroy (DB-backed)
+    Tools.py                     # Tools enum — sandbox tool identifiers, dispatched via match/case in gateway
+    Dockerfile                   # Base sandbox image (agentic-sandbox:0.1)
+  db/
+    db.py                        # SQLAlchemy engine + session_scope
+    event_log.py                 # EventLogger — centralized Event-row construction (session.add only, never commit)
+    models.py                    # ORM models: Run, RunState, Event, Artifact, Sandbox, MicrotaskRecord
+    migrations/                  # Alembic migrations
+  providers/                     # Pluggable LLM provider interface (TODO: implement)
+deploy/
+  docker-compose.yml             # Postgres + pgAdmin + sandbox image builder
+scripts/
+  deleting_db_data_episodic_memory.sh  # Wipe all run data (keeps schema)
+  snapshot_db.sh                       # Dump DB to scripts/snapshots/<label>.sql
+  load_snapshot.sh                     # Restore DB from snapshot
+docs/
+  ARCHITECTURE_preview.md        # Full system spec (state machine, data flow)
+  Design_preview.md              # Agent patterns and cognitive architecture
+  MCP_AND_TOOLS.md               # Tool Gateway + MCP contracts
+  Blackboard.md                  # Blackboard schema + event type registry
+  POC_instructions.md            # Step-by-step PoC build guide
+  instructions.md                # MVP implementation plan
+
+  decisions/                     # ADRs — WHY decisions were made (read this for cross-session context, see below)
+```
+
+## Persistent memory across sessions: `docs/decisions/`
+This file (`CLAUDE.md`) tells you **what's true now** — it gets rewritten and loses
+history. `docs/decisions/` tells you **why** — append-only, dated ADRs (`NNNN-title.md`)
+that are never deleted, only superseded. Read it when starting fresh on this project;
+write to it (new `NNNN-title.md`, format in `docs/decisions/README.md`) whenever a
+non-obvious architectural decision is made, an audit finding gets actioned/deferred, or
+an alternative gets seriously considered and rejected — so the next session doesn't
+re-litigate it cold. See `docs/decisions/0001-architecture-audit-2026-06-07.md` for the
+first architecture audit and its remediation order.
+
+## Graph topology (current)
+```
+START → bootstrapper → phase_router → planner → END
+                                    ↘ coder → tester → (reflector | END)
+                                    ↘ tester
+
+plan_reviewer node exists but planner → END (dev shortcut, not yet wired to reviewer)
+```
+
+## Run the pipeline
+```bash
+# 1. Start Postgres
+docker compose -f deploy/docker-compose.yml up -d
+
+# 2. Build sandbox image (only when Dockerfile changes)
+docker compose -f deploy/docker-compose.yml --profile donotstart build sandbox-image-builder
+
+# 3. Run migrations
+cd /home/kristian/project/AgenticDevOps && venv/bin/alembic upgrade head
+
+# 4. Run
+cd src
+../venv/bin/python main.py \
+  --repo_url https://github.com/owner/repo \
+  --base-sha <SHA> \          # omit for brand-new repos with no commits
+  --task_description "Your task here"
+```
+
+## DB management scripts
+```bash
+# Wipe all data for a fresh run (keeps schema/migrations)
+./scripts/deleting_db_data_episodic_memory.sh
+
+# Save DB snapshot before a run
+./scripts/snapshot_db.sh <label>
+
+# Restore from snapshot
+./scripts/load_snapshot.sh scripts/snapshots/snapshot_<label>.sql
+```
+Scripts use `docker exec` into `deploy-postgres-1` — no local Postgres client needed.
+Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
+
+## Environment variables (`.env` in project root)
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Postgres connection string |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Used by DB scripts |
+| `CLUSTER_API_KEY` | API key for LLM cluster endpoint |
+| `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
+| `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
+| `PLANNER_MAX_SYNTHESIS_ATTEMPTS` | Max synthesis retries when `_normalize_output` raises `BadMicroTaskException` (default 3) — Planner feeds the validation error back into the next prompt as context |
+| `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
+| `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
+
+## LLM provider
+Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.153:3000/inference`) running `google/gemma-4-31B-it`. All agents should eventually use `providers/base.py` abstraction (not yet implemented).
+
+## DB schema (all tables)
+| Table | Purpose |
+|---|---|
+| `runs` | One row per run — repo_url, base_sha (nullable), status, timestamps |
+| `sandboxes` | Docker container ID per run — survives restarts |
+| `microtasks` | Planner output persisted after each plan — survives crashes |
+| `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |
+| `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. |
+| `run_state` | Blackboard JSON snapshots (table exists, not yet written) |
+
+Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 1.x `Column()` style — Pylance will report type errors.
+
+## Current implementation status
+| Component | Status |
+|---|---|
+| Blackboard / state models | Done |
+| DB schema + Alembic | Done |
+| DockerSandboxTools (DB-backed) | Done |
+| ToolGateway | Done |
+| Bootstrapper node | Done |
+| Planner (ReAct + structured output) | Done |
+| DB persistence (microtasks, events, artifacts, Run.status) | Done |
+| Plan Reviewer | Stub |
+| Coder | Stub |
+| Tester | Stub |
+| Reflector | Not started |
+| Context Engine (pgvector) | Not started |
+| GitOps (webhooks + PR) | Not started |
+| Provider abstraction | Not started |
+| `run_state` snapshots (table exists, writes missing) | Not started |
+| `reflections` DB table | Not started |
+
+## Known bugs / remaining TODOs (priority order)
+See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.
+1. **Stop conditions declared but never enforced** (must-fix, safety): `Constraints.max_total_iterations`/`max_microtask_attempts`/`Microtask.attempts` exist in the schema but `plan_verification_router`/`execution_verification_router` never read them — runaway-loop risk once real agents are wired in (`orchestrator.py:154-167`).
+2. **`run_state` never written** (must-fix, reproducibility): table + ORM model exist, but zero `session.add(RunState(...))` anywhere — a crash mid-run loses the blackboard entirely. Snapshot it alongside the existing `Run.status` update in each node.
+3. ~~**`ToolGateway` commits mid-transaction**~~ — **FIXED**: `_log_event` now delegates to `EventLogger.log()` (`db/event_log.py`), which only ever calls `session.add()`. Commit ownership correctly sits with the lending `session_scope()`.
+4. **`planner → END` shortcut**: real wire is `planner → plan_reviewer → coder → tester → (reflect | next_microtask)`.
+5. **`check_requested_path` dead code** (should-fix, security): defined in `gateway.py` but never called — `fs.read_file`/`fs.write_file` skip the sandbox-path-traversal check entirely.
+6. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
+7. **`reflections` table missing**: reflections only in LangGraph state (memory), lost on crash — depends on fix #2 landing first to be worth doing.
+8. **Coder / Tester / Reflector**: all stubs returning `{}`.
+
+## Coding conventions
+- All state mutations must go through the LangGraph node return dict — never mutate `state` in place.
+- Every tool invocation must emit a `tool.executed` or `tool.denied` event via `ToolGateway`.
+- Never construct `Event(...)` rows directly — use `EventLogger.log(session, run_id, actor, event_type, payload)` (`db/event_log.py`). It handles id generation + timestamp and only calls `session.add()` — keeps commit-boundary ownership with the caller's `session_scope()`.
+- Agents return `Dict[str, Any]` matching BlackboardState fields — only include changed keys.
+- Tool functions in `sandbox_tools.py` return `ExecResult` dataclasses — never raw strings.
+- New agents go in `src/agents/<Phase>/<agent_name>.py` and must be wired into `orchestrator.py`.
+- New tool types must be registered in `sandbox/Tools.py` (the `Tools` enum), and in `gateway.py`'s `ROLE_PERMISSIONS` / `ALLOWED_SANDBOX_CMDS` plus `Roles.py`.
+- Sandbox is always pre-created by `bootstrapper_node` — agent nodes must never call `sandbox_create()`. Get sandbox_id from `state.get("sandbox").sandbox_id`.
+- `Run.status` must be updated in DB whenever LangGraph status changes — do it in the node, not in a router.
+- Use OOP for new classes. 
+
+## Adding a new agent
+1. Create `src/agents/<Phase>/<name>.py` with a class that has `invoke(state: BlackboardState) -> Dict[str, Any]`
+2. Add a node wrapper in `orchestrator.py` following the `planner_node` pattern
+3. Register the node: `builder.add_node("<name>", <name>_node)`
+4. Wire edges and add routing logic if needed
+5. Define which tools the agent can access in `Roles.py`
+6. After `invoke()` returns: update `Run.status` in DB, emit lifecycle event, persist any new data
+
+## Event types (must use these for DB logging)
+See `docs/Blackboard.md` §6.7 for full registry. Key ones:
+- `run.created`, `run.status_changed`, `run.completed`, `run.failed`
+- `sandbox.created`, `sandbox.command_finished`
+- `repo.cloned`, `gitops.pr_created`
+- `plan.drafted`, `plan.reviewed`, `plan.approved`
+- `microtask.started`, `microtask.completed`, `microtask.failed`
+- `tool.executed`, `tool.denied`
+- `test.unit_completed`, `check.lint_completed`
+- `reflection.created`

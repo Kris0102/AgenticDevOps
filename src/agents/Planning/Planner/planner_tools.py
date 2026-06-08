@@ -3,10 +3,16 @@ import shlex
 from langchain_core.tools import BaseTool, StructuredTool
 
 from tool_gateway.gateway import ToolGateway
+from tool_gateway.Roles import Roles
+from sandbox.Tools import Tools
+from tool_gateway.gateway import ALLOWED_SANDBOX_CMDS
 
+
+# This can later be a MCP tool implementation for the Planner agent, exposing a safe interface to execute commands and read files from the Docker sandbox.
 class PlannerTools:
     def __init__(self, gateway: ToolGateway):
         self.gateway = gateway
+        self.role = Roles.PLANNER
 
     def build_tools(self) -> list[BaseTool]:
         execute_tool = StructuredTool.from_function(
@@ -15,7 +21,7 @@ class PlannerTools:
             description=(
                 "Run an allowlisted command inside the Docker sandbox at /workspace. "
                 "Pass a single argv string with no shell, pipes, or redirects. "
-                "Allowed bases: ls, find, grep, cat, git, python, pytest. "
+                "Allowed bases: " + ", ".join(ALLOWED_SANDBOX_CMDS) + ". "
                 "Examples: 'ls -la /workspace', 'grep -rn Planner src/'"
             ),
         )
@@ -35,8 +41,8 @@ class PlannerTools:
         cmd_list = shlex.split(command)
         
         result = self.gateway.execute_tool(
-            actor_role="PLANNER", 
-            tool_name="sandbox.run", 
+            actor_role=self.role, 
+            tool_name=Tools.SANDBOX_RUN, 
             args={"cmd": cmd_list}
         )
         if "error" in result:
@@ -50,8 +56,8 @@ class PlannerTools:
         # Note: check_requested_path should be inside gateway or we can omit it for now if not implemented.
         # Assuming execute_tool handles the policy checks:
         result = self.gateway.execute_tool(
-            actor_role="PLANNER",
-            tool_name="fs.read_file",
+            actor_role=self.role,
+            tool_name=Tools.FS_READ_FILE,
             args={"path": filepath}
         )
         if "error" in result:

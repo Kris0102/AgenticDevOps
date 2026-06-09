@@ -9,3 +9,4 @@ class Roles(enum.Enum):
     TESTER = "tester"
     ORCHESTRATOR = "orchestrator"
     BOOTSTRAPPER = "bootstrapper"
+    HUMAN = "human"

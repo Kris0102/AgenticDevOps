@@ -2,10 +2,12 @@
 from argparse import ArgumentParser
 import uuid
 import os
-
+from typing import Dict, Any, Optional
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
 
 from db.db import db
+from orchestrator.hitl import HitlDecision, HitlResume
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.bootstrap_node import BootStrapper
 from orchestrator.checkpointer import setup_checkpointer
@@ -27,6 +29,10 @@ parser.add_argument("--run_id", type=str, required=False, help="Unique identifie
 parser.add_argument("--repo_url", type=str, required=True, help="URL of the repository to operate on.")
 parser.add_argument("--base-sha", type=str, required=False, default=None, help="Base commit SHA. Omit for brand-new repos with no commits.")
 parser.add_argument("--task_description", type=str, required=True, help="Natural language description of the task to accomplish.")
+parser.add_argument("--hitl-checkpoints", type=str, default="", help="Comma-separated phases that pause for human approval, e.g. 'plan,code,test'. Empty = no mid-run gates.")
+parser.add_argument("--approve", action="store_true", help="Resume a run paused at a HITL checkpoint by approving it.")
+parser.add_argument("--reject", action="store_true", help="Resume a run paused at a HITL checkpoint by rejecting it (requires --note).")
+parser.add_argument("--note", type=str, default=None, help="Reviewer feedback. Required with --reject; optional with --approve.")
 
 args = parser.parse_args()
 
@@ -76,7 +82,42 @@ class RunLauncher:
             print(f"[Main] Bootstrap failed for run {self.run_id} — not invoking graph.")
             return
 
+        # If the run is paused at a HITL checkpoint and a decision flag was passed,
+        # resume with a Command instead of continuing the normal flow.
+        hitl_resume = self._build_hitl_resume()
+        if hitl_resume is not None:
+            graph_input = hitl_resume
+
         self._invoke_graph(graph_input)
+
+    def _build_hitl_resume(self):
+        # Scripted/crash-recovery path: user re-invoked the process after it stopped
+        # (crash, Ctrl+C, timeout) while paused at a HITL gate. Builds a Command to
+        # inject as graph_input before _invoke_graph, bypassing the interactive loop.
+        # Normal in-process HITL is handled by _prompt_hitl_decision() inside _invoke_graph.
+        if not (self.args.approve or self.args.reject):
+            return None
+        if self.args.approve and self.args.reject:
+            raise SystemExit("[Main] Pass only one of --approve / --reject.")
+        if self.args.reject and not self.args.note:
+            raise SystemExit("[Main] --reject requires --note explaining why.")
+
+        if not self._has_pending_interrupt():
+            print(f"[Main] WARNING: run {self.run_id} is not paused at a HITL checkpoint — "
+                  f"ignoring --approve/--reject.")
+            return None
+
+        decision = HitlResume(
+            decision=HitlDecision.APPROVE if self.args.approve else HitlDecision.REJECT,
+            note=self.args.note,
+            reviewer="cli-user",
+        )
+        print(f"[Main] Resuming HITL checkpoint with decision={decision.decision.value!r}.")
+        return Command(resume=decision.model_dump(mode="json"))
+
+    def _has_pending_interrupt(self) -> bool:
+        snapshot = graph.get_state(self.config)
+        return any(task.interrupts for task in snapshot.tasks)
 
     def _load_checkpoint(self):
         snapshot = graph.get_state(self.config)
@@ -194,10 +235,12 @@ class RunLauncher:
             allowed_network="none",
             risk_level="medium"
         )
+        hitl_checkpoints = [p.strip() for p in self.args.hitl_checkpoints.split(",") if p.strip()]
         policy = Policy(
             require_hitl_for_pr=True,
             require_hitl_for_merge=True,
             require_hitl_for_prod_deploy=True,
+            hitl_checkpoints=hitl_checkpoints,
             security_scans_required=["bandit", "safety"],
             ci_required=True,
             protected_branches=["main", "master"]
@@ -214,9 +257,66 @@ class RunLauncher:
         )
 
     def _invoke_graph(self, graph_input) -> None:
-        result = graph.invoke(graph_input, config=self.config)
-        print("Graph execution finished. Final state:")
-        print(result)
+        # Drives the graph to completion, handling HITL checkpoints interactively.
+        # If the run was already paused (scripted path), graph_input is a Command(resume=...)
+        # and the loop runs once then continues. If the run hits a gate mid-flight,
+        # _prompt_hitl_decision() prompts the user in-process and resumes without re-invoking.
+        current_input = graph_input
+        while True:
+            graph.invoke(current_input, config=self.config)
+            if not self._has_pending_interrupt():
+                print("[Main] Run complete.")
+                break
+            resume_cmd = self._prompt_hitl_decision()
+            if resume_cmd is None:
+                break
+            current_input = resume_cmd
+
+    def _prompt_hitl_decision(self) -> "Optional[Command]":
+        # Interactive half of the HITL mechanism. The graph suspended at interrupt() in
+        # orchestrator._hitl; we read the interrupt payload from the checkpoint, prompt
+        # the user, and return Command(resume=HitlResume.model_dump()) which LangGraph
+        # delivers back to interrupt()'s return value when graph.invoke() is called again.
+        snapshot = graph.get_state(self.config)
+        payload: dict = {}
+        for task in snapshot.tasks:
+            for intr in task.interrupts:
+                if isinstance(intr.value, dict):
+                    payload = intr.value
+                    break
+
+        phase = payload.get("phase", "?")
+        prompt_text = payload.get("prompt", "")
+        plan_line = next((l for l in prompt_text.splitlines() if "Plan file:" in l), None)
+
+        print("\n" + "=" * 60)
+        print(f"  HITL checkpoint — phase: {phase}")
+        if plan_line:
+            print(f"  {plan_line}")
+        print("=" * 60)
+
+        while True:
+            raw = input("  Decision [approve/reject]: ").strip().lower()
+            if raw not in ("approve", "reject"):
+                print("  Type 'approve' or 'reject'.")
+                continue
+            if raw == "reject":
+                note = input("  Feedback (required): ").strip()
+                if not note:
+                    print("  Feedback is required for reject.")
+                    continue
+            else:
+                note_input = input("  Note (optional, press enter to skip): ").strip()
+                note = note_input or None
+            break
+
+        decision = HitlResume(
+            decision=HitlDecision.APPROVE if raw == "approve" else HitlDecision.REJECT,
+            note=note,
+            reviewer="cli-user",
+        )
+        print("=" * 60 + "\n")
+        return Command(resume=decision.model_dump(mode="json"))
 
 
 if __name__ == "__main__":

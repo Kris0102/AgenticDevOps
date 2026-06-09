@@ -2,6 +2,7 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 import os
 import sys
 
@@ -9,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orchestrator.state import BlackboardState, RunStatus
 from orchestrator.checkpointer import checkpointer
+from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
 from orchestrator.planner_node import PlannerRunner
 
 load_dotenv()
@@ -50,19 +52,33 @@ class OrchestratorGraph:
 
     def _plan_reviewer(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Plan Reviewer (Critic)...")
-        return {}
+        return HitlGate.apply(Phase.PLAN, {"status": RunStatus.NEEDS_CODE}, state)
 
     def _coder(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Coder...")
-        return {"status": RunStatus.NEEDS_TEST}
+        return HitlGate.apply(Phase.CODE, {"status": RunStatus.NEEDS_TEST}, state)
 
     def _tester(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Tester / Sandbox Runner...")
-        return {}
+        return HitlGate.apply(Phase.TEST, {}, state)
 
     def _reflector(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Reflector...")
         return {}
+
+    def _hitl(self, state: BlackboardState) -> Dict[str, Any]:
+        """Shared HITL pause point. Suspends the graph via langgraph `interrupt()`
+        until a human decision arrives (Command(resume={...})). Reject without a
+        note is invalid — re-interrupt rather than route on un-actionable input."""
+        print("[Orchestrator] HITL checkpoint — awaiting human decision...")
+        payload = HitlGate.request_payload(state)
+        while True:
+            decision = HitlResume.model_validate(interrupt(payload.model_dump(mode="json")))
+            if decision.decision == HitlDecision.REJECT and not decision.note:
+                payload = payload.model_copy(update={"error": "reject requires a note — resubmit with --note"})
+                continue
+            break
+        return HitlGate.resolve(state, decision)
 
     # ==========================================
     # 2. Routing Logic
@@ -85,10 +101,12 @@ class OrchestratorGraph:
     @staticmethod
     def _plan_review_router(state: BlackboardState) -> str:
         """Planning Loop verdict — expressed as `status`, not a side-channel field:
-        NEEDS_PLAN means 'revise and resubmit' (back to planner), NEEDS_CODE means
-        'frozen, proceed' (forward to coder). Any other status (FAILED,
-        NEEDS_HITL_APPROVAL, ...) halts at END rather than guessing a direction."""
+        NEEDS_HITL_APPROVAL means a 'plan' gate fired (→ hitl); NEEDS_PLAN means
+        'revise and resubmit' (back to planner); NEEDS_CODE means 'frozen, proceed'
+        (forward to coder). Any other status (FAILED, ...) halts at END."""
         status = state.get("status")
+        if status == RunStatus.NEEDS_HITL_APPROVAL:
+            return "hitl"
         if status == RunStatus.NEEDS_PLAN:
             return "planner"
         if status == RunStatus.NEEDS_CODE:
@@ -96,13 +114,44 @@ class OrchestratorGraph:
         return END
 
     @staticmethod
+    def _coder_router(state: BlackboardState) -> str:
+        """Coder verdict: NEEDS_HITL_APPROVAL means a 'code' gate fired (→ hitl);
+        NEEDS_TEST means 'verify this diff' (→ tester). Any other status halts at END."""
+        status = state.get("status")
+        if status == RunStatus.NEEDS_HITL_APPROVAL:
+            return "hitl"
+        if status == RunStatus.NEEDS_TEST:
+            return "tester"
+        return END
+
+    @staticmethod
     def _tester_router(state: BlackboardState) -> str:
         """Execution (Grounded) Loop verdict. Tester only ever reports grounded
         results — it never talks to Coder directly (no blind retries off an
-        undiagnosed failure). REFLECT means 'tests failed, diagnose root cause
-        first' → reflector, which is the SOLE path back to coder. Any other status
-        (DONE, FAILED, NEEDS_HITL_APPROVAL, ...) halts at END."""
-        if state.get("status") == RunStatus.REFLECT:
+        undiagnosed failure). NEEDS_HITL_APPROVAL means a 'test' gate fired (→ hitl);
+        REFLECT means 'tests failed, diagnose root cause first' → reflector, the SOLE
+        path back to coder. Any other status (DONE, FAILED, ...) halts at END."""
+        status = state.get("status")
+        if status == RunStatus.NEEDS_HITL_APPROVAL:
+            return "hitl"
+        if status == RunStatus.REFLECT:
+            return "reflector"
+        return END
+
+    @staticmethod
+    def _hitl_router(state: BlackboardState) -> str:
+        """Post-decision dispatch out of the hitl node — `resolve()` has already set
+        the loop-back/forward status: approve advances (NEEDS_CODE→coder,
+        NEEDS_TEST→tester), reject loops back (NEEDS_PLAN→planner, REFLECT→reflector).
+        DONE / anything else halts at END."""
+        status = state.get("status")
+        if status == RunStatus.NEEDS_PLAN:
+            return "planner"
+        if status == RunStatus.NEEDS_CODE:
+            return "coder"
+        if status == RunStatus.NEEDS_TEST:
+            return "tester"
+        if status == RunStatus.REFLECT:
             return "reflector"
         return END
 
@@ -118,38 +167,48 @@ class OrchestratorGraph:
         builder.add_node("coder", self._coder)
         builder.add_node("tester", self._tester)
         builder.add_node("reflector", self._reflector)
+        builder.add_node("hitl", self._hitl)
 
         # bootstrapper runs outside the checkpointed graph (RunLauncher calls it
         # directly, every invocation) — the graph starts unconditionally at planner.
         builder.add_edge(START, "planner")
 
-        # Planning loop: planner → reviewer → (planner | coder)
+        # Planning loop: planner → reviewer → (planner | coder), gated by `hitl`
         builder.add_conditional_edges(
             "planner",
             self._status_gate({RunStatus.NEEDS_REVIEW}, "plan_reviewer"),
-            {"plan_reviewer": "plan_reviewer", END: END},
+            {"plan_reviewer": "plan_reviewer", END: END}, # all possible states after planner node 
         )
         builder.add_conditional_edges(
             "plan_reviewer",
             self._plan_review_router,
-            {"planner": "planner", "coder": "coder", END: END},
+            {"hitl": "hitl", "planner": "planner", "coder": "coder", END: END}, # all possible states after plan reviewer node
         )
 
-        # Execution loop: coder → tester → reflector → coder
+        # Execution loop: coder → tester → reflector → coder, gated by `hitl`
         builder.add_conditional_edges(
             "coder",
-            self._status_gate({RunStatus.NEEDS_TEST}, "tester"),
-            {"tester": "tester", END: END},
+            self._coder_router,
+            {"hitl": "hitl", "tester": "tester", END: END},
         )
         builder.add_conditional_edges(
             "tester",
             self._tester_router,
-            {"reflector": "reflector", END: END},
+            {"hitl": "hitl", "reflector": "reflector", END: END},
         )
         builder.add_conditional_edges(
             "reflector",
             self._status_gate({RunStatus.NEEDS_CODE}, "coder"),
             {"coder": "coder", END: END},
+        )
+
+        # Shared HITL gate: suspends via interrupt(), then dispatches on the
+        # human-resolved status (approve advances, reject loops back).
+        builder.add_conditional_edges(
+            "hitl",
+            self._hitl_router,
+            {"planner": "planner", "coder": "coder", "tester": "tester",
+             "reflector": "reflector", END: END},
         )
 
         return builder

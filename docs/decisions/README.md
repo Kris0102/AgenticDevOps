@@ -51,3 +51,4 @@ What this makes easier, harder, or newly possible. What it costs.
 | [0003](0003-event-logger-centralization.md) | Centralize Event-row construction in `EventLogger`; close audit finding #3 (gateway mid-transaction commit) | accepted |
 | [0004](0004-pr9-review-followup-deferrals.md) | PR #9 review follow-up: snapshot persistence deferrals (RunStateStore generalization, cost, merge_state) | accepted |
 | [0005](0005-bootstrap-outside-checkpointed-graph.md) | Migrate to LangGraph PostgresSaver checkpointer; run Bootstrap outside the graph | accepted |
+| [0006](0006-hitl-via-native-interrupt.md) | Mid-run HITL gates via native LangGraph `interrupt()` (plan/code/test, stage-dependent reject) | accepted |

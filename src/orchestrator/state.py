@@ -48,6 +48,8 @@ class EventType(str, Enum):
     RUN_FAILED = "run.failed"
     TOOL_EXECUTED = "tool.executed"
     TOOL_DENIED = "tool.denied"
+    HITL_REQUESTED = "hitl.requested"
+    HITL_DECIDED = "hitl.decided"
 
     def __str__(self) -> str:
         return self.value
@@ -103,6 +105,24 @@ class Policy(BaseModel):
     # off by default; Phase D routes READY_FOR_PR directly when disabled.
     security_audit_enabled: bool = False
 
+class FeedbackSource(str, Enum):
+    HUMAN = "human"
+    REVIEWER = "reviewer"
+
+class FeedbackDecision(str, Enum):
+    APPROVE = "approve"
+    REJECT = "reject"
+
+class ReviewFeedback(BaseModel):
+    """One verdict on a plan — from the LLM Plan Reviewer or a human HITL reviewer.
+    The planner reads these on a re-plan to revise rather than regenerate blind.
+    This is used for the HITL rejection notes which are then injected into the planner's revision context.
+    """
+    decision: FeedbackDecision
+    source: FeedbackSource
+    notes: str
+    ts: str
+
 class Plan(BaseModel):
     summary: str
     architecture_notes: str
@@ -110,7 +130,7 @@ class Plan(BaseModel):
     assumptions: List[str]
     risks: List[str]
     open_questions: List[str]
-    review_feedback: List[Dict[str, Any]] = Field(default_factory=list)
+    review_feedback: List[ReviewFeedback] = Field(default_factory=list)
 
 class Microtask(BaseModel):
     """A single deterministic objective given to the execution loop."""
@@ -179,9 +199,23 @@ class Security(BaseModel):
     final_decision: Optional[str] = None
     notes: Optional[str] = None
 
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+class PendingApproval(BaseModel):
+    """A single HITL gate request, recorded when a phase pauses for human approval."""
+    approval_id: str
+    type: str  # gated phase name — matches a policy.hitl_checkpoints entry ("plan"/"code"/"test")
+    requested_at: str
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    reviewer: Optional[str] = None
+    notes: Optional[str] = None
+
 class HITL(BaseModel):
     required: bool
-    pending_approvals: List[Dict[str, Any]] = Field(default_factory=list)
+    pending_approvals: List[PendingApproval] = Field(default_factory=list)
 
 class Result(BaseModel):
     outcome: str

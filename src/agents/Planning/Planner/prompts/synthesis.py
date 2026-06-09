@@ -6,7 +6,9 @@ def build_synthesis_prompt(
     investigation_summary: str,
     schema_json: Dict[str, Any],
     previous_attempt_feedback: Optional[str] = None,
+    revision_context: Optional[str] = None,
 ) -> str:
+    # Machine quality-gate feedback ("too vague", normalizer failure)
     feedback_block = ""
     if previous_attempt_feedback:
         feedback_block = f"""
@@ -15,6 +17,19 @@ Your last output failed quality validation for these reasons:
 {previous_attempt_feedback}
 
 Produce a NEW plan that corrects every issue above. Do not repeat the same vague wording.
+"""
+
+    # Human/reviewer directional feedback ("wrong approach") — distinct from quality-gate
+    revision_block = ""
+    if revision_context:
+        revision_block = f"""
+== REVISION PASS — PRIOR PLAN REJECTED ==
+The plan below was previously submitted and rejected by a reviewer.
+Produce a REVISED plan that directly addresses each rejection note.
+Do NOT reproduce the rejected plan structure or approach.
+Treat each rejection note as a hard constraint.
+
+{revision_context}
 """
 
     return f"""You are the Planner Agent for an Agentic DevOps System.
@@ -80,4 +95,4 @@ For EACH microtask you MUST provide:
 
 == INVESTIGATION FINDINGS ==
 {investigation_summary[:4000]}
-{feedback_block}"""
+{revision_block}{feedback_block}"""

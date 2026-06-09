@@ -1,7 +1,7 @@
 # Agentic DevOps System Requirements
 
 # Control Plane (Orchestrator & Agents)
-langgraph>=0.0.27
+langgraph>=1.0  # interrupt()/Command HITL resume require 1.x
 langgraph-checkpoint-postgres>=2.0.0
 langchain>=0.2.0
 langchain-core>=0.1.52

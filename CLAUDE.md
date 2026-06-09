@@ -79,12 +79,38 @@ first architecture audit and its remediation order.
 
 ## Graph topology (current)
 ```
-START → bootstrapper → phase_router → planner → END
-                                    ↘ coder → tester → (reflector | END)
-                                    ↘ tester
+START → planner → plan_reviewer → (planner | coder | hitl)        # planning loop
+                  coder → tester → (reflector | hitl)             # execution loop
+                  tester → reflector → coder
+                  hitl → (planner | coder | tester | reflector | END)
 
-plan_reviewer node exists but planner → END (dev shortcut, not yet wired to reviewer)
+bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 0005.
 ```
+- **Planning loop**: `planner → plan_reviewer`. Reviewer rejects (`NEEDS_PLAN`) → back to
+  planner to revise; approves (`NEEDS_CODE`) → coder.
+- **Execution loop**: `coder → tester`. Tester NEVER routes to coder directly — on test
+  failure (`REFLECT`) it goes to `reflector`, which diagnoses and is the SOLE path back to
+  coder (`NEEDS_CODE`). No blind retries off an undiagnosed failure.
+- **HITL gate** (shared `hitl` node, see below + ADR 0006): any phase in
+  `policy.hitl_checkpoints` routes through `hitl` before advancing.
+
+## When HITL is triggered
+A phase emits `NEEDS_HITL_APPROVAL` (via `HitlGate.apply`, `orchestrator/hitl.py`) and the
+graph suspends at the `hitl` node (`interrupt()`) ONLY when that phase is listed in
+`policy.hitl_checkpoints` (set with `--hitl-checkpoints plan,code,test`; empty = no gates).
+The three gate points and their resume routing:
+
+| Gate   | fires after            | approve →        | reject (note required) → |
+|--------|------------------------|------------------|--------------------------|
+| `plan` | plan_reviewer approves | coder            | planner (note → `plan.review_feedback`) |
+| `code` | coder produces a diff  | tester           | **reflector** → coder (note → a `Reflection`) |
+| `test` | tester passes          | next microtask   | **reflector** → coder (note → a `Reflection`) |
+
+Reject is stage-dependent and ALWAYS requires a note (no note = re-`interrupt()`, stays
+paused). `code`/`test` reject does NOT go straight to the coder — it goes through the
+reflector (carrying the human note as the diagnosis seed), preserving the
+only-reflector-talks-to-coder invariant. Resume via
+`python main.py --run_id <id> --approve | --reject --note "..."`.
 
 ## Run the pipeline
 ```bash
@@ -142,7 +168,7 @@ Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.
 | `microtasks` | Planner output persisted after each plan — survives crashes |
 | `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |
 | `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. |
-| `run_state` | Blackboard JSON snapshots (table exists, not yet written) |
+| `checkpoints*` | LangGraph PostgresSaver — blackboard snapshot per superstep (ADR 0005; replaced `run_state`) |
 
 Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 1.x `Column()` style — Pylance will report type errors.
 
@@ -156,25 +182,27 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Bootstrapper node | Done |
 | Planner (ReAct + structured output) | Done |
 | DB persistence (microtasks, events, artifacts, Run.status) | Done |
+| Planner↔Reviewer + Coder→Tester→Reflector loops (wired) | Done |
+| HITL gates (plan/code/test, native `interrupt()`) | Done — see ADR 0006 |
 | Plan Reviewer | Stub |
 | Coder | Stub |
 | Tester | Stub |
-| Reflector | Not started |
+| Reflector | Stub (returns `{}`) |
 | Context Engine (pgvector) | Not started |
 | GitOps (webhooks + PR) | Not started |
 | Provider abstraction | Not started |
-| `run_state` snapshots (table exists, writes missing) | Not started |
+| State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
 | `reflections` DB table | Not started |
 
 ## Known bugs / remaining TODOs (priority order)
 See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.
-1. **Stop conditions declared but never enforced** (must-fix, safety): `Constraints.max_total_iterations`/`max_microtask_attempts`/`Microtask.attempts` exist in the schema but `plan_verification_router`/`execution_verification_router` never read them — runaway-loop risk once real agents are wired in (`orchestrator.py:154-167`).
-2. **`run_state` never written** (must-fix, reproducibility): table + ORM model exist, but zero `session.add(RunState(...))` anywhere — a crash mid-run loses the blackboard entirely. Snapshot it alongside the existing `Run.status` update in each node.
+1. **Stop conditions declared but never enforced** (must-fix, safety): `Constraints.max_total_iterations`/`max_microtask_attempts`/`Microtask.attempts` exist in the schema but the routers (`OrchestratorGraph._plan_review_router`/`_coder_router`/`_tester_router`/`_hitl_router`) never read them — runaway-loop risk once real agents are wired in. Now MORE urgent: the planner↔reviewer and coder→tester→reflector loops are live, so a never-approving reviewer or always-failing tester loops forever.
+2. ~~**`run_state` never written**~~ — **SUPERSEDED by ADR 0005**: hand-rolled `run_state` snapshots replaced by the LangGraph PostgresSaver checkpointer (snapshots every superstep, keyed by `thread_id=run_id`). `run_state` table dropped.
 3. ~~**`ToolGateway` commits mid-transaction**~~ — **FIXED**: `_log_event` now delegates to `EventLogger.log()` (`db/event_log.py`), which only ever calls `session.add()`. Commit ownership correctly sits with the lending `session_scope()`.
-4. **`planner → END` shortcut**: real wire is `planner → plan_reviewer → coder → tester → (reflect | next_microtask)`.
+4. ~~**`planner → END` shortcut**~~ — **FIXED**: full loops wired (`planner → plan_reviewer → (planner | coder)`, `coder → tester → reflector → coder`), plus the shared `hitl` gate (ADR 0006). Phase agents are still stubs (#8).
 5. **`check_requested_path` dead code** (should-fix, security): defined in `gateway.py` but never called — `fs.read_file`/`fs.write_file` skip the sandbox-path-traversal check entirely.
 6. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
-7. **`reflections` table missing**: reflections only in LangGraph state (memory), lost on crash — depends on fix #2 landing first to be worth doing.
+7. **`reflections` table missing**: reflections live in the checkpointed blackboard (so they survive a crash now, via ADR 0005), but there's no queryable `reflections` table for cross-run semantic memory. The `code`/`test` HITL-reject path already seeds `Reflection`s (ADR 0006) — a dedicated table makes them analyzable.
 8. **Coder / Tester / Reflector**: all stubs returning `{}`.
 
 ## Coding conventions

@@ -14,6 +14,7 @@ from agents.Planning.Planner.investigation_support import (
     _default_max_tool_steps,
     _investigation_recursion_limit,
     _last_ai_text,
+    _log_investigation_steps,
 )
 from agents.Planning.Planner.plan_output import create_plan_file_as_output
 from agents.Planning.Planner.prompts.investigator import (
@@ -80,13 +81,13 @@ class Planner:
 
         try:
             self.llm = ChatOpenAI(
-                model="google/gemma-4-31B-it",
+                model=os.getenv("LLM_MODEL", "google/gemma-4-31B-it"),
                 api_key=SecretStr(api_key),
                 base_url="http://131.159.60.153:3000/inference",
                 temperature=0.0,
                 top_p=0.1,
                 max_completion_tokens=8192,
-                max_retries=0,
+                max_retries= int(os.getenv("LLM_RETRIES", "3")),
                 timeout=60.0,
             )
 
@@ -148,6 +149,7 @@ class Planner:
                     },
                 )
                 messages = investigative_state.get("messages", [])
+                _log_investigation_steps(messages)
                 investigation_summary = _last_ai_text(messages) or (
                     "Investigation finished but produced no assistant summary."
                 )

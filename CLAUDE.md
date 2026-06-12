@@ -28,7 +28,7 @@ src/
         planner_tools.py           # Tool wrappers for planner
         quality.py                 # _quality_report / _normalize_output — microtask quality gate
         plan_output.py             # create_plan_file_as_output — debug plan dump to disk
-        investigation_support.py   # _default_max_tool_steps, _investigation_recursion_limit, _last_ai_text
+        investigation_support.py   # _default_max_tool_steps, _investigation_recursion_limit, _last_ai_text, _log_investigation_steps
         prompts/                   # Prompt templates (investigator.py, synthesis.py)
       Reviewer/
         reviewer.py                # Plan Reviewer (stub)
@@ -151,6 +151,7 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `DATABASE_URL` | Postgres connection string |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Used by DB scripts |
 | `CLUSTER_API_KEY` | API key for LLM cluster endpoint |
+| `LLM_MODEL` | Model name for LLM cluster endpoint (default `google/gemma-4-31B-it`) |
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
 | `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
 | `PLANNER_MAX_SYNTHESIS_ATTEMPTS` | Max synthesis retries when `_normalize_output` raises `BadMicroTaskException` (default 3) — Planner feeds the validation error back into the next prompt as context |

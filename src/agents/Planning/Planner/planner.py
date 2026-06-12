@@ -71,6 +71,7 @@ class Planner:
         self.max_tool_steps = _default_max_tool_steps()
         self.max_synthesis_attempts = int(os.getenv("PLANNER_MAX_SYNTHESIS_ATTEMPTS", "3"))
         self.name = Roles.PLANNER.value
+        self.timeout_seconds = (int(os.getenv("PLANNER_TIMEOUT_SECONDS", "60")))
 
         # LLM Initialization
         api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -88,7 +89,7 @@ class Planner:
                 top_p=0.1,
                 max_completion_tokens=8192,
                 max_retries= int(os.getenv("LLM_RETRIES", "3")),
-                timeout=60.0,
+                timeout=self.timeout_seconds,
             )
 
             # Enforce structured output at the end of the pipeline
@@ -164,12 +165,18 @@ class Planner:
                 )
                 print(f"Investigation summary: {investigation_summary}")
 
-
+            except (APIConnectionError, APITimeoutError) as exception:
+                print(
+                    "[Planner] Failed to connect to the cluster during investigation. "
+                    f"Ensure the VPN is connected! Error: {exception}"
+                )
+                raise
             except Exception as e:
                 print(f"[Planner] Investigation failed: {e}")
                 investigation_summary = (
                     f"Investigation failed (continuing to synthesis): {e}"
                 )
+           
 
         # 2. Synthesis Phase (Structured Output) — retried with feedback if quality gate rejects
         print("[Planner] Synthesizing final structured Plan...")

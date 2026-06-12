@@ -67,3 +67,4 @@ dev.db
 src/output
 skills*.json
 scripts/snapshots/
+demo*

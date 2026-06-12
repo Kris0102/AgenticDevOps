@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ from agents.Planning.Planner.investigation_support import (
     _default_max_tool_steps,
     _investigation_recursion_limit,
     _last_ai_text,
+    _log_investigation_steps,
 )
 from agents.Planning.Planner.plan_output import create_plan_file_as_output
 from agents.Planning.Planner.prompts.investigator import (
@@ -23,7 +25,9 @@ from agents.Planning.Planner.prompts.synthesis import build_synthesis_prompt
 from agents.Planning.Planner.quality import _normalize_output
 from Exceptions.BadMicroTaskExceptions import BadMicroTaskException
 from orchestrator.state import (
+    Artifact,
     BlackboardState,
+    FeedbackSource,
     Microtask,
     Plan,
     RunStatus,
@@ -32,6 +36,20 @@ from tool_gateway.Roles import Roles
 
 # Load environment variables from .env if present
 load_dotenv()
+
+
+def _build_revision_context(plan: Plan) -> str:
+    """Format prior plan + all rejection notes for the revision prompt block."""
+    lines = [
+        f"Prior plan summary: {plan.summary}",
+        f"Prior architecture notes: {plan.architecture_notes}",
+        "",
+        "Rejection notes (address every one):",
+    ]
+    for fb in plan.review_feedback:
+        label = "Human reviewer" if fb.source == FeedbackSource.HUMAN else "Automated reviewer"
+        lines.append(f"  [{label}] {fb.notes}")
+    return "\n".join(lines)
 
 
 class PlannerOutput(BaseModel):
@@ -53,6 +71,7 @@ class Planner:
         self.max_tool_steps = _default_max_tool_steps()
         self.max_synthesis_attempts = int(os.getenv("PLANNER_MAX_SYNTHESIS_ATTEMPTS", "3"))
         self.name = Roles.PLANNER.value
+        self.timeout_seconds = (int(os.getenv("PLANNER_TIMEOUT_SECONDS", "60")))
 
         # LLM Initialization
         api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -63,14 +82,14 @@ class Planner:
 
         try:
             self.llm = ChatOpenAI(
-                model="google/gemma-4-31B-it",
+                model=os.getenv("LLM_MODEL", "google/gemma-4-31B-it"),
                 api_key=SecretStr(api_key),
                 base_url="http://131.159.60.153:3000/inference",
                 temperature=0.0,
                 top_p=0.1,
                 max_completion_tokens=8192,
-                max_retries=0,
-                timeout=60.0,
+                max_retries= int(os.getenv("LLM_RETRIES", "3")),
+                timeout=self.timeout_seconds,
             )
 
             # Enforce structured output at the end of the pipeline
@@ -102,9 +121,22 @@ class Planner:
         else:
             obj_text = "Objective: Analyze code and prepare next steps."
 
+        # Detect revision pass: prior plan exists and carries human/reviewer rejection notes.
+        # On a revision the repo is unchanged so re-investigation wastes tool budget.
+        prior_plan = state.get("plan")
+        is_revision = prior_plan is not None and bool(prior_plan.review_feedback)
+        revision_context: Optional[str] = _build_revision_context(prior_plan) if is_revision and prior_plan else None
+        if is_revision:
+            print("[Planner] Revision pass detected — will skip investigation and inject prior feedback.")
+
         # 1. Investigation Phase
         investigation_summary = "No investigation performed (no tools provided)."
-        if self.investigator_agent:
+        if is_revision:
+            investigation_summary = (
+                "Revision pass — investigation skipped. "
+                "See REVISION PASS block in synthesis prompt for prior plan and rejection notes."
+            )
+        elif self.investigator_agent:
             print("[Planner] Investigating the codebase using tools...")
             investigation_prompt = build_investigation_prompt(obj_text)
 
@@ -118,6 +150,7 @@ class Planner:
                     },
                 )
                 messages = investigative_state.get("messages", [])
+                _log_investigation_steps(messages)
                 investigation_summary = _last_ai_text(messages) or (
                     "Investigation finished but produced no assistant summary."
                 )
@@ -132,12 +165,18 @@ class Planner:
                 )
                 print(f"Investigation summary: {investigation_summary}")
 
-
+            except (APIConnectionError, APITimeoutError) as exception:
+                print(
+                    "[Planner] Failed to connect to the cluster during investigation. "
+                    f"Ensure the VPN is connected! Error: {exception}"
+                )
+                raise
             except Exception as e:
                 print(f"[Planner] Investigation failed: {e}")
                 investigation_summary = (
                     f"Investigation failed (continuing to synthesis): {e}"
                 )
+           
 
         # 2. Synthesis Phase (Structured Output) — retried with feedback if quality gate rejects
         print("[Planner] Synthesizing final structured Plan...")
@@ -147,7 +186,8 @@ class Planner:
 
         for attempt in range(1, self.max_synthesis_attempts + 1):
             synthesis_prompt = build_synthesis_prompt(
-                obj_text, investigation_summary, schema_json, previous_attempt_feedback
+                obj_text, investigation_summary, schema_json,
+                previous_attempt_feedback, revision_context,
             )
             # Since we use `.with_structured_output`, we can just invoke it with the prompt.
             try:
@@ -172,11 +212,22 @@ class Planner:
                 raise
 
             # Write output file from raw LLM result — always, even if quality checks fail below
-            create_plan_file_as_output(investigation_summary, raw_result, self.run_id)
+            plan_file_path = create_plan_file_as_output(investigation_summary, raw_result, self.run_id, revision_context)
 
             # Quality validation — raises BadMicroTaskException with specific failures if microtasks are too vague
             try:
                 result = _normalize_output(raw_result)
+                # Carry forward accumulated review_feedback so multi-reject history is
+                # preserved. LLM-generated plan starts with review_feedback=[] by default;
+                # re-attaching prior entries means _write_feedback's next append sees the
+                # full history, not just the most recent rejection.
+                if prior_plan and prior_plan.review_feedback:
+                    result = PlannerOutput(
+                        plan=result.plan.model_copy(
+                            update={"review_feedback": list(prior_plan.review_feedback)}
+                        ),
+                        microtasks=result.microtasks,
+                    )
                 break
             except BadMicroTaskException as exception:
                 previous_attempt_feedback = str(exception)
@@ -201,8 +252,18 @@ class Planner:
             if task.acceptance_criteria:
                 print(f"      Acceptance Criteria: {', '.join(task.acceptance_criteria)}")
 
+        now = datetime.now(timezone.utc).isoformat()
+        plan_artifact = Artifact(
+            artifact_ref=plan_file_path,
+            kind="plan_file",
+            created_at=now,
+            summary=f"Plan output for run {self.run_id}",
+        )
+        existing_artifacts = list(state.get("artifacts_index") or [])
+
         return {
             "status": RunStatus.NEEDS_REVIEW,
             "plan": result.plan,
             "microtasks": result.microtasks,
+            "artifacts_index": existing_artifacts + [plan_artifact],
         }

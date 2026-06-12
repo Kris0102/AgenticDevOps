@@ -7,9 +7,8 @@ from langchain_core.tools import BaseTool
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
-from db.run_state import RunStateStore
 from Exceptions.RunExecutionError import RunExecutionError
-from orchestrator.state import BlackboardState, EventType, RunStatus, merge_state
+from orchestrator.state import BlackboardState, EventType, RunStatus
 from orchestrator.run_failure import RunFailureHandler
 from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
@@ -116,5 +115,3 @@ class PlannerRunner:
             "plan_version": 1,
             "plan_summary": plan.summary[:300] if plan else "",
         })
-
-        RunStateStore.save(db_session, self.run_id, merge_state(self.state, result))

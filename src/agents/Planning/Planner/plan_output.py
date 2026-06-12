@@ -2,7 +2,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from agents.Planning.Planner.quality import _quality_report
 
@@ -10,7 +10,8 @@ if TYPE_CHECKING:
     from agents.Planning.Planner.planner import PlannerOutput
 
 
-def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str) -> None:
+def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str]) -> str:
+    """Write the plan to disk and return the absolute path."""
     try:
         initial_file_path = Path(os.path.abspath(sys.argv[0])).parent  # src folder
         file_path = Path(initial_file_path, "output", f"{run_id}", f"plan_output_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt")
@@ -29,7 +30,10 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
             f.write("CODER READINESS CHECK\n")
             f.write("-" * 40 + "\n")
             f.write(_quality_report(result) + "\n\n")
-
+            if revision_context:
+                f.write("REVISION CONTEXT \n")
+                f.write("-" * 40 + "\n")
+                f.write(revision_context + "\n\n")
             # ── Plan ─────────────────────────────────────────────────────────
             f.write(f"{sep}\n")
             f.write("PLAN\n")
@@ -119,6 +123,8 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
             f.write(investigation_summary + "\n")
 
         print(f"[Planner] Plan written → {file_path}")
+        return str(file_path)
 
     except Exception as e:
         print(f"[Planner] Failed to write plan file: {e}")
+        return ""

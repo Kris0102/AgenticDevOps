@@ -5,15 +5,16 @@ from sqlalchemy.orm import Session
 
 from db.event_log import EventLogger
 from db.models import Run
-from db.run_state import RunStateStore
 from Exceptions.RunExecutionError import RunExecutionError
-from orchestrator.state import BlackboardState, EventType, RunStatus, merge_state
+from orchestrator.state import BlackboardState, EventType, RunStatus
 
 
 class RunFailureHandler:
-    """Centralizes FAILED bookkeeping — status update, audit events, snapshot.
+    """Centralizes FAILED bookkeeping — status update + audit events.
 
-    Mirrors EventLogger/RunStateStore: caller owns the session_scope/commit.
+    Mirrors EventLogger: caller owns the session_scope/commit. State
+    snapshotting is handled automatically by the LangGraph checkpointer
+    (the returned dict is the node's result — checkpointed per superstep).
     """
 
     @staticmethod
@@ -41,5 +42,4 @@ class RunFailureHandler:
             "failed_phase": error.phase,
         })
 
-        RunStateStore.save(session, run_id, merge_state(state, result))
         return result

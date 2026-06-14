@@ -295,6 +295,11 @@ class DockerSandboxTools:
         dir_name, file_name = os.path.split(path)
         data = content.encode("utf-8")
 
+        # put_archive 404s if dir_name doesn't exist yet (e.g. a microtask's
+        # target_files lands in a new subdir like tests/). dir_name is always
+        # under self.workdir per _validate_sandbox_path above.
+        container.exec_run(["mkdir", "-p", dir_name])
+
         tar_stream = io.BytesIO()
         with tarfile.open(fileobj=tar_stream, mode="w") as tar:
             ti = tarfile.TarInfo(name=file_name)

@@ -1,3 +1,0 @@
-
-class Coder:
-    pass

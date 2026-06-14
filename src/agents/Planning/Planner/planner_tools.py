@@ -3,9 +3,9 @@ import shlex
 from langchain_core.tools import BaseTool, StructuredTool
 
 from tool_gateway.gateway import ToolGateway
+from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 from sandbox.Tools import Tools
-from tool_gateway.gateway import ALLOWED_SANDBOX_CMDS
 
 
 # This can later be a MCP tool implementation for the Planner agent, exposing a safe interface to execute commands and read files from the Docker sandbox.
@@ -21,7 +21,7 @@ class PlannerTools:
             description=(
                 "Run an allowlisted command inside the Docker sandbox at /workspace. "
                 "Pass a single argv string with no shell, pipes, or redirects. "
-                "Allowed bases: " + ", ".join(ALLOWED_SANDBOX_CMDS) + ". "
+                "Allowed bases: " + ", ".join(get_permissions(Roles.PLANNER).allowed_commands) + ". "
                 "Examples: 'ls -la /workspace', 'grep -rn Planner src/'"
             ),
         )

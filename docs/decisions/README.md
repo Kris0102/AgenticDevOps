@@ -55,3 +55,4 @@ What this makes easier, harder, or newly possible. What it costs.
 | [0007](0007-investigation-stays-unstructured.md) | Investigation phase stays free-text; synthesis is the sole structured contract (rejected `response_format` on investigator) | accepted |
 | [0008](0008-coder-single-react-loop-grounded.md) | Coder: single ReAct loop, pre-fetched grounding, deterministic diff verification, microtask attempt limit | accepted |
 | [0009](0009-per-role-permissions-classes.md) | Per-role `RolePermissions` classes replace global `ROLE_PERMISSIONS`/`ALLOWED_SANDBOX_CMDS`; Coder loses `pytest` | accepted |
+| [0010](0010-context-engine-pgvector-semantic-memory.md) | Context Engine: pgvector code semantic memory (baseline + workspace), local MiniLM embeddings, tree-sitter chunking, `semantic.search` Planner tool | accepted |

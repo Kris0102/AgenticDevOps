@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: postgres:15
+    # pgvector/pgvector is a drop-in superset of the official postgres image that
+    # ships the `vector` extension — required by the Context Engine (code_chunks).
+    # Pinned to pg15 to stay compatible with the existing postgres_data volume
+    # (a pg16 image refuses to start on a pg15 data directory).
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}

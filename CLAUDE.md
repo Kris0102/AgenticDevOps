@@ -51,8 +51,13 @@ src/
   db/
     db.py                        # SQLAlchemy engine + session_scope
     event_log.py                 # EventLogger — centralized Event-row construction (session.add only, never commit)
-    models.py                    # ORM models: Run, RunState, Event, Artifact, Sandbox, MicrotaskRecord
+    models.py                    # ORM models: Run, Event, Artifact, Sandbox, MicrotaskRecord, CodeChunk
+    embedder.py                  # Embedder — lazy sentence-transformers (all-MiniLM-L6-v2, 384-dim)
+    semantic_store.py            # SemanticStore — pgvector upsert/search/delete over code_chunks
     migrations/                  # Alembic migrations
+  context_engine/                # Code semantic memory (ADR 0010)
+    chunker.py                   # tree-sitter AST chunking (function/class) + whole-file fallback
+    engine.py                    # ContextEngine: ingest_baseline / sync_workspace / search
   providers/                     # Pluggable LLM provider interface (TODO: implement)
 deploy/
   docker-compose.yml             # Postgres + pgAdmin + sandbox image builder
@@ -166,6 +171,7 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `CODER_TIMEOUT_SECONDS` | LLM request timeout for the Coder (default 120 — code gen is long) |
 | `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
 | `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
+| `EMBEDDING_MODEL` | sentence-transformers model for the Context Engine (default `all-MiniLM-L6-v2`, 384-dim). Changing it requires matching `EMBEDDING_DIM` + a new `code_chunks` migration |
 
 ## LLM provider
 Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.153:3000/inference`) running `google/gemma-4-31B-it`. All agents should eventually use `providers/base.py` abstraction (not yet implemented).
@@ -178,6 +184,7 @@ Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.
 | `microtasks` | Planner output persisted after each plan — survives crashes |
 | `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |
 | `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. |
+| `code_chunks` | Context Engine semantic index — AST chunks + `Vector(384)` embedding, `namespace` baseline/workspace (ADR 0010). Needs the `vector` extension (`pgvector/pgvector` image) |
 | `checkpoints*` | LangGraph PostgresSaver — blackboard snapshot per superstep (ADR 0005; replaced `run_state`) |
 
 Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 1.x `Column()` style — Pylance will report type errors.
@@ -198,7 +205,7 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced |
 | Tester | Minimal stub — marks current microtask COMPLETED, `unit_tests` check recorded as "skipped" (not actually run), routes back to coder (more PENDING) or DONE. Unblocks coder<->tester loop end-to-end; real test execution still TODO |
 | Reflector | Stub (returns `{}`) — not yet exercised since the stub Tester never emits `REFLECT` |
-| Context Engine (pgvector) | Not started |
+| Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Not started |
 | Provider abstraction | Not started |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
@@ -245,3 +252,4 @@ See `docs/Blackboard.md` §6.7 for full registry. Key ones:
 - `tool.executed`, `tool.denied`
 - `test.unit_completed`, `check.lint_completed`
 - `reflection.created`
+- `semantic.baseline_ingested`, `semantic.workspace_synced`

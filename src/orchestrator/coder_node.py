@@ -16,6 +16,7 @@ from orchestrator.run_failure import RunFailureHandler
 from agents.Implementing.Coder.coder import Coder
 from agents.Implementing.Coder.coder_tools import CoderTools, to_sandbox_path
 from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
+from context_engine.engine import ContextEngine
 from sandbox.Tools import Tools
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
@@ -193,3 +194,32 @@ class CoderRunner:
             "files_touched": list(updated.files_touched),
             "diff_artifact": diff_artifact_ref,
         })
+
+        if new_status == RunStatus.NEEDS_TEST and updated.files_touched:
+            synced = self._sync_workspace(list(updated.files_touched))
+            if synced:
+                EventLogger.log(db_session, self.run_id, self.name, EventType.SEMANTIC_WORKSPACE_SYNCED, {
+                    "files": list(updated.files_touched),
+                    "chunks": synced,
+                })
+
+    def _sync_workspace(self, files_touched: List[str]) -> int:
+        """Re-index the just-edited files into the workspace namespace so semantic
+        search reflects in-run changes. Non-fatal — never break the execution loop."""
+        repo = self.state.get("repo")
+        sandbox = self.state.get("sandbox")
+        if not repo or not sandbox:
+            return 0
+        try:
+            sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            engine = ContextEngine(sandbox_tools=sandbox_tools)
+            return engine.sync_workspace(
+                sandbox_id=sandbox.sandbox_id,
+                run_id=self.run_id,
+                repo_url=repo.repo_url,
+                workspace_path=sandbox.workspace_path,
+                changed_files=files_touched,
+            )
+        except Exception as e:
+            print(f"[Orchestrator] Workspace semantic sync failed (non-fatal): {e}")
+            return 0

@@ -49,6 +49,7 @@ class BootStrapper:
         # the pre-clone default (WORKDIR) until git_clone_and_checkout succeeds.
         if sandbox_state.workspace_path == self.WORKDIR:
             workspace_path = self._clone_repository()
+            chunks_ingested = self._ingest_baseline(sandbox_id, workspace_path)
 
             result = {
                 "status": RunStatus.NEEDS_PLAN,
@@ -63,6 +64,10 @@ class BootStrapper:
                     "repo_url": repo.repo_url,
                     "base_sha": repo.base_sha,
                     "workspace_path": workspace_path,
+                })
+                EventLogger.log(session, run_id, self.name, EventType.SEMANTIC_BASELINE_INGESTED, {
+                    "chunks": chunks_ingested,
+                    "base_sha": repo.base_sha,
                 })
                 EventLogger.log(session, run_id, self.name, EventType.RUN_STATUS_CHANGED, {
                     "from": status.value,
@@ -80,6 +85,25 @@ class BootStrapper:
     @staticmethod
     def _sandbox(sandbox_id: str, workspace_path: str) -> Sandbox:
         return Sandbox(sandbox_id=sandbox_id, workspace_path=workspace_path, status="running")
+
+    def _ingest_baseline(self, sandbox_id: str, workspace_path: str) -> int:
+        """Index the freshly cloned repo into semantic memory (namespace=baseline).
+        Non-fatal: a missing/failed index degrades to the planner re-reading the
+        sandbox directly — it must never break the run."""
+        repo = self.state.get("repo")
+        try:
+            from context_engine.engine import ContextEngine
+
+            engine = ContextEngine(sandbox_tools=self.sandbox_tools)
+            return engine.ingest_baseline(
+                sandbox_id=sandbox_id,
+                repo_url=repo.repo_url,
+                base_sha=repo.base_sha,
+                workspace_path=workspace_path,
+            )
+        except Exception as e:
+            print(f"[Bootstrap] Baseline semantic ingest failed (non-fatal): {e}")
+            return 0
 
     def _upsert_run_record(self):
         repo = self.state.get("repo")

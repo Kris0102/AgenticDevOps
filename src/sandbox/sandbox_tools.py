@@ -164,7 +164,17 @@ class DockerSandboxTools:
             if not record:
                 return
             cid = record.container_id
+            run_id = record.run_id
             session.delete(record)
+
+        # Workspace semantic chunks are run-local — purge them with the sandbox so
+        # they never outlive the container. Best-effort (non-fatal).
+        try:
+            from db.semanticMemory.semantic_store import SemanticStore
+
+            SemanticStore().delete_workspace(run_id)
+        except Exception as e:
+            print(f"[Sandbox] Failed to purge workspace semantic chunks (non-fatal): {e}")
 
         try:
             c = self.client.containers.get(cid)

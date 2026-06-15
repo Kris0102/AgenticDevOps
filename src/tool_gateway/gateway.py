@@ -17,10 +17,14 @@ class ToolGateway:
     """
     Enforces deny-by-default execution policies and logs every invocation to Episodic Memory.
     """
-    def __init__(self, db_session: Session, run_id: str, sandbox_tools: DockerSandboxTools):
+    def __init__(self, db_session: Session, run_id: str, sandbox_tools: DockerSandboxTools,
+                 context_engine=None, repo_url: str = ""):
         self.db = db_session
         self.run_id = run_id
         self.sandbox_tools = sandbox_tools
+        # Optional: only supplied for roles allowed to run semantic.search (e.g. Planner).
+        self.context_engine = context_engine
+        self.repo_url = repo_url
 
     def _log_event(self, actor: str, event_type: str, payload: Dict[str, Any]):
         EventLogger.log(self.db, self.run_id, actor, event_type, payload)
@@ -108,6 +112,18 @@ class ToolGateway:
                         "stderr": exec_result.stderr,
                         "duration_ms": exec_result.duration_ms
                     }
+                case Tools.SEMANTIC_SEARCH:
+                    if self.context_engine is None:
+                        success = False
+                        result = {"error": "Semantic search unavailable: context engine not configured."}
+                    else:
+                        hits = self.context_engine.search(
+                            query=args.get("query", ""),
+                            repo_url=self.repo_url,
+                            run_id=self.run_id,
+                            top_k=args.get("top_k", 8),
+                        )
+                        result = {"status": "semantic_search", "hits": hits}
                 case _:
                     success = False
                     result = {"error": "Tool implemented but routing failed."}

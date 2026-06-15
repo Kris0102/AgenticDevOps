@@ -12,6 +12,7 @@ from orchestrator.state import BlackboardState, EventType, RunStatus
 from orchestrator.run_failure import RunFailureHandler
 from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
+from context_engine.engine import ContextEngine
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -46,7 +47,16 @@ class PlannerRunner:
     def _init_tools(self, db_session) -> list[BaseTool]:
         try:
             self.sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
-            gateway = ToolGateway(db_session=db_session, run_id=self.run_id, sandbox_tools=self.sandbox_tools)
+            repo = self.state.get("repo")
+            # Search-only ContextEngine (no sandbox_tools needed — reads the index, not the repo).
+            context_engine = ContextEngine()
+            gateway = ToolGateway(
+                db_session=db_session,
+                run_id=self.run_id,
+                sandbox_tools=self.sandbox_tools,
+                context_engine=context_engine,
+                repo_url=repo.repo_url if repo else "",
+            )
             planner_tools = PlannerTools(gateway=gateway)
             use_tools = os.getenv("USE_TOOLS", "true").lower() == "true"
             return planner_tools.build_tools() if use_tools else []

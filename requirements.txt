@@ -13,6 +13,12 @@ pydantic>=2.7.0
 psycopg[binary]>=3.1.18
 sqlalchemy>=2.0.30
 
+# Semantic Memory / Context Engine
+pgvector>=0.2.5                  # SQLAlchemy Vector type + cosine_distance ops
+sentence-transformers>=2.2.0     # local all-MiniLM-L6-v2 embeddings (384-dim, offline)
+tree-sitter>=0.21.0,<0.22        # AST-aligned code chunking (0.22+ breaks tree-sitter-languages 1.10.2)
+tree-sitter-languages>=1.10.2    # prebuilt grammars (no per-language build step)
+
 # Sandbox (Docker)
 docker>=7.1.0
 

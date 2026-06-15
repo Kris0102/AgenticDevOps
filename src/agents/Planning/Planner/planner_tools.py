@@ -31,8 +31,21 @@ class PlannerTools:
             name="read_sandbox_file",
             description="Read the contents of a specific file inside the secure Docker Sandbox. Use this to read specific module implementations and architectures."
         )
-        
-        return [execute_tool, read_tool]
+
+        semantic_search_tool = StructuredTool.from_function(
+            func=self.semantic_search,
+            name="semantic_search",
+            description=(
+                "Semantically search the indexed repository for code relevant to a "
+                "natural-language query (e.g. 'where are HTTP routes defined', "
+                "'authentication middleware'). Returns the most relevant functions/"
+                "classes with their file paths. Prefer this over grepping or reading "
+                "whole files to locate WHERE something lives, then read_sandbox_file "
+                "for full detail."
+            ),
+        )
+
+        return [execute_tool, read_tool, semantic_search_tool]
 
     def execute_in_sandbox(self, command: str) -> str:
         if not self.gateway:
@@ -62,5 +75,27 @@ class PlannerTools:
         )
         if "error" in result:
             return result["error"]
-        
+
         return result.get("content", "Empty file or could not read.")
+
+    def semantic_search(self, query: str, top_k: int = 8) -> str:
+        if not self.gateway:
+            raise RuntimeError("Sandbox tools are not available. Docker initialization failed.")
+
+        result = self.gateway.execute_tool(
+            actor_role=self.role,
+            tool_name=Tools.SEMANTIC_SEARCH,
+            args={"query": query, "top_k": top_k},
+        )
+        if "error" in result:
+            return result["error"]
+
+        hits = result.get("hits", [])
+        if not hits:
+            return "No relevant code found in the semantic index for that query."
+
+        lines = [f"Top {len(hits)} semantic matches:"]
+        for h in hits:
+            symbol = h.get("symbol") or h.get("chunk_type")
+            lines.append(f"- {h['filepath']} :: {symbol} (score {h['score']})")
+        return "\n".join(lines)

@@ -25,7 +25,7 @@ class PlannerPermissions(RolePermissions):
     """Read-only investigation — inspects the repo, never edits."""
 
     role = Roles.PLANNER
-    tools = [Tools.SANDBOX_RUN, Tools.FS_READ_FILE]
+    tools = [Tools.SANDBOX_RUN, Tools.FS_READ_FILE, Tools.SEMANTIC_SEARCH]
     allowed_commands = ["git", "python", "grep", "ls", "cat", "find"]
 
 

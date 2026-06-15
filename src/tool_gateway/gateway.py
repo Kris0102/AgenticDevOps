@@ -9,19 +9,9 @@ from db.event_log import EventLogger
 from orchestrator.state import EventType
 from sandbox.sandbox_tools import DockerSandboxTools
 from sandbox.Tools import Tools
+from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 
-# POC Minimum Viable Policies (6.1 & 6.2 from POC_instructions.md)
-ROLE_PERMISSIONS = {
-    Roles.PLANNER.value: [Tools.SANDBOX_RUN.value, Tools.FS_READ_FILE.value],
-    Roles.CODER.value: [Tools.FS_WRITE_FILE.value, Tools.FS_READ_FILE.value, Tools.REPO_DIFF.value, Tools.SANDBOX_RUN.value],
-    Roles.TESTER.value: [Tools.SANDBOX_RUN.value],
-    Roles.ORCHESTRATOR.value: [],
-    Roles.BOOTSTRAPPER.value: [],
-}
-
-# Strict string match command allowlist
-ALLOWED_SANDBOX_CMDS = ["git", "python", "pytest", "grep", "ls", "cat", "find"]
 
 class ToolGateway:
     """
@@ -38,9 +28,9 @@ class ToolGateway:
     def execute_tool(self, actor_role: Roles, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     
         actor_role_str = actor_role.value
+        permissions = get_permissions(actor_role)
         # 1. Enforce Role-Based Access Control (Allowlist per Agent)
-        allowed_tools = ROLE_PERMISSIONS.get(actor_role_str, [])
-        if tool_name not in allowed_tools:
+        if not permissions.can_use_tool(tool_name):
             self._log_event(
                 actor=actor_role_str,
                 event_type=EventType.TOOL_DENIED,
@@ -61,7 +51,7 @@ class ToolGateway:
                 return {"error": "Permission denied: cmd must be a non-empty list of strings."}
             
             base_cmd = cmd[0]
-            if base_cmd not in ALLOWED_SANDBOX_CMDS:
+            if not permissions.can_run_command(base_cmd):
                 self._log_event(
                     actor=actor_role_str,
                     event_type=EventType.TOOL_DENIED,
@@ -69,10 +59,10 @@ class ToolGateway:
                         "tool_name": tool_name,
                         "args_summary": str(args)[:120],
                         "policy_rule": "sandbox_command_not_allowed",
-                        "reason": f"Interpreter '{base_cmd}' is not in the allowlist"
+                        "reason": f"Interpreter '{base_cmd}' is not in the allowlist for role '{actor_role_str}'"
                     }
                 )
-                return {"error": f"Permission denied: Command '{base_cmd}' is not in allowlist."}
+                return {"error": f"Permission denied: Command '{base_cmd}' is not in the allowlist for role '{actor_role_str}'."}
 
         # 3. Execution Wrapper
         start_time = time.time()

@@ -11,7 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orchestrator.state import BlackboardState, RunStatus
 from orchestrator.checkpointer import checkpointer
 from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
+from orchestrator.coder_node import CoderRunner
 from orchestrator.planner_node import PlannerRunner
+from orchestrator.tester_node import TesterRunner
 
 load_dotenv()
 
@@ -56,11 +58,13 @@ class OrchestratorGraph:
 
     def _coder(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Coder...")
-        return HitlGate.apply(Phase.CODE, {"status": RunStatus.NEEDS_TEST}, state)
+        result = CoderRunner(state).invoke()
+        return HitlGate.apply(Phase.CODE, result, state)
 
     def _tester(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Tester / Sandbox Runner...")
-        return HitlGate.apply(Phase.TEST, {}, state)
+        result = TesterRunner(state).invoke()
+        return HitlGate.apply(Phase.TEST, result, state)
 
     def _reflector(self, state: BlackboardState) -> Dict[str, Any]:
         print("[Orchestrator] Invoking Reflector...")
@@ -126,16 +130,20 @@ class OrchestratorGraph:
 
     @staticmethod
     def _tester_router(state: BlackboardState) -> str:
-        """Execution (Grounded) Loop verdict. Tester only ever reports grounded
-        results — it never talks to Coder directly (no blind retries off an
-        undiagnosed failure). NEEDS_HITL_APPROVAL means a 'test' gate fired (→ hitl);
-        REFLECT means 'tests failed, diagnose root cause first' → reflector, the SOLE
-        path back to coder. Any other status (DONE, FAILED, ...) halts at END."""
+        """Execution (Grounded) Loop verdict. NEEDS_HITL_APPROVAL means a 'test' gate
+        fired (→ hitl). REFLECT means 'tests failed, diagnose root cause first' →
+        reflector, the SOLE path back to coder after a FAILURE (no blind retries off
+        an undiagnosed failure). NEEDS_CODE means 'this microtask passed, more
+        PENDING microtasks remain' → straight back to coder for the next one (not a
+        retry of a failure, so reflector isn't involved). Any other status (DONE,
+        FAILED, ...) halts at END."""
         status = state.get("status")
         if status == RunStatus.NEEDS_HITL_APPROVAL:
             return "hitl"
         if status == RunStatus.REFLECT:
             return "reflector"
+        if status == RunStatus.NEEDS_CODE:
+            return "coder"
         return END
 
     @staticmethod
@@ -194,7 +202,8 @@ class OrchestratorGraph:
         builder.add_conditional_edges(
             "tester",
             self._tester_router,
-            {"hitl": "hitl", "reflector": "reflector", END: END},
+            {"hitl": "hitl", "reflector": "reflector", "coder": "coder", END: END},  # right now it is possible to route back from the tester to the coder, but in the future,
+            #once we have a real tester that can distinguish between "fixable" failures (e.g. flake8 errors) and more complex ones (e.g. failed unit tests), we may want to route only the former back to coder and the latter to reflector for diagnosis before retrying. In that case, the tester_router would need to be updated to route to reflector on certain failure states instead of coder, and this edge would need to be updated accordingly.
         )
         builder.add_conditional_edges(
             "reflector",

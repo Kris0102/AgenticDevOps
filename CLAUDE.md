@@ -33,12 +33,16 @@ src/
       Reviewer/
         reviewer.py                # Plan Reviewer (stub)
     Implementing/
-      coder.py                   # Coder (stub)
+      Coder/
+        coder.py                 # Coder — single ReAct loop, deterministic repo.diff verification
+        coder_tools.py           # CoderTools: gateway-routed read/write/diff/exec + path normalization
+        prompt/coder_prompt.py   # CODER_SYSTEM_PROMPT + build_coder_prompt (full grounding context)
       tester.py                  # Tester (stub)
   Exceptions/
     BadMicroTaskExceptions.py    # BadMicroTaskException — raised by quality.py, caught+retried in Planner
   tool_gateway/
-    gateway.py                   # ToolGateway: allowlist enforcement (ROLE_PERMISSIONS, ALLOWED_SANDBOX_CMDS) + audit logging
+    gateway.py                   # ToolGateway: allowlist enforcement (via permissions.get_permissions) + audit logging
+    permissions.py               # RolePermissions subclasses — per-role tool + sandbox-cmd allowlists
     Roles.py                     # AgentRole enum
   sandbox/
     sandbox_tools.py             # DockerSandboxTools: create/exec/clone/destroy (DB-backed)
@@ -88,9 +92,11 @@ bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 
 ```
 - **Planning loop**: `planner → plan_reviewer`. Reviewer rejects (`NEEDS_PLAN`) → back to
   planner to revise; approves (`NEEDS_CODE`) → coder.
-- **Execution loop**: `coder → tester`. Tester NEVER routes to coder directly — on test
-  failure (`REFLECT`) it goes to `reflector`, which diagnoses and is the SOLE path back to
-  coder (`NEEDS_CODE`). No blind retries off an undiagnosed failure.
+- **Execution loop**: `coder → tester`. On test failure (`REFLECT`) tester goes to
+  `reflector`, which diagnoses and is the SOLE path back to coder after a FAILURE
+  (`NEEDS_CODE`) — no blind retries off an undiagnosed failure. On a PASS with more
+  PENDING microtasks, tester emits `NEEDS_CODE` itself and routes straight back to
+  coder for the next microtask (not a failure retry, so reflector isn't involved).
 - **HITL gate** (shared `hitl` node, see below + ADR 0006): any phase in
   `policy.hitl_checkpoints` routes through `hitl` before advancing.
 
@@ -155,6 +161,9 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
 | `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
 | `PLANNER_MAX_SYNTHESIS_ATTEMPTS` | Max synthesis retries when `_normalize_output` raises `BadMicroTaskException` (default 3) — Planner feeds the validation error back into the next prompt as context |
+| `CODER_MAX_TOOL_STEPS` | Max tool call rounds for the coder's ReAct loop (default 16) |
+| `CODER_MAX_EMPTY_DIFF_RETRIES` | Re-prompt attempts when the post-loop `repo.diff` comes back empty (default 2) |
+| `CODER_TIMEOUT_SECONDS` | LLM request timeout for the Coder (default 120 — code gen is long) |
 | `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
 | `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
 
@@ -186,9 +195,9 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Planner↔Reviewer + Coder→Tester→Reflector loops (wired) | Done |
 | HITL gates (plan/code/test, native `interrupt()`) | Done — see ADR 0006 |
 | Plan Reviewer | Stub |
-| Coder | Stub |
-| Tester | Stub |
-| Reflector | Stub (returns `{}`) |
+| Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced |
+| Tester | Minimal stub — marks current microtask COMPLETED, `unit_tests` check recorded as "skipped" (not actually run), routes back to coder (more PENDING) or DONE. Unblocks coder<->tester loop end-to-end; real test execution still TODO |
+| Reflector | Stub (returns `{}`) — not yet exercised since the stub Tester never emits `REFLECT` |
 | Context Engine (pgvector) | Not started |
 | GitOps (webhooks + PR) | Not started |
 | Provider abstraction | Not started |
@@ -197,14 +206,14 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 
 ## Known bugs / remaining TODOs (priority order)
 See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.
-1. **Stop conditions declared but never enforced** (must-fix, safety): `Constraints.max_total_iterations`/`max_microtask_attempts`/`Microtask.attempts` exist in the schema but the routers (`OrchestratorGraph._plan_review_router`/`_coder_router`/`_tester_router`/`_hitl_router`) never read them — runaway-loop risk once real agents are wired in. Now MORE urgent: the planner↔reviewer and coder→tester→reflector loops are live, so a never-approving reviewer or always-failing tester loops forever.
+1. **Stop conditions PARTIALLY enforced** (remaining half: must-fix, safety): `CoderRunner._check_stop_limit` now refuses a microtask when `attempts >= (Microtask.max_attempts or Constraints.max_microtask_attempts)` → FAILED, killing the runaway coder↔reflector loop. STILL MISSING: `max_total_iterations` in the routers (`_plan_review_router`/`_tester_router`/`_hitl_router`) — a never-approving reviewer still loops planner↔reviewer forever.
 2. ~~**`run_state` never written**~~ — **SUPERSEDED by ADR 0005**: hand-rolled `run_state` snapshots replaced by the LangGraph PostgresSaver checkpointer (snapshots every superstep, keyed by `thread_id=run_id`). `run_state` table dropped.
 3. ~~**`ToolGateway` commits mid-transaction**~~ — **FIXED**: `_log_event` now delegates to `EventLogger.log()` (`db/event_log.py`), which only ever calls `session.add()`. Commit ownership correctly sits with the lending `session_scope()`.
 4. ~~**`planner → END` shortcut**~~ — **FIXED**: full loops wired (`planner → plan_reviewer → (planner | coder)`, `coder → tester → reflector → coder`), plus the shared `hitl` gate (ADR 0006). Phase agents are still stubs (#8).
 5. **`check_requested_path` dead code** (should-fix, security): defined in `gateway.py` but never called — `fs.read_file`/`fs.write_file` skip the sandbox-path-traversal check entirely.
 6. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
 7. **`reflections` table missing**: reflections live in the checkpointed blackboard (so they survive a crash now, via ADR 0005), but there's no queryable `reflections` table for cross-run semantic memory. The `code`/`test` HITL-reject path already seeds `Reflection`s (ADR 0006) — a dedicated table makes them analyzable.
-8. **Coder / Tester / Reflector**: all stubs returning `{}`.
+8. ~~**Global sandbox command allowlist**~~ — **FIXED**: `tool_gateway/permissions.py` gives each role its own `RolePermissions` (`tools` + `allowed_commands`); `gateway.py` calls `get_permissions(role)`. `CoderPermissions.allowed_commands` no longer includes `pytest` — Coder is now gateway-blocked from running tests, not just prompt-forbidden. Reflector is still a stub returning `{}`, but the stub Tester (`tester_node.py`) now marks microtasks COMPLETED and the coder<->tester loop cycles — see graph topology above.
 
 ## Coding conventions
 - All state mutations must go through the LangGraph node return dict — never mutate `state` in place.
@@ -213,7 +222,7 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 - Agents return `Dict[str, Any]` matching BlackboardState fields — only include changed keys.
 - Tool functions in `sandbox_tools.py` return `ExecResult` dataclasses — never raw strings.
 - New agents go in `src/agents/<Phase>/<agent_name>.py` and must be wired into `orchestrator.py`.
-- New tool types must be registered in `sandbox/Tools.py` (the `Tools` enum), and in `gateway.py`'s `ROLE_PERMISSIONS` / `ALLOWED_SANDBOX_CMDS` plus `Roles.py`.
+- New tool types must be registered in `sandbox/Tools.py` (the `Tools` enum), and in `permissions.py` — add/extend the relevant `RolePermissions` subclass's `tools` / `allowed_commands`, plus `Roles.py` for new roles.
 - Sandbox is always pre-created by `bootstrapper_node` — agent nodes must never call `sandbox_create()`. Get sandbox_id from `state.get("sandbox").sandbox_id`.
 - `Run.status` must be updated in DB whenever LangGraph status changes — do it in the node, not in a router.
 - Use OOP for new classes. 

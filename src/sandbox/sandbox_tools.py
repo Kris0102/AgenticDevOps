@@ -35,6 +35,9 @@ from docker import errors as docker_errors
 
 from db.db import db
 from db.models import Sandbox
+from observability import Category, get_logger
+
+_log = get_logger(Category.SANDBOX)
 
 
 # ----------------------------
@@ -105,7 +108,7 @@ class DockerSandboxTools:
             existing = session.get(Sandbox, sandbox_id)
             if existing:
                 cid = existing.container_id
-                print(f"Sandbox {sandbox_id} already exists with container ID {cid}. Checking status...")
+                _log.debug("sandbox.exists_checking", sandbox_id=sandbox_id, container=cid[:12])
                 try:
                     container = self.client.containers.get(cid)
                 except docker_errors.NotFound:
@@ -113,9 +116,11 @@ class DockerSandboxTools:
                 if container is not None:
                     if container.status != "running":
                         container.start()
-                    print(f"Reconnected to existing sandbox {sandbox_id} (container {cid[:12]}, status={container.status})")
+                    _log.info("sandbox.reconnected", sandbox_id=sandbox_id,
+                              container=cid[:12], status=container.status)
                     return SandboxCreateResult(sandbox_id=sandbox_id, container_id=cid)
-                print(f"Tracked container {cid[:12]} for {sandbox_id} no longer exists in Docker — recreating registry entry.")
+                _log.warning("sandbox.container_gone", sandbox_id=sandbox_id, container=cid[:12],
+                             action="recreating registry entry")
                 session.delete(existing)
 
         # The DB record may be missing (e.g. after a DB wipe) while the named container
@@ -130,7 +135,8 @@ class DockerSandboxTools:
             if container.status != "running":
                 container.start()
             container_id = container.id or ""
-            print(f"Found untracked container {sandbox_id} (container {container_id[:12]}, status={container.status}) — re-registering.")
+            _log.info("sandbox.reregistering_untracked", sandbox_id=sandbox_id,
+                      container=container_id[:12], status=container.status)
             with db.session_scope() as session:
                 session.merge(Sandbox(sandbox_id=sandbox_id, run_id=run_id, container_id=container_id))
             return SandboxCreateResult(sandbox_id=sandbox_id, container_id=container_id)
@@ -164,7 +170,18 @@ class DockerSandboxTools:
             if not record:
                 return
             cid = record.container_id
+            run_id = record.run_id
             session.delete(record)
+
+        # Workspace semantic chunks are run-local — purge them with the sandbox so
+        # they never outlive the container. Best-effort (non-fatal).
+        try:
+            from db.semanticMemory.semantic_store import SemanticStore
+
+            removed = SemanticStore().delete_workspace(run_id)
+            _log.info("sandbox.workspace_chunks_purged", run_id=run_id, removed=removed)
+        except Exception as e:
+            _log.warning("sandbox.workspace_purge_failed", run_id=run_id, error=str(e))
 
         try:
             c = self.client.containers.get(cid)
@@ -246,7 +263,7 @@ class DockerSandboxTools:
             return url
         repo_url = clean_repo_url(repo_url)
         if not base_sha:
-            print(f"[Sandbox] No base_sha provided — cloned {repo_url}, skipping checkout.")
+            _log.info("sandbox.clone_no_checkout", repo_url=repo_url, reason="no base_sha")
             return
 
         checkout = self.sandbox_exec(

@@ -50,6 +50,8 @@ class EventType(str, Enum):
     TOOL_DENIED = "tool.denied"
     HITL_REQUESTED = "hitl.requested"
     HITL_DECIDED = "hitl.decided"
+    SEMANTIC_BASELINE_INGESTED = "semantic.baseline_ingested"
+    SEMANTIC_WORKSPACE_SYNCED = "semantic.workspace_synced"
 
     def __str__(self) -> str:
         return self.value

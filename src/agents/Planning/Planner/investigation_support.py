@@ -4,6 +4,10 @@ from typing import Any, Sequence
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from observability import Category, get_logger
+
+_log = get_logger(Category.PLANNER)
+
 
 def _default_max_tool_steps() -> int:
     raw = os.getenv("PLANNER_MAX_TOOL_STEPS", "15")
@@ -40,17 +44,19 @@ def _log_investigation_steps(messages: Sequence[Any]) -> None:
             thought = _ai_text(message)
             if thought:
                 step += 1
-                print(f"[Planner][Investigation step {step}] Thought: {thought}")
+                _log.debug("planner.investigation.thought", step=step, thought=thought)
             for call in getattr(message, "tool_calls", None) or []:
                 step += 1
                 args = json.dumps(call.get("args", {}), default=str)
-                print(f"[Planner][Investigation step {step}] Tool call: {call.get('name')}({args})")
+                _log.debug("planner.investigation.tool_call", step=step,
+                           tool=call.get("name"), args=args)
         elif isinstance(message, ToolMessage):
             step += 1
             result = message.content
             if isinstance(result, str) and len(result) > 1000:
                 result = result[:1000] + "... [truncated]"
-            print(f"[Planner][Investigation step {step}] Tool result ({message.name}): {result}")
+            _log.debug("planner.investigation.tool_result", step=step,
+                       tool=message.name, result=result)
 
 
 def _last_ai_text(messages: Sequence[Any]) -> str:

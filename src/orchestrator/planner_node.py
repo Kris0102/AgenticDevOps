@@ -12,9 +12,13 @@ from orchestrator.state import BlackboardState, EventType, RunStatus
 from orchestrator.run_failure import RunFailureHandler
 from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
+from context_engine.engine import ContextEngine
+from observability import Category, get_logger
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
+
+_log = get_logger(Category.PLANNER)
 
 
 class PlannerRunner:
@@ -32,10 +36,10 @@ class PlannerRunner:
             try:
                 result = self._run_planner(tools)
             except RunExecutionError as e:
-                print(f"[Orchestrator] Planner raised RunExecutionError: {e}")
+                _log.error("planner.run_execution_error", error=str(e))
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, e)
             except Exception as e:
-                print(f"[Orchestrator] Error caught during Planner execution: {e}")
+                _log.error("planner.unexpected_error", error=str(e))
                 raise
             finally:
                 self._teardown_sandbox()
@@ -46,12 +50,21 @@ class PlannerRunner:
     def _init_tools(self, db_session) -> list[BaseTool]:
         try:
             self.sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
-            gateway = ToolGateway(db_session=db_session, run_id=self.run_id, sandbox_tools=self.sandbox_tools)
+            repo = self.state.get("repo")
+            # Search-only ContextEngine (no sandbox_tools needed — reads the index, not the repo).
+            context_engine = ContextEngine()
+            gateway = ToolGateway(
+                db_session=db_session,
+                run_id=self.run_id,
+                sandbox_tools=self.sandbox_tools,
+                context_engine=context_engine,
+                repo_url=repo.repo_url if repo else "",
+            )
             planner_tools = PlannerTools(gateway=gateway)
             use_tools = os.getenv("USE_TOOLS", "true").lower() == "true"
             return planner_tools.build_tools() if use_tools else []
         except Exception as e:
-            print(f"Warning: Could not initialize planner tools. Fallback to no tools. Error: {e}")
+            _log.warning("planner.tools_init_failed", recovery="fallback to no tools", error=str(e))
             self.sandbox_tools = None
             return []
 
@@ -64,7 +77,7 @@ class PlannerRunner:
             try:
                 self.sandbox_tools.sandbox_destroy(sandbox_id=f"sbox_{self.run_id}")
             except Exception as teardown_e:
-                print(f"[Orchestrator] Failed to destroy sandbox: {teardown_e}")
+                _log.warning("planner.sandbox_teardown_failed", error=str(teardown_e))
 
     def _persist_results(self, db_session, result: Dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)

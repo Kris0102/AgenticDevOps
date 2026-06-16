@@ -12,6 +12,7 @@ from openai import APIConnectionError, APITimeoutError
 from pydantic import SecretStr
 
 from agents.Implementing.Coder.coder_support import format_react_transcript
+from observability import Category, get_logger
 from agents.Implementing.Coder.coder_tools import CoderTools
 from agents.Implementing.Coder.prompt.coder_prompt import (
     CODER_SYSTEM_PROMPT,
@@ -30,6 +31,8 @@ from tool_gateway.Roles import Roles
 
 # Load environment variables from .env if present
 load_dotenv()
+
+_log = get_logger(Category.CODER)
 
 
 def _max_tool_steps() -> int:
@@ -104,7 +107,7 @@ class Coder:
                 system_prompt=CODER_SYSTEM_PROMPT,
             )
         except Exception as e:
-            print(f"[Coder] Initialization failed: {e}")
+            _log.error("coder.init_failed", error=str(e))
             raise
 
     def invoke(
@@ -122,7 +125,8 @@ class Coder:
             files_touched, constraints.forbidden_paths if constraints else None
         )
 
-        print(f"[Coder] Microtask '{microtask.title}' produced a diff touching: {files_touched}")
+        _log.info("coder.diff_produced", microtask_id=microtask.microtask_id,
+                  title=microtask.title, files_touched=files_touched)
         self.create_code_file_log(self.run_id, microtask, diff_text, files_touched, attempts_log)
         return self._build_result(state, microtask, diff_text, files_touched)
 
@@ -155,17 +159,16 @@ class Coder:
                                  if state.get("constraints") else None),
                 retry_feedback=retry_feedback,
             )
-            print(f"[Coder] Coding attempt {attempt}/{self.max_empty_diff_retries}...")
+            _log.info("coder.attempt", microtask_id=microtask.microtask_id,
+                      attempt=attempt, max_attempts=self.max_empty_diff_retries)
             try:
                 agent_result = self.coding_agent.invoke(
                     {"messages": [HumanMessage(content=prompt)]},
                     config={"recursion_limit": _recursion_limit(self.max_tool_steps)},
                 )
             except (APIConnectionError, APITimeoutError) as exception:
-                print(
-                    "[Coder] Failed to connect to the cluster during coding. "
-                    f"Ensure the VPN is connected! Error: {exception}"
-                )
+                _log.error("coder.cluster_unreachable", phase="coding",
+                           hint="ensure VPN connected", error=str(exception))
                 raise
 
             transcript = format_react_transcript(agent_result.get("messages", []))
@@ -185,7 +188,7 @@ class Coder:
                 "repo actually changed. You must call write_sandbox_file with the "
                 "complete new content of each target file."
             )
-            print(f"[Coder] Attempt {attempt} produced an empty diff — retrying with feedback.")
+            _log.warning("coder.empty_diff_retry", microtask_id=microtask.microtask_id, attempt=attempt)
 
         raise RunExecutionError(
             phase="code",
@@ -272,7 +275,7 @@ class Coder:
         initial_file_path = Path(os.path.abspath(sys.argv[0])).parent  # src folder
         log_file_path = Path(initial_file_path, "output", run_id, "code_file_log.txt")
         log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"[Coder] Logging code file changes to: {log_file_path}")
+        _log.debug("coder.writing_code_log", path=str(log_file_path))
         with open(log_file_path, "a") as log_file:
             log_file.write(f"{'='*80}\n")
             log_file.write(f"MICROTASK {microtask.microtask_id}: {microtask.title}\n")

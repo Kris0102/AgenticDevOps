@@ -2,6 +2,12 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from sqlalchemy import String, Integer, DateTime, JSON, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
+
+
+# Embedding dimension for all-MiniLM-L6-v2 (see db/embedder.py). Keep in sync with
+# the Vector(...) column on CodeChunk and the migration that creates code_chunks.
+EMBEDDING_DIM = 384
 
 
 class Base(DeclarativeBase):
@@ -70,3 +76,28 @@ class MicrotaskRecord(Base):
     test_strategy: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class CodeChunk(Base):
+    """A single AST-aligned slice of repository code, embedded for semantic search.
+
+    Two namespaces (ARCHITECTURE_preview.md §4.2):
+      - 'baseline'  — repo @ git_sha, ingested once at run start, shared across runs
+      - 'workspace' — run-local edits, scoped by run_id, purged on teardown
+    Search/retrieval only — never used to reconstruct the repo (Sandbox stays the
+    source of truth). No FK constraints; run_id indexed (mirrors MicrotaskRecord).
+    """
+    __tablename__ = "code_chunks"
+
+    chunk_id: Mapped[str] = mapped_column(String, primary_key=True)
+    namespace: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    repo_url: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    git_sha: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    filepath: Mapped[str] = mapped_column(String, nullable=False)
+    symbol: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    chunk_type: Mapped[str] = mapped_column(String, nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
+    metadata_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

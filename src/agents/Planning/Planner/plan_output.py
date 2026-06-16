@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from agents.Planning.Planner.quality import _quality_report
+from observability import Category, get_logger
+
+_log = get_logger(Category.PLANNER)
 
 if TYPE_CHECKING:
     from agents.Planning.Planner.planner import PlannerOutput
@@ -122,9 +125,9 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
             f.write(f"{sep}\n\n")
             f.write(investigation_summary + "\n")
 
-        print(f"[Planner] Plan written → {file_path}")
+        _log.info("planner.plan_file_written", path=str(file_path))
         return str(file_path)
 
     except Exception as e:
-        print(f"[Planner] Failed to write plan file: {e}")
+        _log.warning("planner.plan_file_failed", error=str(e))
         return ""

@@ -16,11 +16,14 @@ from orchestrator.run_failure import RunFailureHandler
 from agents.Implementing.Coder.coder import Coder
 from agents.Implementing.Coder.coder_tools import CoderTools, to_sandbox_path
 from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
+from context_engine.engine import ContextEngine
+from observability import Category, get_logger
 from sandbox.Tools import Tools
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 
+_log = get_logger(Category.CODER)
 _FINISHED = {MicrotaskStatus.COMPLETED, MicrotaskStatus.DONE}
 
 
@@ -48,10 +51,10 @@ class CoderRunner:
                 coder = Coder(run_id=self.run_id, coder_tools=coder_tools)
                 result = coder.invoke(self.state, microtask, file_contents)
             except RunExecutionError as e:
-                print(f"[Orchestrator] Coder raised RunExecutionError: {e}")
+                _log.error("coder.run_execution_error", error=str(e))
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, e)
             except Exception as e:
-                print(f"[Orchestrator] Error caught during Coder execution: {e}")
+                _log.error("coder.unexpected_error", error=str(e))
                 raise
 
             # internal hand-off from Coder — not a BlackboardState channel, must
@@ -122,7 +125,7 @@ class CoderRunner:
     def _finish_run(self, db_session) -> Dict[str, Any]:
         """No pending microtask left. Provisional DONE until the real Tester owns
         the microtask loop (same caveat as HitlGate.GATES[TEST])."""
-        print("[Orchestrator] Coder found no pending microtasks — run is done (provisional).")
+        _log.info("coder.run_done", reason="no pending microtasks", provisional=True)
         now = datetime.now(timezone.utc)
         run_record = db_session.get(Run, self.run_id)
         old_status = run_record.status if run_record else "unknown"
@@ -193,3 +196,32 @@ class CoderRunner:
             "files_touched": list(updated.files_touched),
             "diff_artifact": diff_artifact_ref,
         })
+
+        if new_status == RunStatus.NEEDS_TEST and updated.files_touched:
+            synced = self._sync_workspace(list(updated.files_touched))
+            if synced:
+                EventLogger.log(db_session, self.run_id, self.name, EventType.SEMANTIC_WORKSPACE_SYNCED, {
+                    "files": list(updated.files_touched),
+                    "chunks": synced,
+                })
+
+    def _sync_workspace(self, files_touched: List[str]) -> int:
+        """Re-index the just-edited files into the workspace namespace so semantic
+        search reflects in-run changes. Non-fatal — never break the execution loop."""
+        repo = self.state.get("repo")
+        sandbox = self.state.get("sandbox")
+        if not repo or not sandbox:
+            return 0
+        try:
+            sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            engine = ContextEngine(sandbox_tools=sandbox_tools)
+            return engine.sync_workspace(
+                sandbox_id=sandbox.sandbox_id,
+                run_id=self.run_id,
+                repo_url=repo.repo_url,
+                workspace_path=sandbox.workspace_path,
+                changed_files=files_touched,
+            )
+        except Exception as e:
+            _log.warning("semantic.workspace_sync_failed", error=str(e))
+            return 0

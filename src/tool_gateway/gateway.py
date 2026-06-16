@@ -6,24 +6,39 @@ import os
 # Ensure we can import db.models when running within src module structure
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.event_log import EventLogger
+from observability import Category, get_logger
 from orchestrator.state import EventType
 from sandbox.sandbox_tools import DockerSandboxTools
 from sandbox.Tools import Tools
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 
+_log = get_logger(Category.TOOL)
+
 
 class ToolGateway:
     """
     Enforces deny-by-default execution policies and logs every invocation to Episodic Memory.
     """
-    def __init__(self, db_session: Session, run_id: str, sandbox_tools: DockerSandboxTools):
+    def __init__(self, db_session: Session, run_id: str, sandbox_tools: DockerSandboxTools,
+                 context_engine=None, repo_url: str = ""):
         self.db = db_session
         self.run_id = run_id
         self.sandbox_tools = sandbox_tools
+        # Optional: only supplied for roles allowed to run semantic.search (e.g. Planner).
+        self.context_engine = context_engine
+        self.repo_url = repo_url
 
     def _log_event(self, actor: str, event_type: str, payload: Dict[str, Any]):
+        # Durable audit (dashboard source) → Postgres events table.
         EventLogger.log(self.db, self.run_id, actor, event_type, payload)
+        # Ephemeral ops log → console/JSON. Surfaces "which tools ran / were denied"
+        # live. Denials are warnings; executions are info.
+        fields = {k: payload[k] for k in
+                  ("tool_name", "success", "duration_ms", "reason", "policy_rule")
+                  if k in payload}
+        emit = _log.warning if event_type == EventType.TOOL_DENIED else _log.info
+        emit(str(event_type), actor=actor, **fields)
 
     def execute_tool(self, actor_role: Roles, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     
@@ -108,6 +123,18 @@ class ToolGateway:
                         "stderr": exec_result.stderr,
                         "duration_ms": exec_result.duration_ms
                     }
+                case Tools.SEMANTIC_SEARCH:
+                    if self.context_engine is None:
+                        success = False
+                        result = {"error": "Semantic search unavailable: context engine not configured."}
+                    else:
+                        hits = self.context_engine.search(
+                            query=args.get("query", ""),
+                            repo_url=self.repo_url,
+                            run_id=self.run_id,
+                            top_k=args.get("top_k", 8),
+                        )
+                        result = {"status": "semantic_search", "hits": hits}
                 case _:
                     success = False
                     result = {"error": "Tool implemented but routing failed."}

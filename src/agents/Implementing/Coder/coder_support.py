@@ -3,6 +3,9 @@ from typing import Any, List, Sequence
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from observability import Category, get_logger
+
+_log = get_logger(Category.CODER)
 _TRANSCRIPT_TRUNCATE = 2000
 
 
@@ -44,5 +47,5 @@ def format_react_transcript(messages: Sequence[Any]) -> str:
             lines.append(f"[step {step}] Tool result ({message.name}): {result}")
 
     for line in lines:
-        print(f"[Coder] {line}")
+        _log.debug("coder.react_step", step=line)
     return "\n".join(lines) if lines else "(no messages — model produced no thoughts/tool calls)"

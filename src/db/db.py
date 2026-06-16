@@ -1,8 +1,12 @@
 from contextlib import contextmanager
 import os
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+
+
+load_dotenv()
 
 class Database:
     def __init__(self, db_url=None):

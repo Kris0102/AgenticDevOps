@@ -1,4 +1,3 @@
-
 from argparse import ArgumentParser
 import uuid
 import os
@@ -24,6 +23,9 @@ from orchestrator.state import (
 )
 from tool_gateway.Roles import Roles
 import structlog
+from dotenv import load_dotenv
+
+load_dotenv() # load .env file
 
 _log = get_logger(Category.ORCHESTRATOR)
 

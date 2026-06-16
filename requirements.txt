@@ -34,3 +34,6 @@ alembic>=1.7.7
 
 # For CLI
 argparse>=1.4.0
+
+# Logging (structured operational logs; stdlib `logging` is built-in — no dep)
+structlog>=24.1.0

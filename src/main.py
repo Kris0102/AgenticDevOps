@@ -5,8 +5,8 @@ import os
 from typing import Dict, Any, Optional
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
-
 from db.db import db
+from observability import Category, bind_run, clear_context, configure_logging, get_logger
 from orchestrator.hitl import HitlDecision, HitlResume
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.bootstrap_node import BootStrapper
@@ -23,6 +23,9 @@ from orchestrator.state import (
     create_initial_blackboard_state,
 )
 from tool_gateway.Roles import Roles
+import structlog
+
+_log = get_logger(Category.ORCHESTRATOR)
 
 parser = ArgumentParser()
 parser.add_argument("--run_id", type=str, required=False, help="Unique identifier for this orchestrator run. If not provided, a random UUID will be generated.")
@@ -62,8 +65,21 @@ class RunLauncher:
         self.args = args
         self.run_id = args.run_id if args.run_id else str(uuid.uuid4())
         self.config: RunnableConfig = {"configurable": {"thread_id": self.run_id}}
+        structlog.contextvars.bind_contextvars(run_id=self.run_id)
+        self.logger = structlog.get_logger()
 
     def run(self) -> None:
+        configure_logging()           # reads LOG_LEVEL / LOG_LEVEL_<CAT> / LOG_JSON from env
+        bind_run(self.run_id)         # run_id now auto-attached to every log line this run
+        log = get_logger(Category.ORCHESTRATOR)
+        log.info("run.start", repo_url=self.args.repo_url, base_sha=self.args.base_sha)
+        try:
+            self._run()
+        finally:
+            log.info("run.end")
+            clear_context()
+
+    def _run(self) -> None:
         check_if_env_files_exist()
         setup_checkpointer()
 
@@ -79,7 +95,7 @@ class RunLauncher:
         graph_input = self._apply_bootstrap_result(checkpoint_values, graph_input, bootstrap_result)
 
         if bootstrap_result.get("status") == RunStatus.FAILED:
-            print(f"[Main] Bootstrap failed for run {self.run_id} — not invoking graph.")
+            _log.error("run.bootstrap_failed", detail="not invoking graph")
             return
 
         # If the run is paused at a HITL checkpoint and a decision flag was passed,
@@ -103,8 +119,7 @@ class RunLauncher:
             raise SystemExit("[Main] --reject requires --note explaining why.")
 
         if not self._has_pending_interrupt():
-            print(f"[Main] WARNING: run {self.run_id} is not paused at a HITL checkpoint — "
-                  f"ignoring --approve/--reject.")
+            _log.warning("hitl.not_paused", detail="ignoring --approve/--reject")
             return None
 
         decision = HitlResume(
@@ -112,7 +127,7 @@ class RunLauncher:
             note=self.args.note,
             reviewer="cli-user",
         )
-        print(f"[Main] Resuming HITL checkpoint with decision={decision.decision.value!r}.")
+        _log.info("hitl.resuming", decision=decision.decision.value)
         return Command(resume=decision.model_dump(mode="json"))
 
     def _has_pending_interrupt(self) -> bool:
@@ -147,8 +162,7 @@ class RunLauncher:
                 return RunFailureHandler.handle(session, self.run_id, Roles.BOOTSTRAPPER.value, state, e)
 
     def _resume_from_checkpoint(self, checkpoint_values):
-        print(f"[Main] Resuming run {self.run_id} from checkpoint "
-              f"(status={checkpoint_values['status']}).")
+        _log.info("run.resume_from_checkpoint", status=str(checkpoint_values['status']))
 
         repo = checkpoint_values["repo"]
         objective = checkpoint_values["objective"]
@@ -167,30 +181,29 @@ class RunLauncher:
         args = self.args
         if args.repo_url and args.repo_url != repo.repo_url:
             if not_yet_cloned:
-                print(f"[Main] Repo not yet cloned — applying new --repo_url={args.repo_url!r}")
+                _log.info("run.override.repo_url", repo_url=args.repo_url)
                 return repo.model_copy(update={"repo_url": args.repo_url})
-            #TODO color this warning red for better visibility
-            print(f"[Main] WARNING: repo already cloned as {repo.repo_url!r} — "
-                  f"ignoring --repo_url={args.repo_url!r}. Start a new --run_id to use a different repo.")
+            _log.warning("run.override.repo_url_ignored", cloned_as=repo.repo_url,
+                         requested=args.repo_url, hint="start a new --run_id for a different repo")
         return repo
 
     def _override_base_sha(self, repo, not_yet_cloned: bool):
         args = self.args
         if args.base_sha and args.base_sha != repo.base_sha:
             if not_yet_cloned:
-                print(f"[Main] Repo not yet cloned — applying new --base-sha={args.base_sha!r}")
+                _log.info("run.override.base_sha", base_sha=args.base_sha)
                 return repo.model_copy(update={"base_sha": args.base_sha})
-            print(f"[Main] WARNING: repo already cloned at {repo.base_sha!r} — ignoring --base-sha={args.base_sha!r}.")
+            _log.warning("run.override.base_sha_ignored", cloned_at=repo.base_sha, requested=args.base_sha)
         return repo
 
     def _override_task_description(self, objective, no_plan_yet: bool, restored_state):
         args = self.args
         if args.task_description and args.task_description != objective.description:
             if no_plan_yet:
-                print("[Main] No plan drafted yet — applying new --task_description")
+                _log.info("run.override.task_description")
                 return objective.model_copy(update={"description": args.task_description})
-            print(f"[Main] WARNING: a plan already exists for the old objective — "
-                  f"ignoring --task_description (would invalidate {len(restored_state['microtasks'])} microtask(s)).")
+            _log.warning("run.override.task_description_ignored",
+                         microtasks_affected=len(restored_state['microtasks']))
         return objective
 
     def _build_fresh_state(self):
@@ -265,7 +278,7 @@ class RunLauncher:
         while True:
             graph.invoke(current_input, config=self.config)
             if not self._has_pending_interrupt():
-                print("[Main] Run complete.")
+                _log.info("run.complete")
                 break
             resume_cmd = self._prompt_hitl_decision()
             if resume_cmd is None:

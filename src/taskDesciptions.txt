@@ -1,0 +1,9 @@
+1. Task Description for Test_env with weather API.
+
+  --task_description "Add Fahrenheit support to the weather module. In utils.js add a celsiusToFahrenheit(celsius) function (same style/validation as formatTemperature, CommonJS export). In weather.js, make getWeather accept an optional second argument unit ('C' default or 'F'); when 'F', convert the stored Celsius temperature using celsiusToFahrenheit and set the returned unit to 'F'. Keep the existing 'Unknown city' error behavior. Update main.js to print Munich's weather in Fahrenheit. Preserve existing exports and code style."
+
+  Command: 
+  python3 main.py \
+  --repo_url https://github.com/Kris0102/Test_env \
+  --base-sha fdb59fe600a683a21fd5c167a0658b0337ac2089 \
+  --task_description "Add Fahrenheit support to the weather module. In utils.js add a celsiusToFahrenheit(celsius) function (same style/validation as formatTemperature, CommonJS export). In weather.js, make getWeather accept an optional second argument unit ('C' default or 'F'); when 'F', convert the stored Celsius temperature using celsiusToFahrenheit and set the returned unit to 'F'. Keep the existing 'Unknown city' error behavior. Update main.js to print Munich's weather in Fahrenheit. Preserve existing exports and code style."

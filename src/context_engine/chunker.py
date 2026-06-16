@@ -10,6 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
+from observability import Category, get_logger
+
+_log = get_logger(Category.SEMANTIC)
+
 # Extension → tree-sitter language name. Extend as more grammars are needed.
 LANGUAGE_BY_EXT = {
     ".py": "python",
@@ -76,7 +80,7 @@ def chunk_file(filepath: str, source: str) -> List[Chunk]:
             if chunks:
                 return chunks
         except Exception as e:  # parser missing / grammar error → fall through
-            print(f"[Chunker] tree-sitter failed for {filepath} ({e}); using file fallback.")
+            _log.debug("chunker.tree_sitter_fallback", filepath=filepath, error=str(e))
 
     return [_whole_file_chunk(source)]
 

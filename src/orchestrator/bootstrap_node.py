@@ -5,10 +5,13 @@ from typing import Any, Dict
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
+from observability import Category, get_logger
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox
 from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
 from tool_gateway.Roles import Roles
+
+_log = get_logger(Category.BOOTSTRAP)
 
 
 def _authenticated_clone_url(repo_url: str) -> str:
@@ -102,7 +105,7 @@ class BootStrapper:
                 workspace_path=workspace_path,
             )
         except Exception as e:
-            print(f"[Bootstrap] Baseline semantic ingest failed (non-fatal): {e}")
+            _log.warning("semantic.baseline.failed", error=str(e))
             return 0
 
     def _upsert_run_record(self):
@@ -114,7 +117,7 @@ class BootStrapper:
             existing = session.get(Run, run_id)
             if existing:
                 existing.updated_at = datetime.now(timezone.utc)
-                print(f"[Bootstrap] Resuming run {run_id} (status={existing.status})")
+                _log.info("bootstrap.run_resumed", status=existing.status)
             else:
                 session.add(Run(
                     run_id=run_id,
@@ -129,17 +132,19 @@ class BootStrapper:
                     "base_sha": repo.base_sha,
                     "trigger_status": status.value,
                 })
-                print(f"[Bootstrap] Created run {run_id}")
+                _log.info("bootstrap.run_created")
     def _ensure_sandbox_running(self):
         run_id = self.state.get("run_id")
 
         try:
             self.sandbox_tools.client.images.get(self.IMAGE)
         except Exception:
-            print(f"Warning: {self.IMAGE} image not found. Run docker-compose build.")
+            _log.warning("bootstrap.image_missing", image=self.IMAGE,
+                         hint="run docker-compose build")
 
         result = self.sandbox_tools.sandbox_create(run_id=run_id)
-        print(f"[Bootstrap] Sandbox ready: {result.sandbox_id} (container={result.container_id[:12]})")
+        _log.info("bootstrap.sandbox_ready", sandbox_id=result.sandbox_id,
+                  container=result.container_id[:12])
 
         with db.session_scope() as session:
             EventLogger.log(session, run_id, self.name, EventType.SANDBOX_CREATED, {
@@ -155,7 +160,7 @@ class BootStrapper:
         repo_dir = "repo"
         workspace_path = f"{self.WORKDIR}/{repo_dir}"
         clone_url = _authenticated_clone_url(repo.repo_url)
-        print(f"[Bootstrap] Cloning {repo.repo_url} @ {repo.base_sha}...")
+        _log.info("bootstrap.cloning", repo_url=repo.repo_url, base_sha=repo.base_sha)
         try:
             self.sandbox_tools.git_clone_and_checkout(
                 sandbox_id=sandbox_id,
@@ -163,9 +168,9 @@ class BootStrapper:
                 base_sha=repo.base_sha,
                 repo_dir=repo_dir,
             )
-            print(f"[Bootstrap] Clone complete → {workspace_path}")
+            _log.info("bootstrap.clone_complete", workspace_path=workspace_path)
             return workspace_path
         except SandboxError as e:
-            print(f"[Bootstrap] Clone failed: {e}")
-            print("For private repos, ensure GITHUB_TOKEN is present in environment and has repo access.")
+            _log.error("bootstrap.clone_failed", error=str(e),
+                       hint="for private repos ensure GITHUB_TOKEN is set with repo access")
             raise RunExecutionError(phase="bootstrap.clone", reason=str(e))

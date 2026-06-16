@@ -8,8 +8,11 @@ import sys
 
 # Ensure required imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from observability import Category, get_logger
 from orchestrator.state import BlackboardState, RunStatus
 from orchestrator.checkpointer import checkpointer
+
+_log = get_logger(Category.ORCHESTRATOR)
 from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
 from orchestrator.coder_node import CoderRunner
 from orchestrator.planner_node import PlannerRunner
@@ -43,7 +46,7 @@ class OrchestratorGraph:
     # ==========================================
 
     def _planner(self, state: BlackboardState) -> Dict[str, Any]:
-        print("[Orchestrator] Invoking Planner...")
+        _log.info("node.enter", node="planner")
         return PlannerRunner(state).invoke()
 
     # Stubs — once these become real agents, give each its own <phase>_node.py
@@ -53,28 +56,28 @@ class OrchestratorGraph:
     # checkpointer — no manual RunStateStore.save needed).
 
     def _plan_reviewer(self, state: BlackboardState) -> Dict[str, Any]:
-        print("[Orchestrator] Invoking Plan Reviewer (Critic)...")
+        _log.info("node.enter", node="plan_reviewer")
         return HitlGate.apply(Phase.PLAN, {"status": RunStatus.NEEDS_CODE}, state)
 
     def _coder(self, state: BlackboardState) -> Dict[str, Any]:
-        print("[Orchestrator] Invoking Coder...")
+        _log.info("node.enter", node="coder")
         result = CoderRunner(state).invoke()
         return HitlGate.apply(Phase.CODE, result, state)
 
     def _tester(self, state: BlackboardState) -> Dict[str, Any]:
-        print("[Orchestrator] Invoking Tester / Sandbox Runner...")
+        _log.info("node.enter", node="tester")
         result = TesterRunner(state).invoke()
         return HitlGate.apply(Phase.TEST, result, state)
 
     def _reflector(self, state: BlackboardState) -> Dict[str, Any]:
-        print("[Orchestrator] Invoking Reflector...")
+        _log.info("node.enter", node="reflector")
         return {}
 
     def _hitl(self, state: BlackboardState) -> Dict[str, Any]:
         """Shared HITL pause point. Suspends the graph via langgraph `interrupt()`
         until a human decision arrives (Command(resume={...})). Reject without a
         note is invalid — re-interrupt rather than route on un-actionable input."""
-        print("[Orchestrator] HITL checkpoint — awaiting human decision...")
+        _log.info("node.enter", node="hitl", detail="awaiting human decision")
         payload = HitlGate.request_payload(state)
         while True:
             decision = HitlResume.model_validate(interrupt(payload.model_dump(mode="json")))

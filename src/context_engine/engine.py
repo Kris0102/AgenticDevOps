@@ -15,7 +15,10 @@ from typing import Any, Dict, List, Optional, Sequence
 from context_engine.chunker import chunk_file
 from db.semanticMemory.embedder import Embedder
 from db.semanticMemory.semantic_store import BASELINE, WORKSPACE, SemanticStore
+from observability import Category, get_logger
 from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
+
+_log = get_logger(Category.SEMANTIC)
 
 
 class ContextEngine:
@@ -39,18 +42,19 @@ class ContextEngine:
         if self.sandbox_tools is None:
             raise RuntimeError("ContextEngine.ingest_baseline requires sandbox_tools")
         if self.store.has_baseline(repo_url, base_sha):
-            print(f"[ContextEngine] Baseline already indexed for {repo_url}@{base_sha} — skipping.")
+            _log.info("semantic.baseline.skip", repo_url=repo_url, base_sha=base_sha,
+                      reason="already_indexed")
             return 0
 
         files = self._list_tracked_files(sandbox_id, workspace_path)
-        print(f"[ContextEngine] Ingesting baseline: {len(files)} tracked files.")
+        _log.info("semantic.baseline.start", files=len(files), base_sha=base_sha)
         total = 0
         for rel in files:
             total += self._index_file(
                 sandbox_id=sandbox_id, workspace_path=workspace_path, rel=rel,
                 namespace=BASELINE, repo_url=repo_url, git_sha=base_sha, run_id=None,
             )
-        print(f"[ContextEngine] Baseline ingest complete: {total} chunks.")
+        _log.info("semantic.baseline.complete", files=len(files), chunks=total)
         return total
 
     def sync_workspace(self, *, sandbox_id: str, run_id: str, repo_url: str,
@@ -65,6 +69,7 @@ class ContextEngine:
                 sandbox_id=sandbox_id, workspace_path=workspace_path, rel=rel,
                 namespace=WORKSPACE, repo_url=repo_url, git_sha=None, run_id=run_id,
             )
+        _log.info("semantic.workspace.synced", files=len(changed_files), chunks=total)
         return total
 
     # ---- retrieval ----
@@ -88,7 +93,16 @@ class ContextEngine:
                 continue
             seen.add(key)
             merged.append(hit)
-        return merged[:top_k]
+        merged = merged[:top_k]
+        _log.info(
+            "semantic.search",
+            query=query,
+            top_k=top_k,
+            hits=len(merged),
+            top_score=merged[0]["score"] if merged else None,
+            top_match=merged[0]["filepath"] if merged else None,
+        )
+        return merged
 
     # ---- internals ----
 
@@ -100,7 +114,7 @@ class ContextEngine:
             sandbox_id=sandbox_id, cmd=["git", "ls-files"], timeout_s=60, cwd=workspace_path,
         )
         if res.exit_code != 0:
-            print(f"[ContextEngine] git ls-files failed: {res.stderr or res.stdout}")
+            _log.warning("semantic.list_files.failed", error=(res.stderr or res.stdout)[:200])
             return []
         return [line for line in res.stdout.splitlines() if line.strip()]
 

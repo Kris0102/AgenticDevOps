@@ -6,11 +6,14 @@ import os
 # Ensure we can import db.models when running within src module structure
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.event_log import EventLogger
+from observability import Category, get_logger
 from orchestrator.state import EventType
 from sandbox.sandbox_tools import DockerSandboxTools
 from sandbox.Tools import Tools
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
+
+_log = get_logger(Category.TOOL)
 
 
 class ToolGateway:
@@ -27,7 +30,15 @@ class ToolGateway:
         self.repo_url = repo_url
 
     def _log_event(self, actor: str, event_type: str, payload: Dict[str, Any]):
+        # Durable audit (dashboard source) → Postgres events table.
         EventLogger.log(self.db, self.run_id, actor, event_type, payload)
+        # Ephemeral ops log → console/JSON. Surfaces "which tools ran / were denied"
+        # live. Denials are warnings; executions are info.
+        fields = {k: payload[k] for k in
+                  ("tool_name", "success", "duration_ms", "reason", "policy_rule")
+                  if k in payload}
+        emit = _log.warning if event_type == EventType.TOOL_DENIED else _log.info
+        emit(str(event_type), actor=actor, **fields)
 
     def execute_tool(self, actor_role: Roles, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     

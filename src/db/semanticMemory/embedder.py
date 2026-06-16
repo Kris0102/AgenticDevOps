@@ -10,8 +10,10 @@ import os
 from typing import List, Optional
 
 from db.models import EMBEDDING_DIM
+from observability import Category, get_logger
 
 DEFAULT_MODEL = "all-MiniLM-L6-v2"
+_log = get_logger(Category.SEMANTIC)
 
 
 class Embedder:
@@ -45,6 +47,6 @@ class Embedder:
             # when embeddings are actually requested.
             from sentence_transformers import SentenceTransformer
 
-            print(f"[Embedder] Loading model '{self.model_name}' ({self.dim}-dim)...")
+            _log.info("embedder.loading_model", model=self.model_name, dim=self.dim)
             self._model = SentenceTransformer(self.model_name)
         return self._model

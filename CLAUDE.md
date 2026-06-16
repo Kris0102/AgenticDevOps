@@ -172,6 +172,10 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
 | `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
 | `EMBEDDING_MODEL` | sentence-transformers model for the Context Engine (default `all-MiniLM-L6-v2`, 384-dim). Changing it requires matching `EMBEDDING_DIM` + a new `code_chunks` migration |
+| `LOG_LEVEL` | Global structlog threshold (default `INFO`) |
+| `LOG_LEVEL_<CATEGORY>` | Per-category override, e.g. `LOG_LEVEL_TOOL=DEBUG`, `LOG_LEVEL_SEMANTIC=DEBUG` (categories in `observability/categories.py`) |
+| `LOG_JSON` | `true` → one JSON object per line (prod); `false` → pretty console (default) |
+| `LOG_COLORS` | `auto` (color when stdout is a TTY, default) \| `true` \| `false`. `NO_COLOR` env also disables |
 
 ## LLM provider
 Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.153:3000/inference`) running `google/gemma-4-31B-it`. All agents should eventually use `providers/base.py` abstraction (not yet implemented).
@@ -232,7 +236,8 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 - New tool types must be registered in `sandbox/Tools.py` (the `Tools` enum), and in `permissions.py` — add/extend the relevant `RolePermissions` subclass's `tools` / `allowed_commands`, plus `Roles.py` for new roles.
 - Sandbox is always pre-created by `bootstrapper_node` — agent nodes must never call `sandbox_create()`. Get sandbox_id from `state.get("sandbox").sandbox_id`.
 - `Run.status` must be updated in DB whenever LangGraph status changes — do it in the node, not in a router.
-- Use OOP for new classes. 
+- Use OOP for new classes.
+- Operational logging: never `print()`. Use `from observability import get_logger, Category; _log = get_logger(Category.X)` (module-level) then `_log.info("dotted.event.name", key=val, ...)`. This is ephemeral debug/ops output (console or JSON), SEPARATE from the durable `events` audit trail — keep emitting `EventLogger` events too. `run_id` is auto-attached (bound once in `RunLauncher`). Interactive CLI prompts (HITL `input()` banners) stay as `print()`. Never name a package `logging` (shadows stdlib) — the package is `observability/`.
 
 ## Adding a new agent
 1. Create `src/agents/<Phase>/<name>.py` with a class that has `invoke(state: BlackboardState) -> Dict[str, Any]`

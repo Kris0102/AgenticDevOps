@@ -24,6 +24,7 @@ from agents.Planning.Planner.prompts.investigator import (
 from agents.Planning.Planner.prompts.synthesis import build_synthesis_prompt
 from agents.Planning.Planner.quality import _normalize_output
 from Exceptions.BadMicroTaskExceptions import BadMicroTaskException
+from observability import Category, get_logger
 from orchestrator.state import (
     Artifact,
     BlackboardState,
@@ -36,6 +37,8 @@ from tool_gateway.Roles import Roles
 
 # Load environment variables from .env if present
 load_dotenv()
+
+_log = get_logger(Category.PLANNER)
 
 
 def _build_revision_context(plan: Plan) -> str:
@@ -106,7 +109,7 @@ class Planner:
                 self.investigator_agent = None
 
         except Exception as e:
-            print(f"[Planner] Initialization failed: {e}")
+            _log.error("planner.init_failed", error=str(e))
             raise
 
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
@@ -127,7 +130,7 @@ class Planner:
         is_revision = prior_plan is not None and bool(prior_plan.review_feedback)
         revision_context: Optional[str] = _build_revision_context(prior_plan) if is_revision and prior_plan else None
         if is_revision:
-            print("[Planner] Revision pass detected — will skip investigation and inject prior feedback.")
+            _log.info("planner.revision_pass", reason="prior feedback present, skipping investigation")
 
         # 1. Investigation Phase
         investigation_summary = "No investigation performed (no tools provided)."
@@ -137,7 +140,7 @@ class Planner:
                 "See REVISION PASS block in synthesis prompt for prior plan and rejection notes."
             )
         elif self.investigator_agent:
-            print("[Planner] Investigating the codebase using tools...")
+            _log.info("planner.investigating", tools=len(self.tools))
             investigation_prompt = build_investigation_prompt(obj_text)
 
             try:
@@ -159,27 +162,24 @@ class Planner:
                     for m in messages
                     if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
                 )
-                print(
-                    f"[Planner] Investigation complete "
-                    f"({len(messages)} messages, {tool_calls} tool-call rounds)."
-                )
-                print(f"Investigation summary: {investigation_summary}")
+                _log.info("planner.investigation_complete",
+                          messages=len(messages), tool_rounds=tool_calls)
+                _log.debug("planner.investigation_summary", summary=investigation_summary)
 
             except (APIConnectionError, APITimeoutError) as exception:
-                print(
-                    "[Planner] Failed to connect to the cluster during investigation. "
-                    f"Ensure the VPN is connected! Error: {exception}"
-                )
+                _log.error("planner.cluster_unreachable", phase="investigation",
+                           hint="ensure VPN connected", error=str(exception))
                 raise
             except Exception as e:
-                print(f"[Planner] Investigation failed: {e}")
+                _log.warning("planner.investigation_failed",
+                             error=str(e), recovery="continuing to synthesis")
                 investigation_summary = (
                     f"Investigation failed (continuing to synthesis): {e}"
                 )
            
 
         # 2. Synthesis Phase (Structured Output) — retried with feedback if quality gate rejects
-        print("[Planner] Synthesizing final structured Plan...")
+        _log.info("planner.synthesizing")
         schema_json = PlannerOutput.model_json_schema()
         previous_attempt_feedback: Optional[str] = None
         result: Optional[PlannerOutput] = None
@@ -199,16 +199,14 @@ class Planner:
                 else:
                     raw_result = PlannerOutput.model_validate(raw)
             except (APIConnectionError, APITimeoutError) as exception:
-                print(
-                    "[Planner] Failed to connect to the cluster. "
-                    f"Ensure the VPN is connected! Error: {exception}"
-                )
+                _log.error("planner.cluster_unreachable", phase="synthesis",
+                           hint="ensure VPN connected", error=str(exception))
                 raise
             except ValidationError as e:
-                print(f"[Planner] Synthesis output failed validation: {e}")
+                _log.error("planner.synthesis_validation_failed", error=str(e))
                 raise
             except Exception as e:
-                print(f"[Planner] Error during synthesis: {e}")
+                _log.error("planner.synthesis_error", error=str(e))
                 raise
 
             # Write output file from raw LLM result — always, even if quality checks fail below
@@ -232,25 +230,18 @@ class Planner:
             except BadMicroTaskException as exception:
                 previous_attempt_feedback = str(exception)
                 if attempt == self.max_synthesis_attempts:
-                    print(
-                        f"[Planner] Quality gate failed after {attempt} attempt(s) — giving up."
-                    )
+                    _log.error("planner.quality_gate_giveup", attempts=attempt, error=str(exception))
                     raise
-                print(
-                    f"[Planner] Attempt {attempt}/{self.max_synthesis_attempts} failed quality gate "
-                    f"— retrying synthesis with validation feedback as context."
-                )
+                _log.warning("planner.quality_gate_retry",
+                             attempt=attempt, max_attempts=self.max_synthesis_attempts)
 
         assert result is not None
 
-        print("[Planner] Synthesis complete. Returning Plan and Microtasks.")
-        print(f"Plan Summary: {result.plan.summary}")
-        print("\nMicrotasks:")
+        _log.info("planner.synthesis_complete",
+                  microtasks=len(result.microtasks), summary=result.plan.summary)
         for idx, task in enumerate(result.microtasks):
-            print(f"  [{idx + 1}] {task.title} (ID: {task.microtask_id})")
-            print(f"      Description: {task.description}")
-            if task.acceptance_criteria:
-                print(f"      Acceptance Criteria: {', '.join(task.acceptance_criteria)}")
+            _log.debug("planner.microtask", idx=idx + 1, id=task.microtask_id,
+                       title=task.title, acceptance_criteria=list(task.acceptance_criteria))
 
         now = datetime.now(timezone.utc).isoformat()
         plan_artifact = Artifact(

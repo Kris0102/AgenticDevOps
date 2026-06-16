@@ -17,11 +17,13 @@ from agents.Implementing.Coder.coder import Coder
 from agents.Implementing.Coder.coder_tools import CoderTools, to_sandbox_path
 from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
 from context_engine.engine import ContextEngine
+from observability import Category, get_logger
 from sandbox.Tools import Tools
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 
+_log = get_logger(Category.CODER)
 _FINISHED = {MicrotaskStatus.COMPLETED, MicrotaskStatus.DONE}
 
 
@@ -49,10 +51,10 @@ class CoderRunner:
                 coder = Coder(run_id=self.run_id, coder_tools=coder_tools)
                 result = coder.invoke(self.state, microtask, file_contents)
             except RunExecutionError as e:
-                print(f"[Orchestrator] Coder raised RunExecutionError: {e}")
+                _log.error("coder.run_execution_error", error=str(e))
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, e)
             except Exception as e:
-                print(f"[Orchestrator] Error caught during Coder execution: {e}")
+                _log.error("coder.unexpected_error", error=str(e))
                 raise
 
             # internal hand-off from Coder — not a BlackboardState channel, must
@@ -123,7 +125,7 @@ class CoderRunner:
     def _finish_run(self, db_session) -> Dict[str, Any]:
         """No pending microtask left. Provisional DONE until the real Tester owns
         the microtask loop (same caveat as HitlGate.GATES[TEST])."""
-        print("[Orchestrator] Coder found no pending microtasks — run is done (provisional).")
+        _log.info("coder.run_done", reason="no pending microtasks", provisional=True)
         now = datetime.now(timezone.utc)
         run_record = db_session.get(Run, self.run_id)
         old_status = run_record.status if run_record else "unknown"
@@ -221,5 +223,5 @@ class CoderRunner:
                 changed_files=files_touched,
             )
         except Exception as e:
-            print(f"[Orchestrator] Workspace semantic sync failed (non-fatal): {e}")
+            _log.warning("semantic.workspace_sync_failed", error=str(e))
             return 0

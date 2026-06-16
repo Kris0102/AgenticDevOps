@@ -8,11 +8,17 @@ from alembic import context
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 import os
+import sys
 from dotenv import load_dotenv
 load_dotenv()
 config = context.config
-if os.getenv("DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))
+
+# Make `db` importable (src/ on path) BEFORE building the URL, then reuse the
+# app's single source of truth so migrations and the running app can never
+# target different credentials. Overrides the placeholder in alembic.ini.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from db.db import Database
+config.set_main_option("sqlalchemy.url", Database.sqlalchemy_url())
 
 
 # Interpret the config file for Python logging.

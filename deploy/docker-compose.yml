@@ -5,10 +5,17 @@ services:
     # Pinned to pg15 to stay compatible with the existing postgres_data volume
     # (a pg16 image refuses to start on a pg15 data directory).
     image: pgvector/pgvector:pg15
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-agentic_devops}
+    # Creds (POSTGRES_USER/PASSWORD/DB) come from the project .env — the SAME file
+    # db.py and Alembic read, so all three agree. `env_file` is resolved RELATIVE
+    # TO THIS COMPOSE FILE (like build.context), NOT the caller's cwd — so it works
+    # from any directory and on any OS, no --env-file flag needed. The postgres
+    # image loud-fails if POSTGRES_PASSWORD is unset. Run: `cp .env.example .env`,
+    # fill it, then `docker compose -f deploy/docker-compose.yml up -d`.
+    # WARNING: Postgres only applies these on FIRST init of an empty data dir.
+    # Changed creds after the volume exists? Recreate it (wipes DB data):
+    #   docker compose -f deploy/docker-compose.yml down -v && up -d
+    env_file:
+      - ../.env
     ports:
       - "5432:5432"
     volumes:

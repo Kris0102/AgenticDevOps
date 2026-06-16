@@ -159,8 +159,8 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 ## Environment variables (`.env` in project root)
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Used by DB scripts |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` / `POSTGRES_PORT` | Single source of truth for DB creds — docker-compose inits the DB from them; app (`db.py`) + Alembic build the connection URL from them (`Database.sqlalchemy_url()`). Also used by DB scripts |
+| `DATABASE_URL` | Optional override — set to point app + Alembic at an **external** Postgres (RDS/Supabase). When set, wins over `POSTGRES_*`. Leave unset for the local compose DB |
 | `CLUSTER_API_KEY` | API key for LLM cluster endpoint |
 | `LLM_MODEL` | Model name for LLM cluster endpoint (default `google/gemma-4-31B-it`) |
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |

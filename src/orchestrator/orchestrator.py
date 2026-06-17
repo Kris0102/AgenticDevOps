@@ -16,6 +16,7 @@ _log = get_logger(Category.ORCHESTRATOR)
 from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
 from orchestrator.coder_node import CoderRunner
 from orchestrator.planner_node import PlannerRunner
+from orchestrator.reviewer_node import ReviewerRunner
 from orchestrator.tester_node import TesterRunner
 
 load_dotenv()
@@ -57,7 +58,8 @@ class OrchestratorGraph:
 
     def _plan_reviewer(self, state: BlackboardState) -> Dict[str, Any]:
         _log.info("node.enter", node="plan_reviewer")
-        return HitlGate.apply(Phase.PLAN, {"status": RunStatus.NEEDS_CODE}, state)
+        result = ReviewerRunner(state).invoke()
+        return HitlGate.apply(Phase.PLAN, result, state)
 
     def _coder(self, state: BlackboardState) -> Dict[str, Any]:
         _log.info("node.enter", node="coder")

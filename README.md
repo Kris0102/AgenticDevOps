@@ -41,7 +41,13 @@ Open terminal in the repository root and run the following commands.
    cd ..
    ```
 
-4. Run the main entrypoint from the `src` folder:
+4. Setup PostgrSQL database correctly
+
+   ```powershell
+   alembic upgrade head
+   ```
+
+5. Run the main entrypoint from the `src` folder:
 
    ```powershell
    cd .\src

@@ -4,14 +4,24 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
-from agents.Planning.Reviewer.prompts.reviewer import build_review_prompt
+from agents.Planning.Reviewer.investigation_support import (
+    _default_max_tool_steps,
+    _investigation_recursion_limit,
+    _last_ai_text,
+    _log_investigation_steps,
+)
+
+from agents.Planning.Reviewer.prompts.reviewer import build_investigation_prompt, build_review_prompt
+from agents.Planning.Reviewer.prompts.reviewer import REVIEWER_SYSTEM_PROMPT
 from agents.Planning.Reviewer.review_output import create_review_file_as_output
+from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from observability import Category, get_logger
 from orchestrator.state import (
     Artifact,
@@ -73,14 +83,19 @@ def _build_revision_context(plan: Plan) -> str:
 class Reviewer:
     def __init__(self, run_id: str, tools: Optional[Sequence[BaseTool]] = None):
         """Initializes the Reviewer Agent.
-
+        
+        In this MAS architecture, environment actions (like semantic search, file reads)
+        must be routed through the Tool Gateway.
+        
         The reviewer stays read-only and uses a compact prompt that asks for a
         simple approve/reject decision with a given reason.
         """
         self.run_id = run_id
         self.tools = list(tools or [])
+        self.max_tool_steps = _default_max_tool_steps()
+        self.max_synthesis_attempts = int(os.getenv("PLANNER_MAX_SYNTHESIS_ATTEMPTS", "3"))
         self.name = Roles.REVIEWER.value
-        self.timeout_seconds = int(os.getenv("REVIEWER_TIMEOUT_SECONDS", "30"))
+        self.timeout_seconds = int(os.getenv("REVIEWER_TIMEOUT_SECONDS", "60"))
 
         api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -100,10 +115,18 @@ class Reviewer:
             )
 
             # Enforce structured output
-            self.structured_llm = self.llm.with_structured_output(
-                ReviewerOutput,
-                method="json_mode",
-            )
+            self.structured_llm = self.llm.with_structured_output(ReviewerOutput, method="json_mode")
+
+            if self.tools:
+                self.investigator_agent = create_agent(
+                    self.llm,
+                    tools=self.tools,
+                    system_prompt=REVIEWER_SYSTEM_PROMPT,
+                )
+            else:
+                self.investigator_agent = None
+            
+        
         except Exception as error:
             _log.error("reviewer.init_failed", error=str(error))
             raise
@@ -111,15 +134,57 @@ class Reviewer:
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
         """Review the current plan and return a decision plus updated feedback."""
         _log.debug("reviewer.invoke.start", run_id=self.run_id)
+        
+        # get plan from state, if missing return NEEDS_PLAN to go back to planner
         plan = state.get("plan")
         if plan is None:
             _log.warning("reviewer.no_plan", recovery="returning to planner")
             return {"status": RunStatus.NEEDS_PLAN}
 
         microtasks: List[Microtask] = list(state.get("microtasks") or [])
+        
+        # build context for review prompt
         objective_text = _build_objective_text(state)
         review_context = _build_review_context(plan, microtasks)
         revision_context = _build_revision_context(plan)
+
+        investigation_summary = "No independent investigation performed (no tools provided)."
+        if self.investigator_agent:
+            _log.info("reviewer.investigating", tools=len(self.tools))
+            investigation_prompt = build_investigation_prompt(objective_text, review_context)
+
+            try:
+                investigative_state = self.investigator_agent.invoke(
+                    {"messages": [HumanMessage(content=investigation_prompt)]},
+                    config={
+                        "recursion_limit": _investigation_recursion_limit(
+                            self.max_tool_steps
+                        ),
+                    },
+                )
+                messages = investigative_state.get("messages", [])
+                _log_investigation_steps(messages)
+                investigation_summary = _last_ai_text(messages) or (
+                    "Investigation finished but produced no assistant summary."
+                )
+                tool_calls = sum(
+                    1
+                    for m in messages
+                    if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
+                )
+                _log.info(
+                    "reviewer.investigation_complete",
+                    messages=len(messages),
+                    tool_rounds=tool_calls,
+                )
+                _log.debug("reviewer.investigation_summary", summary=investigation_summary)
+
+            except (APIConnectionError, APITimeoutError) as error:
+                _log.error("reviewer.cluster_unreachable", phase="investigation", error=str(error))
+                raise
+            except Exception as error:
+                _log.warning("reviewer.investigation_failed", error=str(error))
+                investigation_summary = f"Investigation failed (continuing to review): {error}"
 
         _log.debug(
             "reviewer.invoke.context_read",
@@ -128,7 +193,7 @@ class Reviewer:
         )
 
         _log.info("reviewer.reviewing", microtasks=len(microtasks))
-        prompt = build_review_prompt(objective_text, review_context)
+        prompt = build_review_prompt(objective_text, review_context, investigation_summary)
 
         try:
             raw = self.structured_llm.invoke([HumanMessage(content=prompt)])

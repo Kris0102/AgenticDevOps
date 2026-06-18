@@ -193,6 +193,8 @@ class Reviewer:
         )
 
         _log.info("reviewer.reviewing", microtasks=len(microtasks))
+
+        # add the objective, planner's result and the reviewer's investigation summary to the final review prompt 
         prompt = build_review_prompt(objective_text, review_context, investigation_summary)
 
         try:
@@ -229,7 +231,7 @@ class Reviewer:
             review_context=review_context,
             result=result,
             run_id=self.run_id,
-            revision_context=revision_context,
+            investigation_summary=investigation_summary,
         )
         reviewed_plan = plan.model_copy(update={
             "review_feedback": list(plan.review_feedback) + [feedback],

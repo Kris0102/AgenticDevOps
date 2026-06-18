@@ -86,11 +86,11 @@ def build_review_prompt(objective_text: str, plan_text: str, investigation_summa
 == OBJECTIVE ==
 {objective_text}
 
-== REVIEWER INVESTIGATION ==
-{investigation_block}
-
 == PLANNER OUTPUT ==
 {plan_text}
+
+== REVIEWER INVESTIGATION ==
+{investigation_block}
 
 If PRIOR REVIEW FEEDBACK is NONE:
 - Evaluate the plan based on the stated objective and the quality criteria outlined above.

@@ -52,7 +52,7 @@ class ReviewerPermissions(RolePermissions):
     """Plan/code review — read-only."""
 
     role = Roles.REVIEWER
-    tools = [Tools.FS_READ_FILE]
+    tools = [Tools.SANDBOX_RUN, Tools.FS_READ_FILE, Tools.SEMANTIC_SEARCH]
     allowed_commands = ["grep", "ls", "cat", "find"]
 
 

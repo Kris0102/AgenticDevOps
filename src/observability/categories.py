@@ -14,6 +14,7 @@ class Category(str, enum.Enum):
     CODER = "coder"
     TESTER = "tester"
     REFLECTOR = "reflector"
+    DEPLOYER = "deployer"    # GitOps stub: stage/commit/push run results
     HITL = "hitl"
     SANDBOX = "sandbox"      # Docker lifecycle / exec
     BOOTSTRAP = "bootstrap"

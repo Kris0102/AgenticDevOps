@@ -7,9 +7,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Load .env
+# Load .env (source so inline `# comments` and quoted values are handled correctly)
 if [[ -f "$ROOT_DIR/.env" ]]; then
-    export $(grep -v '^#' "$ROOT_DIR/.env" | xargs)
+    set -a
+    # shellcheck disable=SC1090,SC1091
+    source "$ROOT_DIR/.env"
+    set +a
 fi
 
 POSTGRES_USER="${POSTGRES_USER:-user}"
@@ -19,7 +22,7 @@ CONTAINER="${POSTGRES_CONTAINER:-deploy-postgres-1}"
 
 echo ""
 echo "This will DELETE ALL DATA from:"
-echo "  runs, microtasks, events, artifacts, sandboxes, run_state"
+echo "  runs, microtasks, events, artifacts, sandboxes, code_chunks, checkpoints"
 echo ""
 echo "Schema (tables/columns) is preserved. Migrations are NOT affected."
 echo ""
@@ -35,7 +38,7 @@ TRUNCATE TABLE microtasks    RESTART IDENTITY CASCADE;
 TRUNCATE TABLE events        RESTART IDENTITY CASCADE;
 TRUNCATE TABLE artifacts     RESTART IDENTITY CASCADE;
 TRUNCATE TABLE sandboxes     RESTART IDENTITY CASCADE;
-TRUNCATE TABLE run_state     RESTART IDENTITY CASCADE;
+TRUNCATE TABLE code_chunks   RESTART IDENTITY CASCADE;
 TRUNCATE TABLE checkpoints   RESTART IDENTITY CASCADE;
 TRUNCATE TABLE checkpoint_writes RESTART IDENTITY CASCADE;
 TRUNCATE TABLE checkpoint_blobs      RESTART IDENTITY CASCADE;

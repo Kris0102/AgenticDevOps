@@ -13,9 +13,12 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SNAPSHOT_DIR="$SCRIPT_DIR/snapshots"
 mkdir -p "$SNAPSHOT_DIR"
 
-# Load .env
+# Load .env (source so inline `# comments` and quoted values are handled correctly)
 if [[ -f "$ROOT_DIR/.env" ]]; then
-    export $(grep -v '^#' "$ROOT_DIR/.env" | xargs)
+    set -a
+    # shellcheck disable=SC1090,SC1091
+    source "$ROOT_DIR/.env"
+    set +a
 fi
 
 POSTGRES_USER="${POSTGRES_USER:-user}"

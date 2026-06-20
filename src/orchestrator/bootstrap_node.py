@@ -5,6 +5,7 @@ from typing import Any, Dict
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
+from gitops.gitops import GitOps
 from observability import Category, get_logger
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox
@@ -12,14 +13,6 @@ from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
 from tool_gateway.Roles import Roles
 
 _log = get_logger(Category.BOOTSTRAP)
-
-
-def _authenticated_clone_url(repo_url: str) -> str:
-    """Inject GITHUB_TOKEN into HTTPS clone URL so git doesn't prompt for credentials."""
-    token = os.getenv("GITHUB_TOKEN")
-    if token and repo_url.startswith("https://"):
-        return repo_url.replace("https://", f"https://{token}@", 1)
-    return repo_url
 
 
 class BootStrapper:
@@ -31,6 +24,7 @@ class BootStrapper:
         self.state = blackboard
         self.name = Roles.BOOTSTRAPPER.value
         self.sandbox_tools = DockerSandboxTools(image=self.IMAGE, workdir=self.WORKDIR)
+        self.gitops = GitOps(self.sandbox_tools)
 
     def invoke(self) -> Dict[str, Any]:
         repo = self.state.get("repo")
@@ -49,7 +43,7 @@ class BootStrapper:
 
         # 3. Clone repo — retry whenever it hasn't actually happened yet (covers both
         # the first run and a resume after a clone failure). workspace_path is still
-        # the pre-clone default (WORKDIR) until git_clone_and_checkout succeeds.
+        # the pre-clone default (WORKDIR) until GitOps.clone_and_checkout succeeds.
         if sandbox_state.workspace_path == self.WORKDIR:
             workspace_path = self._clone_repository()
             chunks_ingested = self._ingest_baseline(sandbox_id, workspace_path)
@@ -158,14 +152,13 @@ class BootStrapper:
         sandbox_id = sandbox_state.sandbox_id
         repo = self.state.get("repo")
         repo_dir = "repo"
-        workspace_path = f"{self.WORKDIR}/{repo_dir}"
-        clone_url = _authenticated_clone_url(repo.repo_url)
         _log.info("bootstrap.cloning", repo_url=repo.repo_url, base_sha=repo.base_sha)
         try:
-            self.sandbox_tools.git_clone_and_checkout(
+            workspace_path = self.gitops.clone_and_checkout(
                 sandbox_id=sandbox_id,
-                repo_url=clone_url,
+                repo_url=repo.repo_url,
                 base_sha=repo.base_sha,
+                token=os.getenv("GITHUB_TOKEN", ""),
                 repo_dir=repo_dir,
             )
             _log.info("bootstrap.clone_complete", workspace_path=workspace_path)

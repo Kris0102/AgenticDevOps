@@ -26,6 +26,7 @@ class RunStatus(str, Enum):
     NEEDS_FINAL_TEST = "NEEDS_FINAL_TEST"
     NEEDS_SECURITY_AUDIT = "NEEDS_SECURITY_AUDIT"
     READY_FOR_PR = "READY_FOR_PR"
+    READY_TO_DEPLOY = "READY_TO_DEPLOY"
     WAITING_FOR_CI = "WAITING_FOR_CI"
     NEEDS_HITL_APPROVAL = "NEEDS_HITL_APPROVAL"
     DONE = "DONE"
@@ -39,12 +40,14 @@ class EventType(str, Enum):
     RUN_STATUS_CHANGED = "run.status_changed"
     REPO_CLONED = "repo.cloned"
     PLAN_DRAFTED = "plan.drafted"
+    PLAN_REVIEWED = "plan.reviewed"
     MICROTASK_CREATED = "microtask.created"
     MICROTASK_UPDATED = "microtask.updated"
     MICROTASK_COMPLETED = "microtask.completed"
     MICROTASK_FAILED = "microtask.failed"
     SANDBOX_CREATED = "sandbox.created"
     RUN_COMPLETED = "run.completed"
+    GITOPS_PUSHED = "gitops.pushed"
     RUN_FAILED = "run.failed"
     TOOL_EXECUTED = "tool.executed"
     TOOL_DENIED = "tool.denied"
@@ -246,7 +249,12 @@ class EventsPointer(BaseModel):
     last_event_id: Optional[str] = None
     last_seq: Optional[int] = None
     tail: List[Event] = Field(default_factory=list)
-
+class Iteration(BaseModel):
+    global_iteration:int
+    planner_reviewer_iteration_current:int
+    coder_tester_reflector_iteration_current:int
+    global_iterations_used:int    
+    
 class BlackboardState(TypedDict):
     """
     The authoritative Run State Machine (Blackboard) for a run.
@@ -266,7 +274,7 @@ class BlackboardState(TypedDict):
     
     status: RunStatus
     phase: Optional[str]
-    iteration: Dict[str, Any]
+    iteration: Iteration
     
     plan: Optional[Plan]
     microtasks: List[Microtask]
@@ -321,11 +329,12 @@ def create_initial_blackboard_state(
         policy=policy,
         status=status,
         phase="bootstrap",
-        iteration={
-            "global_step": 0,
-            "global_iterations_used": 0,
-            "current_loop_reason": None,
-        },
+        iteration=Iteration(
+            global_iteration=0,
+            planner_reviewer_iteration_current=0,
+            coder_tester_reflector_iteration_current=0,
+            global_iterations_used=0,
+        ),
         plan=None,
         microtasks=[],
         current_microtask_id=None,

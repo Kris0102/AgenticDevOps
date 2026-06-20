@@ -18,6 +18,7 @@ from orchestrator.coder_node import CoderRunner
 from orchestrator.planner_node import PlannerRunner
 from orchestrator.reviewer_node import ReviewerRunner
 from orchestrator.tester_node import TesterRunner
+from orchestrator.deploy_node import DeployRunner
 
 load_dotenv()
 
@@ -74,6 +75,20 @@ class OrchestratorGraph:
     def _reflector(self, state: BlackboardState) -> Dict[str, Any]:
         _log.info("node.enter", node="reflector")
         return {}
+
+    def _deploy(self, state: BlackboardState) -> Dict[str, Any]:
+        """Gate producer for the deploy phase. Emits READY_TO_DEPLOY and funnels it
+        through the shared HITL gate — when 'deploy' is in policy.hitl_checkpoints the
+        push pauses for human approval; otherwise it passes straight to deploy_push."""
+        _log.info("node.enter", node="deploy")
+        return HitlGate.apply(Phase.DEPLOY, {"status": RunStatus.READY_TO_DEPLOY}, state)
+
+    def _deploy_push(self, state: BlackboardState) -> Dict[str, Any]:
+        """Actor: stages/commits/pushes the sandbox to a run_id-named branch. Reached
+        only after the deploy gate clears (or when no gate is configured)."""
+        _log.info("node.enter", node="deploy_push")
+        result = DeployRunner(state).invoke()
+        return {**result, "status": RunStatus.DONE}
 
     def _hitl(self, state: BlackboardState) -> Dict[str, Any]:
         """Shared HITL pause point. Suspends the graph via langgraph `interrupt()`
@@ -149,6 +164,8 @@ class OrchestratorGraph:
             return "reflector"
         if status == RunStatus.NEEDS_CODE:
             return "coder"
+        if status == RunStatus.DONE:
+            return "deploy"
         return END
 
     @staticmethod
@@ -166,6 +183,19 @@ class OrchestratorGraph:
             return "tester"
         if status == RunStatus.REFLECT:
             return "reflector"
+        if status == RunStatus.READY_TO_DEPLOY:
+            return "deploy_push"
+        return END
+
+    @staticmethod
+    def _deploy_router(state: BlackboardState) -> str:
+        """Deploy gate verdict: NEEDS_HITL_APPROVAL → hitl (await human); READY_TO_DEPLOY
+        → deploy_push (gate cleared / not configured). Any other status halts at END."""
+        status = state.get("status")
+        if status == RunStatus.NEEDS_HITL_APPROVAL:
+            return "hitl"
+        if status == RunStatus.READY_TO_DEPLOY:
+            return "deploy_push"
         return END
 
     # ==========================================
@@ -180,6 +210,8 @@ class OrchestratorGraph:
         builder.add_node("coder", self._coder)
         builder.add_node("tester", self._tester)
         builder.add_node("reflector", self._reflector)
+        builder.add_node("deploy", self._deploy)
+        builder.add_node("deploy_push", self._deploy_push)
         builder.add_node("hitl", self._hitl)
 
         # bootstrapper runs outside the checkpointed graph (RunLauncher calls it
@@ -207,7 +239,7 @@ class OrchestratorGraph:
         builder.add_conditional_edges(
             "tester",
             self._tester_router,
-            {"hitl": "hitl", "reflector": "reflector", "coder": "coder", END: END},  # right now it is possible to route back from the tester to the coder, but in the future,
+            {"hitl": "hitl", "reflector": "reflector", "coder": "coder", "deploy": "deploy", END: END},  # right now it is possible to route back from the tester to the coder, but in the future,
             #once we have a real tester that can distinguish between "fixable" failures (e.g. flake8 errors) and more complex ones (e.g. failed unit tests), we may want to route only the former back to coder and the latter to reflector for diagnosis before retrying. In that case, the tester_router would need to be updated to route to reflector on certain failure states instead of coder, and this edge would need to be updated accordingly.
         )
         builder.add_conditional_edges(
@@ -216,13 +248,21 @@ class OrchestratorGraph:
             {"coder": "coder", END: END},
         )
 
+        # Deploy (terminal): tester DONE → deploy gate → (hitl) → deploy_push → END.
+        builder.add_conditional_edges(
+            "deploy",
+            self._deploy_router,
+            {"hitl": "hitl", "deploy_push": "deploy_push", END: END},
+        )
+        builder.add_edge("deploy_push", END)
+
         # Shared HITL gate: suspends via interrupt(), then dispatches on the
         # human-resolved status (approve advances, reject loops back).
         builder.add_conditional_edges(
             "hitl",
             self._hitl_router,
             {"planner": "planner", "coder": "coder", "tester": "tester",
-             "reflector": "reflector", END: END},
+             "reflector": "reflector", "deploy_push": "deploy_push", END: END},
         )
 
         return builder

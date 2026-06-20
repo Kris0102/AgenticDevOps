@@ -64,7 +64,8 @@ class HitlResume(BaseModel):
 class Phase(str, Enum):
     PLAN = "plan"
     CODE = "code"
-    TEST = "test" 
+    TEST = "test"
+    DEPLOY = "deploy"
     def __to_enum__(self, word):
         return self.__class__(word)
     def __str__(self) -> str:
@@ -102,6 +103,9 @@ class HitlGate:
         # tester's pass status is provisional until the real Tester lands — it marks
         # the microtask done / run done on a green check. Revisit when wired.
         Phase.TEST: GateSpec(trigger=RunStatus.DONE, reject=RunStatus.REFLECT),
+        # deploy is a one-shot outward push; approve → push, reject → end the run
+        # un-deployed (no loop-back, so no feedback channel — see _write_feedback).
+        Phase.DEPLOY: GateSpec(trigger=RunStatus.READY_TO_DEPLOY, reject=RunStatus.DONE),
     }
 
     @staticmethod
@@ -222,6 +226,11 @@ class HitlGate:
                 "review_feedback": list(plan.review_feedback) + [entry],
             })
             return {"plan": new_plan} # Plan with appended feedback; the planner reads this on a re-plan to revise rather than regenerate blind
+
+        # deploy reject just ends the run (status → DONE via GateSpec.reject); there's
+        # no loop-back phase to seed, so no feedback channel.
+        if phase == Phase.DEPLOY:
+            return {}
 
         # code / test -> seed a Reflection the reflector picks up
         else:

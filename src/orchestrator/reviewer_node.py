@@ -6,11 +6,11 @@ from langchain_core.tools import BaseTool
 
 from db.db import db
 from db.event_log import EventLogger
-from db.models import Run
+from db.models import Artifact, Run
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
-from orchestrator.state import BlackboardState, EventType, RunStatus
+from orchestrator.state import BlackboardState, EventType, RunStatus, Iteration, Constraints
 from agents.Planning.Reviewer.reviewer import Reviewer
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.gateway import ToolGateway
@@ -50,6 +50,34 @@ class ReviewerRunner:
 
     def invoke(self) -> Dict[str, Any]:
         with db.session_scope() as db_session:
+            iteration: Iteration = self.state.get("iteration")
+            constraints: Constraints = self.state.get("constraints")
+
+            # Runaway planner↔reviewer guard. Cap the planning loop at
+            # max_total_iterations; on exhaustion fail the run (and persist it)
+            # rather than re-invoking the LLM forever.
+            if iteration.planner_reviewer_iteration_current >= constraints.max_total_iterations:
+                _log.warning(
+                    "reviewer.max_iterations_exceeded",
+                    current=iteration.planner_reviewer_iteration_current,
+                    limit=constraints.max_total_iterations,
+                    recovery="setting status to FAILED",
+                )
+                result = {"status": RunStatus.FAILED}
+                self._persist_results(db_session, result)
+                EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_FAILED, {
+                    "reason": "planner-reviewer iteration cap exceeded",
+                    "iterations": iteration.planner_reviewer_iteration_current,
+                    "limit": constraints.max_total_iterations,
+                })
+                return result
+
+            # Increment via the node-return dict — never mutate state in place
+            # (LangGraph checkpoints state from returned deltas).
+            next_iteration = iteration.model_copy(update={
+                "planner_reviewer_iteration_current": iteration.planner_reviewer_iteration_current + 1,
+            })
+
             try:
                 tools = self._init_tools(db_session)
                 result = Reviewer(run_id=self.run_id, tools=tools).invoke(self.state)
@@ -57,7 +85,9 @@ class ReviewerRunner:
                 _log.error("reviewer.unexpected_error", error=str(error))
                 raise
 
+            result["iteration"] = next_iteration
             self._persist_results(db_session, result)
+            self._emit_review_event(db_session, result)
             return result
 
     def _persist_results(self, db_session, result: Dict[str, Any]) -> None:
@@ -74,3 +104,36 @@ class ReviewerRunner:
                 "to": new_status.value,
                 "reason": "plan reviewer completed",
             })
+
+        # Persist the review verdict as a queryable artifact row, mirroring the
+        # planner's plan artifact. The blackboard already carries a state.Artifact
+        # in artifacts_index, but that's checkpoint-only — this makes the decision +
+        # notes queryable in the `artifacts` table. Skipped on the cap-FAILED path
+        # (no review ran, so no feedback).
+        plan = result.get("plan")
+        feedback = plan.review_feedback[-1] if plan and plan.review_feedback else None
+        if feedback:
+            iteration = result.get("iteration")
+            n = iteration.planner_reviewer_iteration_current if iteration else 0
+            db_session.merge(Artifact(
+                artifact_id=f"art_{self.run_id}_review_{n}",
+                run_id=self.run_id,
+                kind="review",
+                content_text=f"[{feedback.decision.value}] {feedback.notes}",
+                created_at=now,
+            ))
+
+    def _emit_review_event(self, db_session, result: Dict[str, Any]) -> None:
+        """Durable domain event for the review verdict — mirrors the planner's
+        PLAN_DRAFTED. Decision + notes come off the latest review_feedback the
+        Reviewer appended to the plan; without it the audit log has no record a
+        review happened, only a status flip."""
+        plan = result.get("plan")
+        feedback = plan.review_feedback[-1] if plan and plan.review_feedback else None
+        status = result.get("status")
+        EventLogger.log(db_session, self.run_id, self.name, EventType.PLAN_REVIEWED, {
+            "decision": feedback.decision.value if feedback else None,
+            "notes": feedback.notes[:300] if feedback else "",
+            "next_status": status.value if status else None,
+            "iteration": result.get("iteration", {}).planner_reviewer_iteration_current if result.get("iteration") else None,
+        })

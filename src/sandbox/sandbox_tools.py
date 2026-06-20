@@ -229,51 +229,9 @@ class DockerSandboxTools:
         return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr, duration_ms=duration_ms)
 
     # ---- Git helpers (still using exec) ----
-
-    def git_clone_and_checkout(
-        self,
-        *,
-        sandbox_id: str,
-        repo_url: str,
-        base_sha: Optional[str] = None,
-        repo_dir: str = "repo",
-        timeout_s: int = 600,
-    ) -> None:
-        """
-        Clone repo and optionally checkout a specific SHA.
-        If base_sha is None (empty/new repo), clone only — no checkout.
-        """
-        clone = self.sandbox_exec(
-            sandbox_id=sandbox_id,
-            cmd=["git", "clone", repo_url, repo_dir],
-            timeout_s=timeout_s,
-            cwd=self.workdir,
-        )
-        if clone.exit_code != 0:
-            raise SandboxError(f"git clone failed: {clone.stderr or clone.stdout}")
-        def clean_repo_url(url: str) -> str:
-            if "ghp_" in url:
-                # e.g.   erase ghp_<key>
-                git_token_start = url.find("ghp_")
-                git_token_end = url.find("@", git_token_start)
-                if git_token_end == -1:
-                    git_token_end = len(url)
-                url = url[:git_token_start] + url[git_token_end:]
-               
-            return url
-        repo_url = clean_repo_url(repo_url)
-        if not base_sha:
-            _log.info("sandbox.clone_no_checkout", repo_url=repo_url, reason="no base_sha")
-            return
-
-        checkout = self.sandbox_exec(
-            sandbox_id=sandbox_id,
-            cmd=["git", "checkout", base_sha],
-            timeout_s=timeout_s,
-            cwd=f"{self.workdir}/{repo_dir}",
-        )
-        if checkout.exit_code != 0:
-            raise SandboxError(f"git checkout failed: {checkout.stderr or checkout.stdout}")
+    # clone/checkout + branch/commit/push moved to gitops.GitOps (the GitHub boundary,
+    # ADR 0012). `repo_diff` stays here — it's local working-tree inspection the coder
+    # uses for grounded verification, not a remote/GitHub operation.
 
     def repo_diff(self, *, sandbox_id: str, repo_dir: str = "repo") -> str:
         diff = self.sandbox_exec(
@@ -283,6 +241,9 @@ class DockerSandboxTools:
             cwd=f"{self.workdir}/{repo_dir}",
         )
         return diff.stdout
+    
+    # NOTE: branch/commit/push moved to gitops.GitOps (the GitHub boundary, ADR 0012).
+    # DockerSandboxTools stays pure sandbox exec; GitOps delegates back via sandbox_exec.
 
     # ---- File IO (PoC) ----
     # read file is alos possible via `cat` in sandbox_exec, but this is more efficient for large files and avoids shell escaping issues. For production, consider implementing fs.write_file with put_archive for safer file writes.

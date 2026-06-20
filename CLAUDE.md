@@ -31,7 +31,11 @@ src/
         investigation_support.py   # _default_max_tool_steps, _investigation_recursion_limit, _last_ai_text, _log_investigation_steps
         prompts/                   # Prompt templates (investigator.py, synthesis.py)
       Reviewer/
-        reviewer.py                # Plan Reviewer (stub)
+        reviewer.py                # Plan Reviewer — two-phase (investigate + review), structured approve/reject
+        reviewer_tools.py          # ReviewerTools: gateway-routed read/exec/semantic-search (read-only)
+        review_output.py           # create_review_file_as_output — debug review dump to disk
+        investigation_support.py   # shared investigation helpers (mirrors planner)
+        prompts/reviewer.py        # REVIEWER_SYSTEM_PROMPT + build_investigation/review_prompt
     Implementing/
       Coder/
         coder.py                 # Coder — single ReAct loop, deterministic repo.diff verification
@@ -45,9 +49,11 @@ src/
     permissions.py               # RolePermissions subclasses — per-role tool + sandbox-cmd allowlists
     Roles.py                     # AgentRole enum
   sandbox/
-    sandbox_tools.py             # DockerSandboxTools: create/exec/clone/destroy (DB-backed)
+    sandbox_tools.py             # DockerSandboxTools: create/exec/destroy + repo_diff (DB-backed). Pure sandbox exec — no remote git
     Tools.py                     # Tools enum — sandbox tool identifiers, dispatched via match/case in gateway
     Dockerfile                   # Base sandbox image (agentic-sandbox:0.1)
+  gitops/
+    gitops.py                    # GitOps — GitHub boundary (ADR 0012): clone_and_checkout, push_branch (agent/run-<run_id>), create_pr (stub). Token centralized here
   db/
     db.py                        # SQLAlchemy engine + session_scope
     event_log.py                 # EventLogger — centralized Event-row construction (session.add only, never commit)
@@ -91,10 +97,16 @@ first architecture audit and its remediation order.
 START → planner → plan_reviewer → (planner | coder | hitl)        # planning loop
                   coder → tester → (reflector | hitl)             # execution loop
                   tester → reflector → coder
-                  hitl → (planner | coder | tester | reflector | END)
+                  tester → deploy → (hitl) → deploy_push → END    # deploy (terminal)
+                  hitl → (planner | coder | tester | reflector | deploy_push | END)
 
 bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 0005.
 ```
+- **Deploy (terminal)**: on `DONE` the tester routes to `deploy` (gate producer →
+  emits `READY_TO_DEPLOY`, funnels through the shared `hitl` gate). Approve →
+  `deploy_push` drives `gitops.GitOps` to stage/commit/push the sandbox to
+  `agent/run-<run_id>` (bypasses ToolGateway — not an LLM agent), then END. Reject → `DONE` → END
+  (run finished, un-deployed). See ADR 0012.
 - **Planning loop**: `planner → plan_reviewer`. Reviewer rejects (`NEEDS_PLAN`) → back to
   planner to revise; approves (`NEEDS_CODE`) → coder.
 - **Execution loop**: `coder → tester`. On test failure (`REFLECT`) tester goes to
@@ -116,6 +128,7 @@ The three gate points and their resume routing:
 | `plan` | plan_reviewer approves | coder            | planner (note → `plan.review_feedback`) |
 | `code` | coder produces a diff  | tester           | **reflector** → coder (note → a `Reflection`) |
 | `test` | tester passes          | next microtask   | **reflector** → coder (note → a `Reflection`) |
+| `deploy` | tester emits `DONE`  | `deploy_push` (push) | END, un-deployed (`DONE`; no loop-back, no note channel) |
 
 Reject is stage-dependent and ALWAYS requires a note (no note = re-`interrupt()`, stays
 paused). `code`/`test` reject does NOT go straight to the coder — it goes through the
@@ -205,19 +218,19 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | DB persistence (microtasks, events, artifacts, Run.status) | Done |
 | Planner↔Reviewer + Coder→Tester→Reflector loops (wired) | Done |
 | HITL gates (plan/code/test, native `interrupt()`) | Done — see ADR 0006 |
-| Plan Reviewer | Stub |
+| Plan Reviewer | Done — two-phase (independent investigation via read-only tools, then structured approve/reject). Appends a `ReviewFeedback` to the plan, emits `PLAN_REVIEWED`, caps the planner↔reviewer loop at `Constraints.max_total_iterations` (→ FAILED + `RUN_FAILED`). See ADR 0011 |
 | Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced |
 | Tester | Minimal stub — marks current microtask COMPLETED, `unit_tests` check recorded as "skipped" (not actually run), routes back to coder (more PENDING) or DONE. Unblocks coder<->tester loop end-to-end; real test execution still TODO |
 | Reflector | Stub (returns `{}`) — not yet exercised since the stub Tester never emits `REFLECT` |
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
-| GitOps (webhooks + PR) | Not started |
+| GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012 |
 | Provider abstraction | Not started |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
 | `reflections` DB table | Not started |
 
 ## Known bugs / remaining TODOs (priority order)
 See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.
-1. **Stop conditions PARTIALLY enforced** (remaining half: must-fix, safety): `CoderRunner._check_stop_limit` now refuses a microtask when `attempts >= (Microtask.max_attempts or Constraints.max_microtask_attempts)` → FAILED, killing the runaway coder↔reflector loop. STILL MISSING: `max_total_iterations` in the routers (`_plan_review_router`/`_tester_router`/`_hitl_router`) — a never-approving reviewer still loops planner↔reviewer forever.
+1. **Stop conditions PARTIALLY enforced** (remaining half: must-fix, safety): `CoderRunner._check_stop_limit` refuses a microtask when `attempts >= (Microtask.max_attempts or Constraints.max_microtask_attempts)` → FAILED, killing the runaway coder↔reflector loop. The planner↔reviewer loop is now also capped — `ReviewerRunner.invoke` fails the run when `Iteration.planner_reviewer_iteration_current >= Constraints.max_total_iterations` (enforced in the node, not the router; counter incremented via the node-return dict). STILL MISSING: the same cap on the coder↔tester↔reflector loop (`Iteration.coder_tester_reflector_iteration_current` is defined but never incremented) and a single whole-run `global_iterations_used` counter (currently dead — `global_iteration` + `global_iterations_used` are redundant, collapse to one).
 2. ~~**`run_state` never written**~~ — **SUPERSEDED by ADR 0005**: hand-rolled `run_state` snapshots replaced by the LangGraph PostgresSaver checkpointer (snapshots every superstep, keyed by `thread_id=run_id`). `run_state` table dropped.
 3. ~~**`ToolGateway` commits mid-transaction**~~ — **FIXED**: `_log_event` now delegates to `EventLogger.log()` (`db/event_log.py`), which only ever calls `session.add()`. Commit ownership correctly sits with the lending `session_scope()`.
 4. ~~**`planner → END` shortcut**~~ — **FIXED**: full loops wired (`planner → plan_reviewer → (planner | coder)`, `coder → tester → reflector → coder`), plus the shared `hitl` gate (ADR 0006). Phase agents are still stubs (#8).
@@ -251,7 +264,7 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 See `docs/Blackboard.md` §6.7 for full registry. Key ones:
 - `run.created`, `run.status_changed`, `run.completed`, `run.failed`
 - `sandbox.created`, `sandbox.command_finished`
-- `repo.cloned`, `gitops.pr_created`
+- `repo.cloned`, `gitops.pushed`, `gitops.pr_created`
 - `plan.drafted`, `plan.reviewed`, `plan.approved`
 - `microtask.started`, `microtask.completed`, `microtask.failed`
 - `tool.executed`, `tool.denied`

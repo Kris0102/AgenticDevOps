@@ -6,6 +6,27 @@ from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
 
+
+class Phase(str, Enum):
+    """The gateable phases of a run. Lives here (not in hitl.py) so the state models
+    can type `hitl_checkpoints` against it without a state<->hitl import cycle; hitl.py
+    imports it back from here."""
+    PLAN = "plan"
+    CODE = "code"
+    TEST = "test"
+    DEPLOY = "deploy"
+
+    @classmethod
+    def try_from_str(cls, s: str) -> Optional["Phase"]:
+        try:
+            return cls(s)
+        except ValueError:
+            return None
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class MicrotaskStatus(str, Enum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
@@ -100,9 +121,6 @@ class Policy(BaseModel):
     require_hitl_for_pr: bool
     require_hitl_for_merge: bool
     require_hitl_for_prod_deploy: bool
-    # Phase names that pause the run at NEEDS_HITL_APPROVAL before proceeding —
-    # e.g. ["plan", "code", "test"]. One gate mechanism, configured per-run/risk-level.
-    hitl_checkpoints: List[str] = Field(default_factory=list)
     security_scans_required: List[str]
     ci_required: bool
     protected_branches: List[str]
@@ -218,9 +236,14 @@ class PendingApproval(BaseModel):
     reviewer: Optional[str] = None
     notes: Optional[str] = None
 
+
+    
+    
 class HITL(BaseModel):
     required: bool
     pending_approvals: List[PendingApproval] = Field(default_factory=list)
+    hitl_checkpoints: List[Phase] = Field(default_factory=list)
+    
 
 class Result(BaseModel):
     outcome: str
@@ -308,6 +331,7 @@ def create_initial_blackboard_state(
     objective: Objective,
     constraints: Constraints,
     policy: Policy,
+    hitl :HITL,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""

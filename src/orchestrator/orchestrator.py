@@ -1,26 +1,28 @@
+import os
+import sys
 from typing import Any, Dict
 
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
-import os
-import sys
 
-# Ensure required imports
+# Allow `python orchestrator/orchestrator.py`-style entry: make `src/` importable
+# before the intra-package imports below resolve.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from observability import Category, get_logger
-from orchestrator.state import BlackboardState, RunStatus
-from orchestrator.checkpointer import checkpointer
 
-_log = get_logger(Category.ORCHESTRATOR)
-from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
+from observability import Category, get_logger
+from orchestrator.checkpointer import checkpointer
 from orchestrator.coder_node import CoderRunner
+from orchestrator.deploy_node import DeployRunner
+from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
 from orchestrator.planner_node import PlannerRunner
 from orchestrator.reviewer_node import ReviewerRunner
+from orchestrator.state import BlackboardState, RunStatus
 from orchestrator.tester_node import TesterRunner
-from orchestrator.deploy_node import DeployRunner
 
 load_dotenv()
+
+_log = get_logger(Category.ORCHESTRATOR)
 
 
 class OrchestratorGraph:
@@ -97,7 +99,7 @@ class OrchestratorGraph:
         _log.info("node.enter", node="hitl", detail="awaiting human decision")
         payload = HitlGate.request_payload(state)
         while True:
-            decision = HitlResume.model_validate(interrupt(payload.model_dump(mode="json")))
+            decision = HitlResume.model_validate(interrupt(payload.model_dump(mode="json")))  # the graph is interrupted unitil Command(resume={...}) arrives; the payload is the same as the review context the dashboard fetches, so the human has all the context they need to make a decision and doesn't have to do a separate fetch
             if decision.decision == HitlDecision.REJECT and not decision.note:
                 payload = payload.model_copy(update={"error": "reject requires a note — resubmit with --note"})
                 continue

@@ -65,6 +65,14 @@ src/
     chunker.py                   # tree-sitter AST chunking (function/class) + whole-file fallback
     engine.py                    # ContextEngine: ingest_baseline / sync_workspace / search
   providers/                     # Pluggable LLM provider interface (TODO: implement)
+  api/                           # FastAPI control plane + dashboard backend (ADR 0013) — NOT an LLM agent, bypasses ToolGateway
+    app.py                       # Routes: POST /runs, /runs/{id}/resume; GET /runs/{id}{,/hitl,/events,/logs,/logs/stream}
+    service/service.py           # Service — headless run engine: run/resume (one graph.invoke per gate), HITL review context, log+event feeds
+    requests/requests.py         # RunRequest (objective/repo/constraints/policy/hitl/trigger)
+    responses/responses.py       # RunResponse, HitlReviewContext (PlanView/DiffView), EventView (durable history), LogView (live)
+  observability/
+    log_bus.py                   # RunLogBus — in-memory per-run ring buffer; structlog tee → dashboard SSE (live logs, ephemeral). ADR 0013
+    logging_config.py            # structlog setup + _bus_tee processor (feeds log_bus)
 deploy/
   docker-compose.yml             # Postgres + pgAdmin + sandbox image builder
 scripts/
@@ -147,13 +155,38 @@ docker compose -f deploy/docker-compose.yml --profile donotstart build sandbox-i
 # 3. Run migrations
 cd /home/kristian/project/AgenticDevOps && venv/bin/alembic upgrade head
 
-# 4. Run
+# 4a. Run via CLI (being deleted — see ADR 0013; prefer the API below)
 cd src
 ../venv/bin/python main.py \
   --repo_url https://github.com/owner/repo \
   --base-sha <SHA> \          # omit for brand-new repos with no commits
   --task_description "Your task here"
+
+# 4b. Run via Control API (dashboard backend — the going-forward surface)
+cd src
+../venv/bin/uvicorn api.app:app --port 8000     # serves REST + SSE; needs Postgres up
+#   POST /runs                         trigger a run (body = RunRequest)
+#   GET  /runs/{id}                    poll status / run_state / hitl_phase
+#   GET  /runs/{id}/hitl               paused-gate review context (plan or green/red diff)
+#   POST /runs/{id}/resume             {decision: approve|reject, note}
+#   GET  /runs/{id}/logs/stream        live logs over SSE (structlog bus)
+#   GET  /runs/{id}/events?after=<seq> durable history (events audit table)
 ```
+
+## Control API ↔ graph (ADR 0013)
+The API in `src/api/` is the dashboard's only backend — it drives the **same checkpointed
+graph**, it is not a second engine. Key invariants:
+- **One `graph.invoke()` per gate.** `POST /runs` drives to the first HITL pause or END;
+  each `POST /resume` (`Command(resume=HitlResume…)`) advances exactly one gate. Runs in a
+  `BackgroundTasks` worker → endpoints return `202` immediately; the dashboard polls.
+- **Resume does NOT re-bootstrap** (the CLI did, because each `--approve` was a cold process).
+  A HITL pause is a mid-graph suspend in the same live process — sandbox + checkpoint intact.
+- **Approve/reject routing is unchanged** — `HitlGate.resolve()` sets the next status and
+  routes the note into the existing channel (plan→`review_feedback`, code/test→`Reflection`).
+- **Two log feeds, by purpose:** *live* = structlog tee'd into `observability/log_bus.py` →
+  SSE (ephemeral, granular: `node.enter`, tool steps); *durable history* = `events` table
+  polled by `seq`. The logger is the live source; the table is the record. Right-sized to the
+  self-hosted single-user deployment — no resumable-SSE / LISTEN-NOTIFY machinery.
 
 ## DB management scripts
 ```bash
@@ -200,7 +233,7 @@ Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.
 | `sandboxes` | Docker container ID per run — survives restarts |
 | `microtasks` | Planner output persisted after each plan — survives crashes |
 | `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |
-| `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. |
+| `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. Has a monotonic `seq` (BIGSERIAL identity) — the dashboard history cursor (`GET /runs/{id}/events?after=<seq>`). See ADR 0013 |
 | `code_chunks` | Context Engine semantic index — AST chunks + `Vector(384)` embedding, `namespace` baseline/workspace (ADR 0010). Needs the `vector` extension (`pgvector/pgvector` image) |
 | `checkpoints*` | LangGraph PostgresSaver — blackboard snapshot per superstep (ADR 0005; replaced `run_state`) |
 
@@ -224,6 +257,7 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Reflector | Stub (returns `{}`) — not yet exercised since the stub Tester never emits `REFLECT` |
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012 |
+| Control API + dashboard backend | Done — FastAPI (`src/api/`, ADR 0013). Trigger runs + HITL approve/reject over HTTP (`POST /runs/{id}/resume` → `Command(resume=...)`); one `graph.invoke()` per gate (no re-bootstrap on resume — mid-graph pause, sandbox alive). HITL review context (`GET /runs/{id}/hitl`): plan + microtasks for a `plan` gate, raw green/red diff for a `code` gate. Notify by poll (`GET /runs/{id}` → `run_state`/`hitl_phase`). Live logs: structlog → in-memory `RunLogBus` → SSE (`/logs/stream`); durable history: `events` table poll (`/events?after=<seq>`). Runs in `BackgroundTasks` (move to a worker before prod). CLI (`main.py`) being deleted — don't mirror it |
 | Provider abstraction | Not started |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
 | `reflections` DB table | Not started |

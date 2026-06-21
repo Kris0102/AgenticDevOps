@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
-from pydantic import BaseModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from agents.Planning.Planner.investigation_support import (
     _default_max_tool_steps,
@@ -55,8 +55,33 @@ def _build_revision_context(plan: Plan) -> str:
     return "\n".join(lines)
 
 
+# PlanDraft mirrors `Plan` minus the system-managed review-feedback channel (appended
+# by reviewer/human, never authored by the LLM). It was kept out of the LLM output
+# schema because the model echoed prompt labels (e.g. 'Automated reviewer') into that
+# channel's `source`, breaking enum validation. The docstring is intentionally neutral
+# so the field name never appears in the schema description the LLM reads.
+class PlanDraft(BaseModel):
+    """The implementation plan: summary, architecture, assumptions, risks, questions."""
+
+    summary: str
+    architecture_notes: str
+    data_contracts: List[str] = Field(default_factory=list)
+    assumptions: List[str]
+    risks: List[str]
+    open_questions: List[str]
+
+
+# What the LLM returns via structured output (see PlanDraft note on the omitted channel).
+class PlannerDraft(BaseModel):
+    """A complete implementation plan plus its microtasks."""
+
+    plan: PlanDraft
+    microtasks: List[Microtask]
+
+
 class PlannerOutput(BaseModel):
-    """The structured output format expected from the Planner LLM."""
+    """Internal planner result. `plan` is the full `Plan` (with the system-managed
+    `review_feedback` channel); built from a `PlannerDraft` after the LLM responds."""
 
     plan: Plan
     microtasks: List[Microtask]
@@ -96,7 +121,7 @@ class Planner:
             )
 
             # Enforce structured output at the end of the pipeline
-            self.structured_llm = self.llm.with_structured_output(PlannerOutput, method="json_mode")
+            self.structured_llm = self.llm.with_structured_output(PlannerDraft, method="json_mode")
 
             # Setup the investigator ReAct agent if tools are available
             if self.tools:
@@ -180,7 +205,7 @@ class Planner:
 
         # 2. Synthesis Phase (Structured Output) — retried with feedback if quality gate rejects
         _log.info("planner.synthesizing")
-        schema_json = PlannerOutput.model_json_schema()
+        schema_json = PlannerDraft.model_json_schema()
         previous_attempt_feedback: Optional[str] = None
         result: Optional[PlannerOutput] = None
 
@@ -194,10 +219,13 @@ class Planner:
                 raw = self.structured_llm.invoke(
                     [HumanMessage(content=synthesis_prompt)],
                 )
-                if isinstance(raw, PlannerOutput):
-                    raw_result = raw
-                else:
-                    raw_result = PlannerOutput.model_validate(raw)
+                draft = raw if isinstance(raw, PlannerDraft) else PlannerDraft.model_validate(raw)
+                # Lift the draft into a full PlannerOutput: the LLM never authors
+                # review_feedback, so it starts empty and is carried forward below.
+                raw_result = PlannerOutput(
+                    plan=Plan(**draft.plan.model_dump(), review_feedback=[]),
+                    microtasks=draft.microtasks,
+                )
             except (APIConnectionError, APITimeoutError) as exception:
                 _log.error("planner.cluster_unreachable", phase="synthesis",
                            hint="ensure VPN connected", error=str(exception))

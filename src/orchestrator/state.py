@@ -366,7 +366,7 @@ def create_initial_blackboard_state(
         artifacts_index=[],
         reflections=[],
         security=Security(),
-        hitl=HITL(required=False),
+        hitl=hitl,   # use the caller's HITL (gate checkpoints) — NOT a fresh empty one
         result=None,
         events=EventsPointer(stream_id=run_id),
         messages=[],

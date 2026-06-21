@@ -134,7 +134,7 @@ class Service:
             current_microtask_id=payload.get("current_microtask_id"),
             prompt=payload.get("prompt", ""),
             plan=self._plan_view(state) if phase == Phase.PLAN.value else None,
-            diff=self._diff_view(state) if phase == Phase.CODE.value else None,
+            diff=self._gate_diff(phase, state),
         )
 
     def is_paused(self, run_id: str) -> bool:
@@ -242,14 +242,27 @@ class Service:
             ],
         )
 
-    def _diff_view(self, state: dict) -> Optional[DiffView]:
+    def _gate_diff(self, phase: Optional[str], state: dict) -> Optional[DiffView]:
+        """Which diff a gate shows:
+        - code   → the current microtask's diff (focused, per-step review)
+        - deploy → the FULL cumulative diff about to be pushed (holistic, end review)
+        Both read `evidence.latest_diff`: the coder's `git diff` is the whole working
+        tree, nothing commits before the deploy gate, so at deploy `latest_diff` already
+        spans every microtask. Only the framing label differs."""
+        if phase == Phase.CODE.value:
+            return self._diff_view(state)
+        if phase == Phase.DEPLOY.value:
+            return self._diff_view(state, summary="Full cumulative diff to be pushed")
+        return None
+
+    def _diff_view(self, state: dict, summary: Optional[str] = None) -> Optional[DiffView]:
         evidence = state.get("evidence")
         latest = evidence.latest_diff if evidence else None
         if latest is None:
             return None
         return DiffView(
             microtask_id=state.get("current_microtask_id"),
-            summary=latest.summary,
+            summary=summary or latest.summary,
             base_sha=latest.base_sha,
             diff_text=self._artifact_text(latest.diff_artifact_ref) or "",
         )

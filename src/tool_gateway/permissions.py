@@ -40,12 +40,12 @@ class CoderPermissions(RolePermissions):
 
 
 class TesterPermissions(RolePermissions):
-    """Runs the test suite and reads results. No write/diff tools — Tester
-    observes, it doesn't edit (keeps the coder/tester boundary clean)."""
+    """Runs the test suite and reads results. Includes write tools for writing tests and 'pytest' command permission,
+    but the Tester should never edit existing code."""
 
     role = Roles.TESTER
-    tools = [Tools.SANDBOX_RUN, Tools.FS_READ_FILE]
-    allowed_commands = ["git", "python", "pytest", "npm", "node", "grep", "ls", "cat", "find"]
+    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN]
+    allowed_commands = ["git", "python", "pip", "pytest", "node", "npm", "npx", "apt-get", "grep", "ls", "cat", "find", "mkdir"]
 
 
 class ReviewerPermissions(RolePermissions):

@@ -217,6 +217,15 @@ class PendingApproval(BaseModel):
     status: ApprovalStatus = ApprovalStatus.PENDING
     reviewer: Optional[str] = None
     notes: Optional[str] = None
+    # Original advance status before it was rewritten to NEEDS_HITL_APPROVAL.
+    # Used by resolve() to re-emit the correct status on approve (critical for gates
+    # with multiple triggers, e.g. TEST fires on both NEEDS_CODE and DONE).
+    forward_status: Optional[str] = None
+    # Microtask that was being processed when the gate fired.
+    # Required by TEST rejection to reset the microtask back to IN_PROGRESS so the
+    # tester can re-select and re-run it (the microtask is already COMPLETED in state
+    # by the time the gate fires — without this the tester finds no pending work).
+    microtask_id: Optional[str] = None
 
 class HITL(BaseModel):
     required: bool
@@ -295,6 +304,13 @@ class BlackboardState(TypedDict):
     # Execution diagnostics
     error_logs: List[str]
 
+    # Tester feedback channel: set by HITL reject on the test gate, cleared by the
+    # tester after it reads it so it doesn't leak into later microtasks.
+    test_rejection_note: Optional[str]
+    # Path to the on-disk tester output file — surfaced in the HITL prompt so the
+    # reviewer knows where to look for the full test output.
+    last_test_output_path: Optional[str]
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -347,4 +363,6 @@ def create_initial_blackboard_state(
         events=EventsPointer(stream_id=run_id),
         messages=[],
         error_logs=[],
+        test_rejection_note=None,
+        last_test_output_path=None,
     )

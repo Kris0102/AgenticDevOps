@@ -6,6 +6,8 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 8000
+RUN pip install --no-cache-dir pytest

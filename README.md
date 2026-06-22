@@ -55,7 +55,7 @@ Open terminal in the repository root and run the following commands.
    ```
 
    ```
-   python main.py --repo_url https://github.com/dopferstefan/python-test-project --base-sha 0223096697270d123063aa991488f39d4c4abfc8 --hitl-checkpoints "plan,code,test" --task_description "Add support for counting words to the python module. In counter.py add a count_words(text) function. In main.py, make sure that the next function is called and added to the console output. Preserve existing exports and code style."
+   python main.py --repo_url https://github.com/dopferstefan/python-test-project --base-sha 0223096697270d123063aa991488f39d4c4abfc8 --hitl-checkpoints "plan,code,test" --task_description "Add support for counting words to the python module. In counter.py add a count_words(text) function. In main.py, make sure that the word count function is called and added to the console output. Preserve the existing code style."
    ```
 
 

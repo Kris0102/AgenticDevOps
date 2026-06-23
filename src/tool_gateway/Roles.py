@@ -11,3 +11,4 @@ class Roles(enum.Enum):
     BOOTSTRAPPER = "bootstrapper"
     HUMAN = "human"
     DEPLOYER = "deployer"
+    REFLECTOR = "reflector"

@@ -198,7 +198,7 @@ class Tester:
         result = self._run_check(check)
 
         test_content = self.tester_tools.read_sandbox_file(test_file)
-        output_path = create_test_file_as_output(self.run_id, microtask, "python", test_file, test_content, result, rejection_note=rejection_note)
+        output_path = create_test_file_as_output(self.run_id, microtask, "python", test_file, test_content, result, rejection_note=rejection_note, reflections=list(state.get("reflections") or []))
 
         return self._build_result(result, final_validation, output_path)
 
@@ -209,6 +209,7 @@ class Tester:
             microtask=microtask,
             test_file=test_file,
             rejection_note=rejection_note,
+            reflections=list(state.get("reflections") or []),
         )
         self.python_agent.invoke(
             {"messages": [HumanMessage(content=prompt)]},
@@ -288,7 +289,7 @@ class Tester:
         result = self._run_check(check)
 
         test_content = self.tester_tools.read_sandbox_file(test_file)
-        output_path = create_test_file_as_output(self.run_id, microtask, "javascript", test_file, test_content, result, rejection_note=rejection_note)
+        output_path = create_test_file_as_output(self.run_id, microtask, "javascript", test_file, test_content, result, rejection_note=rejection_note, reflections=list(state.get("reflections") or []))
 
         return self._build_result(result, final_validation, output_path)
 
@@ -299,6 +300,7 @@ class Tester:
             microtask=microtask,
             test_file=test_file,
             rejection_note=rejection_note,
+            reflections=list(state.get("reflections") or []),
         )
         self.js_agent.invoke(
             {"messages": [HumanMessage(content=prompt)]},

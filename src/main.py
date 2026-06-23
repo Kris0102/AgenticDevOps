@@ -35,7 +35,7 @@ parser.add_argument("--run_id", type=str, required=False, help="Unique identifie
 parser.add_argument("--repo_url", type=str, required=True, help="URL of the repository to operate on.")
 parser.add_argument("--base-sha", type=str, required=False, default=None, help="Base commit SHA. Omit for brand-new repos with no commits.")
 parser.add_argument("--task_description", type=str, required=True, help="Natural language description of the task to accomplish.")
-parser.add_argument("--hitl-checkpoints", type=str, default="", help="Comma-separated phases that pause for human approval, e.g. 'plan,code,test'. Empty = no mid-run gates.")
+parser.add_argument("--hitl-checkpoints", type=str, default="", help="Comma-separated phases that pause for human approval, e.g. 'plan,code'. Empty = no mid-run gates.")
 parser.add_argument("--approve", action="store_true", help="Resume a run paused at a HITL checkpoint by approving it.")
 parser.add_argument("--reject", action="store_true", help="Resume a run paused at a HITL checkpoint by rejecting it (requires --note).")
 parser.add_argument("--note", type=str, default=None, help="Reviewer feedback. Required with --reject; optional with --approve.")

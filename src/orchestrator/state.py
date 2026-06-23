@@ -74,6 +74,7 @@ class EventType(str, Enum):
     TOOL_DENIED = "tool.denied"
     HITL_REQUESTED = "hitl.requested"
     HITL_DECIDED = "hitl.decided"
+    REFLECTION_CREATED = "reflection.created"
     SEMANTIC_BASELINE_INGESTED = "semantic.baseline_ingested"
     SEMANTIC_WORKSPACE_SYNCED = "semantic.workspace_synced"
 

@@ -2,12 +2,29 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from observability import Category, get_logger
-from orchestrator.state import Microtask
+from orchestrator.state import Microtask, Reflection
 
 _log = get_logger(Category.TESTER)
+
+
+def _output_folder(run_id: str, src_dir: Path) -> Path:
+    short_hash = run_id[:8] if len(run_id) >= 8 else run_id
+    output_dir = Path(src_dir, "output")
+    if output_dir.exists():
+        matches = sorted(output_dir.glob(f"*_{short_hash}"))
+        if matches:
+            return matches[0] / "implementing"
+    date_str = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    return output_dir / f"{date_str}_{short_hash}" / "implementing"
+
+
+def _next_iteration(folder: Path, glob_pattern: str) -> int:
+    if not folder.exists():
+        return 1
+    return len(list(folder.glob(glob_pattern))) + 1
 
 
 def create_test_file_as_output(
@@ -18,16 +35,15 @@ def create_test_file_as_output(
     test_file_content: str,
     check_result: Dict[str, Any],
     rejection_note: Optional[str] = None,
+    reflections: Optional[List[Reflection]] = None,
 ) -> str:
     """Write the tester output to disk and return the absolute path."""
     try:
-        initial_file_path = Path(os.path.abspath(sys.argv[0])).parent  # src folder
-        file_path = Path(
-            initial_file_path,
-            "output",
-            f"{run_id}",
-            f"test_output_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt",
-        )
+        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        folder = _output_folder(run_id, src_dir)
+        mt_num = microtask.idx + 1
+        iteration = _next_iteration(folder, f"tester_microtask_{mt_num}_iteration_*.txt")
+        file_path = folder / f"tester_microtask_{mt_num}_iteration_{iteration}.txt"
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         sep = "=" * 70
@@ -59,6 +75,23 @@ def create_test_file_as_output(
                 for line in rejection_note.splitlines():
                     f.write(f"  {line}\n")
                 f.write("\n")
+
+            # ── Prior Reflector Feedback ──────────────────────────────────────
+            task_reflections = [
+                r for r in (reflections or [])
+                if r.microtask_id in (None, microtask.microtask_id)
+            ]
+            if task_reflections:
+                f.write(f"{sep}\n")
+                f.write(f"PRIOR REFLECTOR FEEDBACK  ({len(task_reflections)} total)\n")
+                f.write(f"{sep}\n\n")
+                for i, r in enumerate(task_reflections, 1):
+                    f.write(f"[{i}] Type: {r.failure_type}\n")
+                    f.write(f"    Root Cause: {r.root_cause}\n")
+                    f.write("    Fix Instructions:\n")
+                    for line in r.fix_instructions.splitlines():
+                        f.write(f"      {line}\n")
+                    f.write("\n")
 
             # ── Microtask ─────────────────────────────────────────────────────
             f.write(f"{sep}\n")

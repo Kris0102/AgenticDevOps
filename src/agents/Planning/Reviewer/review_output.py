@@ -99,9 +99,14 @@ def _format_planner_output(review_context: str) -> str:
 
 
 def _output_folder(run_id: str, src_dir: Path) -> Path:
-    date_str = datetime.now().strftime('%Y-%m-%d')
     short_hash = run_id[:8] if len(run_id) >= 8 else run_id
-    return Path(src_dir, "output", f"{date_str}_{short_hash}", "planning")
+    output_dir = Path(src_dir, "output")
+    if output_dir.exists():
+        matches = sorted(output_dir.glob(f"*_{short_hash}"))
+        if matches:
+            return matches[0] / "planning"
+    date_str = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    return output_dir / f"{date_str}_{short_hash}" / "planning"
 
 
 def _next_iteration(folder: Path, glob_pattern: str) -> int:

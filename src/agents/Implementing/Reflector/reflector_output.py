@@ -11,9 +11,14 @@ _log = get_logger(Category.REFLECTOR)
 
 
 def _output_folder(run_id: str, src_dir: Path) -> Path:
-    date_str = datetime.now().strftime('%Y-%m-%d')
     short_hash = run_id[:8] if len(run_id) >= 8 else run_id
-    return Path(src_dir, "output", f"{date_str}_{short_hash}", "implementing")
+    output_dir = Path(src_dir, "output")
+    if output_dir.exists():
+        matches = sorted(output_dir.glob(f"*_{short_hash}"))
+        if matches:
+            return matches[0] / "implementing"
+    date_str = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    return output_dir / f"{date_str}_{short_hash}" / "implementing"
 
 
 def _next_iteration(folder: Path, glob_pattern: str) -> int:

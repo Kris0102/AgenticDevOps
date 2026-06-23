@@ -69,12 +69,11 @@ class HitlResume(BaseModel):
 class Phase(str, Enum):
     PLAN = "plan"
     CODE = "code"
-    TEST = "test"
     DEPLOY = "deploy"
     def __to_enum__(self, word):
         return self.__class__(word)
     def __str__(self) -> str:
-        return self.value  
+        return self.value
 class HitlGate:
     """Single code path for every mid-run Human-In-The-Loop checkpoint.
 
@@ -104,16 +103,13 @@ class HitlGate:
 
     GATES: Dict[str, GateSpec] = {
         Phase.PLAN: GateSpec(trigger=RunStatus.NEEDS_CODE, reject=RunStatus.NEEDS_PLAN),
-        Phase.CODE: GateSpec(trigger=RunStatus.NEEDS_TEST, reject=RunStatus.REFLECT),
-        # TEST fires on every passing verdict: NEEDS_CODE (intermediate microtask) and
-        # DONE (final microtask).  Approve re-emits the original status via
-        # PendingApproval.forward_status so routing continues correctly.
-        # Reject loops back to NEEDS_TEST → the tester rewrites the tests with the
-        # human note injected into the prompt (preferred over reflector→coder because
-        # the human is reviewing test quality, not implementation correctness).
-        Phase.TEST: GateSpec(
+        # CODE fires after the reflector approves the full coder+tester+reflector cycle.
+        # Triggers on NEEDS_CODE (more microtasks remain) or DONE (final microtask).
+        # Approve re-emits the original status via PendingApproval.forward_status.
+        # Reject resets the microtask to IN_PROGRESS and seeds a Reflection → coder retries.
+        Phase.CODE: GateSpec(
             trigger=(RunStatus.NEEDS_CODE, RunStatus.DONE),
-            reject=RunStatus.NEEDS_TEST,
+            reject=RunStatus.NEEDS_CODE,
         ),
         # deploy is a one-shot outward push; approve → push, reject → end the run
         # un-deployed (no loop-back, so no feedback channel — see _write_feedback).
@@ -184,16 +180,14 @@ class HitlGate:
             if plan_file:
                 prompt += f"\nPlan file: {plan_file}"
         elif phase == "code":
-            prompt = "Approve or reject the coder's diff. Reject requires a note (it seeds a Reflection for the reflector → coder path)."
-        elif phase == "test":
-            test_output_path = state.get("last_test_output_path")
+            reflection_output_path = state.get("last_reflection_output_path")
             prompt = (
-                "Approve or reject the test output. Reject requires a note.\n"
+                "Approve or reject the completed microtask (code + tests + reflector verdict). Reject requires a note.\n"
                 "  • Approve → proceed to the next microtask (or deploy if this was the final one).\n"
-                "  • Reject  → the tester rewrites the tests using your note as guidance."
+                "  • Reject  → the note is fed to the coder as fix instructions for another attempt."
             )
-            if test_output_path:
-                prompt += f"\nTest output file: {test_output_path}"
+            if reflection_output_path:
+                prompt += f"\nReflection output file: {reflection_output_path}"
         elif phase == "deploy":
             prompt = "Approve to push to the branch and create a PR. Reject to end the run without deploying (no note required)."
         else:
@@ -278,31 +272,27 @@ class HitlGate:
         if phase == Phase.DEPLOY:
             return {}
 
-        if phase == Phase.TEST:
-            feedback: Dict[str, Any] = {"test_rejection_note": note}
-            # The microtask was already marked COMPLETED before the gate fired.
-            # Reset it to IN_PROGRESS so _select_microtask can find it on the next
-            # tester invocation; also restore current_microtask_id so the tester
-            # picks up exactly the right task.
-            microtask_id = approval.microtask_id if approval else None
-            if microtask_id:
-                microtasks: List[Microtask] = list(state.get("microtasks") or [])
-                feedback["microtasks"] = [
-                    mt.model_copy(update={"status": MicrotaskStatus.IN_PROGRESS})
-                    if mt.microtask_id == microtask_id else mt
-                    for mt in microtasks
-                ]
-                feedback["current_microtask_id"] = microtask_id
-            return feedback
-
-        # code reject → seed a Reflection the reflector picks up (reflector → coder path)
+        # code reject — the reflector already approved, but the human disagrees.
+        # Reset the microtask to IN_PROGRESS so the coder retries it, and seed a
+        # Reflection carrying the human note so the coder has concrete fix instructions.
+        microtask_id = approval.microtask_id if approval else None
+        feedback: Dict[str, Any] = {}
+        if microtask_id:
+            microtasks: List[Microtask] = list(state.get("microtasks") or [])
+            feedback["microtasks"] = [
+                mt.model_copy(update={"status": MicrotaskStatus.IN_PROGRESS})
+                if mt.microtask_id == microtask_id else mt
+                for mt in microtasks
+            ]
+            feedback["current_microtask_id"] = microtask_id
         reflection = Reflection(
             timestamp=_utc_now_iso(),
-            microtask_id=state.get("current_microtask_id"),
+            microtask_id=microtask_id,
             failure_type="human_rejection",
             root_cause=note,
             fix_instructions=note,
             linked_artifacts=[],
             should_store_in_semantic_memory=False,
         )
-        return {"reflections": list(state.get("reflections")) + [reflection]}
+        feedback["reflections"] = list(state.get("reflections") or []) + [reflection]
+        return feedback

@@ -13,16 +13,30 @@ if TYPE_CHECKING:
     from agents.Planning.Planner.planner import PlannerOutput
 
 
+def _output_folder(run_id: str, src_dir: Path) -> Path:
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    short_hash = run_id[:8] if len(run_id) >= 8 else run_id
+    return Path(src_dir, "output", f"{date_str}_{short_hash}", "planning")
+
+
+def _next_iteration(folder: Path, glob_pattern: str) -> int:
+    if not folder.exists():
+        return 1
+    return len(list(folder.glob(glob_pattern))) + 1
+
+
 def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str]) -> str:
     """Write the plan to disk and return the absolute path."""
     try:
-        initial_file_path = Path(os.path.abspath(sys.argv[0])).parent  # src folder
-        file_path = Path(initial_file_path, "output", f"{run_id}", f"plan_output_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt")
+        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        folder = _output_folder(run_id, src_dir)
+        iteration = _next_iteration(folder, "planner_iteration_*.txt")
+        file_path = folder / f"planner_iteration_{iteration}.txt"
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         sep = "=" * 70
 
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             # ── Header ────────────────────────────────────────────────────────
             f.write(f"{sep}\n")
             f.write(f"  PLAN OUTPUT  |  run_id: {run_id}\n")
@@ -33,10 +47,12 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
             f.write("CODER READINESS CHECK\n")
             f.write("-" * 40 + "\n")
             f.write(_quality_report(result) + "\n\n")
+
             if revision_context:
-                f.write("REVISION CONTEXT \n")
+                f.write("REVISION CONTEXT\n")
                 f.write("-" * 40 + "\n")
                 f.write(revision_context + "\n\n")
+
             # ── Plan ─────────────────────────────────────────────────────────
             f.write(f"{sep}\n")
             f.write("PLAN\n")

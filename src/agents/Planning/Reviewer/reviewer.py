@@ -232,6 +232,7 @@ class Reviewer:
             result=result,
             run_id=self.run_id,
             investigation_summary=investigation_summary,
+            prior_feedback=list(plan.review_feedback),
         )
         reviewed_plan = plan.model_copy(update={
             "review_feedback": list(plan.review_feedback) + [feedback],

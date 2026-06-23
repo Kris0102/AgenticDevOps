@@ -3,9 +3,10 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from observability import Category, get_logger
+from orchestrator.state import ReviewFeedback
 
 _log = get_logger(Category.REVIEWER)
 
@@ -97,17 +98,32 @@ def _format_planner_output(review_context: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _output_folder(run_id: str, src_dir: Path) -> Path:
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    short_hash = run_id[:8] if len(run_id) >= 8 else run_id
+    return Path(src_dir, "output", f"{date_str}_{short_hash}", "planning")
+
+
+def _next_iteration(folder: Path, glob_pattern: str) -> int:
+    if not folder.exists():
+        return 1
+    return len(list(folder.glob(glob_pattern))) + 1
+
+
 def create_review_file_as_output(
     objective_text: str,
     review_context: str,
     result: "ReviewerOutput",
     run_id: str,
     investigation_summary: Optional[str] = None,
+    prior_feedback: Optional[List[ReviewFeedback]] = None,
 ) -> str:
     """Write the review to disk and return the absolute path."""
     try:
-        initial_file_path = Path(os.path.abspath(sys.argv[0])).parent  # src folder
-        file_path = Path(initial_file_path, "output", f"{run_id}", f"review_output_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt")
+        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        folder = _output_folder(run_id, src_dir)
+        iteration = _next_iteration(folder, "reviewer_iteration_*.txt")
+        file_path = folder / f"reviewer_iteration_{iteration}.txt"
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         sep = "=" * 70
@@ -122,6 +138,16 @@ def create_review_file_as_output(
             f.write("-" * 40 + "\n")
             f.write(f"Decision: {result.decision.value}\n")
             f.write(f"Notes: {result.notes}\n\n")
+
+            if prior_feedback:
+                f.write(f"{sep}\n")
+                f.write(f"PRIOR REVIEW ROUNDS  ({len(prior_feedback)} total)\n")
+                f.write(f"{sep}\n\n")
+                for i, fb in enumerate(prior_feedback, 1):
+                    f.write(f"[{i}] {fb.source.value} — {fb.decision.value}\n")
+                    for line in fb.notes.splitlines():
+                        f.write(f"    {line}\n")
+                    f.write("\n")
 
             f.write(f"{sep}\n")
             f.write("OBJECTIVE\n")

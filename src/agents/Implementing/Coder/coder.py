@@ -127,7 +127,8 @@ class Coder:
 
         _log.info("coder.diff_produced", microtask_id=microtask.microtask_id,
                   title=microtask.title, files_touched=files_touched)
-        self.create_code_file_log(self.run_id, microtask, diff_text, files_touched, attempts_log)
+        self.create_code_file_log(self.run_id, microtask, diff_text, files_touched, attempts_log,
+                                  reflections=list(state.get("reflections") or []))
         return self._build_result(state, microtask, diff_text, files_touched)
 
     def _code_until_diff(
@@ -268,25 +269,136 @@ class Coder:
         diff_text: str,
         files_touched: List[str],
         attempts_log: List[Dict[str, Any]],
+        reflections: Optional[List] = None,
     ) -> None:
-        """Append a full record of this microtask's coding attempts — prompt,
-        ReAct transcript (thoughts/tool calls/tool results), and outcome per
-        attempt — plus the final diff, to output/<run_id>/code_file_log.txt."""
-        initial_file_path = Path(os.path.abspath(sys.argv[0])).parent  # src folder
-        log_file_path = Path(initial_file_path, "output", run_id, "code_file_log.txt")
-        log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        _log.debug("coder.writing_code_log", path=str(log_file_path))
-        with open(log_file_path, "a") as log_file:
-            log_file.write(f"{'='*80}\n")
-            log_file.write(f"MICROTASK {microtask.microtask_id}: {microtask.title}\n")
-            log_file.write(f"{'='*80}\n\n")
-            for entry in attempts_log:
-                attempt = entry["attempt"]
-                log_file.write(f"--- ATTEMPT {attempt} PROMPT ---\n{entry['prompt']}\n\n")
-                log_file.write(f"--- ATTEMPT {attempt} REACT TRANSCRIPT ---\n{entry['transcript']}\n\n")
-                outcome = "EMPTY DIFF — retrying" if entry["diff_empty"] else "produced a non-empty diff"
-                log_file.write(f"--- ATTEMPT {attempt} OUTCOME: {outcome} ---\n\n")
-            log_file.write(f"--- FINAL DIFF ---\n{diff_text}\n\n")
-            log_file.write(f"Files touched: {files_touched}\n")
-            log_file.write(f"{'='*80}\n\n")
+        """Write a structured record of this microtask's coding attempts to a
+        per-iteration file: coder_microtask_<n>_iteration_<m>.txt."""
+        try:
+            src_dir = Path(os.path.abspath(sys.argv[0])).parent
+            _date = datetime.now().strftime('%Y-%m-%d')
+            _hash = run_id[:8] if len(run_id) >= 8 else run_id
+            folder = Path(src_dir, "output", f"{_date}_{_hash}", "implementing")
+            mt_num = microtask.idx + 1
+            existing_count = len(list(folder.glob(f"coder_microtask_{mt_num}_iteration_*.txt"))) if folder.exists() else 0
+            iteration = existing_count + 1
+            file_path = folder / f"coder_microtask_{mt_num}_iteration_{iteration}.txt"
+            folder.mkdir(parents=True, exist_ok=True)
+
+            sep = "=" * 70
+            diff_produced = bool(diff_text and diff_text.strip())
+
+            _log.debug("coder.writing_code_log", path=str(file_path))
+            with open(file_path, "w", encoding="utf-8") as f:
+                # ── Header ────────────────────────────────────────────────────
+                f.write(f"{sep}\n")
+                f.write(f"  CODER OUTPUT  |  run_id: {run_id}\n")
+                f.write(f"  Generated:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"{sep}\n\n")
+
+                # ── Outcome ───────────────────────────────────────────────────
+                f.write("OUTCOME\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"Status:        {'diff produced' if diff_produced else 'no diff produced'}\n")
+                f.write(f"Attempts:      {len(attempts_log)}\n")
+                f.write(f"Files Touched: {', '.join(files_touched) if files_touched else '(none)'}\n")
+                f.write("\n")
+
+                # ── Prior Reflections ─────────────────────────────────────────
+                task_reflections = [
+                    r for r in (reflections or [])
+                    if getattr(r, "microtask_id", None) in (None, microtask.microtask_id)
+                ]
+                if task_reflections:
+                    f.write(f"{sep}\n")
+                    f.write(f"PRIOR REFLECTOR FEEDBACK  ({len(task_reflections)} total)\n")
+                    f.write(f"{sep}\n\n")
+                    for i, r in enumerate(task_reflections, 1):
+                        f.write(f"[{i}] Type: {r.failure_type}\n")
+                        f.write(f"    Root Cause: {r.root_cause}\n")
+                        f.write("    Fix Instructions:\n")
+                        for line in r.fix_instructions.splitlines():
+                            f.write(f"      {line}\n")
+                        f.write("\n")
+
+                # ── Microtask ─────────────────────────────────────────────────
+                f.write(f"{sep}\n")
+                f.write("MICROTASK\n")
+                f.write(f"{sep}\n\n")
+
+                f.write(f"Title:  {microtask.title}\n")
+                f.write(f"ID:     {microtask.microtask_id}\n\n")
+
+                f.write("Target Files:\n")
+                if microtask.target_files:
+                    for tf in microtask.target_files:
+                        f.write(f"  • {tf}\n")
+                else:
+                    f.write("  (none)\n")
+                f.write("\n")
+
+                f.write("Context Files:\n")
+                if microtask.context_files:
+                    for cf in microtask.context_files:
+                        f.write(f"  • {cf}\n")
+                else:
+                    f.write("  (none)\n")
+                f.write("\n")
+
+                f.write("Description:\n")
+                for line in microtask.description.splitlines():
+                    f.write(f"  {line}\n")
+                f.write("\n")
+
+                f.write("Acceptance Criteria:\n")
+                if microtask.acceptance_criteria:
+                    for ac in microtask.acceptance_criteria:
+                        f.write(f"  ✓ {ac}\n")
+                else:
+                    f.write("  (none)\n")
+                f.write("\n")
+
+                # ── Final Diff ────────────────────────────────────────────────
+                f.write(f"{sep}\n")
+                f.write("FINAL DIFF\n")
+                f.write(f"{sep}\n\n")
+
+                if diff_produced:
+                    f.write(diff_text)
+                    if not diff_text.endswith("\n"):
+                        f.write("\n")
+                else:
+                    f.write("(no diff produced)\n")
+                f.write("\n")
+
+                # ── Attempt Transcripts ───────────────────────────────────────
+                if attempts_log:
+                    f.write(f"{sep}\n")
+                    f.write(f"ATTEMPT TRANSCRIPTS  ({len(attempts_log)} total)\n")
+                    f.write(f"{sep}\n\n")
+
+                    for entry in attempts_log:
+                        attempt = entry.get("attempt", "?")
+                        outcome = "no diff — retrying" if entry.get("diff_empty") else "diff produced"
+                        f.write(f"{'─' * 70}\n")
+                        f.write(f"ATTEMPT {attempt}  [{outcome}]\n")
+                        f.write(f"{'─' * 70}\n\n")
+
+                        f.write("PROMPT:\n")
+                        prompt_text = entry.get("prompt", "(none)")
+                        f.write(prompt_text)
+                        if not prompt_text.endswith("\n"):
+                            f.write("\n")
+                        f.write("\n")
+
+                        f.write("REACT TRANSCRIPT:\n")
+                        transcript_text = entry.get("transcript", "(none)")
+                        f.write(transcript_text)
+                        if not transcript_text.endswith("\n"):
+                            f.write("\n")
+                        f.write("\n")
+
+            _log.info("coder.output_file_written", path=str(file_path))
+
+        except Exception as exc:
+            _log.warning("coder.output_file_failed", error=str(exc))
             

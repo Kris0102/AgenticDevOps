@@ -88,18 +88,11 @@ class TesterRunner:
         result: Dict[str, Any],
     ) -> tuple[List[Microtask], Evidence]:
         now = datetime.now(timezone.utc)
-        next_status: RunStatus = result.get("status", RunStatus.REFLECT)
-        passed = next_status in {RunStatus.NEEDS_CODE, RunStatus.DONE}
+        # Tester always routes to REFLECT — the Reflector decides approve/improve.
+        # Reflector marks microtasks COMPLETED on approve; tester never does.
+        next_status = RunStatus.REFLECT
         final_validation = bool(result.get("final_validation"))
         checks = list(result.get("check_results") or [])
-
-        updated_microtasks: List[Microtask] = list(self.state.get("microtasks") or [])
-        if passed:
-            completed_status = MicrotaskStatus.DONE if next_status == RunStatus.DONE else MicrotaskStatus.COMPLETED
-            updated_microtasks = [
-                mt.model_copy(update={"status": completed_status}) if mt.microtask_id == microtask.microtask_id else mt
-                for mt in updated_microtasks
-            ]
 
         evidence = self.state.get("evidence") or Evidence()
         check_updates: Dict[str, CheckOutput] = {}
@@ -117,8 +110,6 @@ class TesterRunner:
 
         record = db_session.get(MicrotaskRecord, microtask.microtask_id)
         if record:
-            if passed:
-                record.status = (MicrotaskStatus.DONE if next_status == RunStatus.DONE else MicrotaskStatus.COMPLETED).value
             record.updated_at = now
 
         run_record = db_session.get(Run, self.run_id)
@@ -127,17 +118,19 @@ class TesterRunner:
             run_record.status = next_status.value
             run_record.updated_at = now
 
-        event_type = EventType.MICROTASK_COMPLETED if passed else EventType.MICROTASK_FAILED
-        EventLogger.log(db_session, self.run_id, self.name, event_type, {
+        # MICROTASK_UPDATED: tests ran, routing to reflector for verdict.
+        check_status = checks[0]["status"] if checks else "unknown"
+        EventLogger.log(db_session, self.run_id, self.name, EventType.MICROTASK_UPDATED, {
             "microtask_id": microtask.microtask_id,
             "final_validation": final_validation,
             "summary": result.get("summary", ""),
+            "check_status": check_status,
             "checks": [
                 {
                     "label": check["label"],
                     "status": check["status"],
                     "exit_code": check["exit_code"],
-                    "artifact_ref": check["artifact_ref"],
+                    "artifact_ref": check.get("artifact_ref", ""),
                 }
                 for check in checks
             ],
@@ -145,13 +138,10 @@ class TesterRunner:
         EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_STATUS_CHANGED, {
             "from": old_status,
             "to": next_status.value,
-            "reason": result.get("summary", "tester completed"),
+            "reason": result.get("summary", "tester completed, routing to reflector"),
         })
-        if next_status == RunStatus.DONE:
-            EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_COMPLETED, {
-                "summary": result.get("summary", "tester completed final validation"),
-            })
 
+        updated_microtasks: List[Microtask] = list(self.state.get("microtasks") or [])
         return updated_microtasks, new_evidence
 
     def _store_check_artifact(
@@ -187,27 +177,15 @@ class TesterRunner:
         updated_microtasks: List[Microtask],
         new_evidence: Evidence,
     ) -> Dict[str, Any]:
-        next_status: RunStatus = result.get("status", RunStatus.REFLECT)
         # Fields propagated on every exit path so they're always up-to-date in state.
         shared: Dict[str, Any] = {
             "last_test_output_path": result.get("last_test_output_path"),
             "test_rejection_note": result.get("test_rejection_note"),  # None clears it
         }
-        if next_status in {RunStatus.NEEDS_CODE, RunStatus.DONE}:
-            return {
-                "status": next_status,
-                "microtasks": updated_microtasks,
-                "current_microtask_id": None,
-                "evidence": new_evidence,
-                # _INTERNAL_: consumed by HitlGate.apply() to store the microtask_id
-                # in PendingApproval so TEST rejection can reset the microtask.
-                # Stripped from the result before it reaches LangGraph state.
-                "_tested_microtask_id": microtask.microtask_id,
-                **shared,
-            }
-
+        # Always route to REFLECT — the Reflector reads evidence.checks and decides
+        # whether to approve (advance) or improve (coder retries with new Reflection).
         return {
-            "status": next_status,
+            "status": RunStatus.REFLECT,
             "current_microtask_id": microtask.microtask_id,
             "evidence": new_evidence,
             **shared,

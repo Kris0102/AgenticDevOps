@@ -53,6 +53,7 @@ class EventType(str, Enum):
     TOOL_DENIED = "tool.denied"
     HITL_REQUESTED = "hitl.requested"
     HITL_DECIDED = "hitl.decided"
+    REFLECTION_CREATED = "reflection.created"
     SEMANTIC_BASELINE_INGESTED = "semantic.baseline_ingested"
     SEMANTIC_WORKSPACE_SYNCED = "semantic.workspace_synced"
 
@@ -101,7 +102,7 @@ class Policy(BaseModel):
     require_hitl_for_merge: bool
     require_hitl_for_prod_deploy: bool
     # Phase names that pause the run at NEEDS_HITL_APPROVAL before proceeding —
-    # e.g. ["plan", "code", "test"]. One gate mechanism, configured per-run/risk-level.
+    # e.g. ["plan", "code"]. One gate mechanism, configured per-run/risk-level.
     hitl_checkpoints: List[str] = Field(default_factory=list)
     security_scans_required: List[str]
     ci_required: bool

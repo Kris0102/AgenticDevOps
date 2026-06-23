@@ -56,6 +56,14 @@ class ReviewerPermissions(RolePermissions):
     allowed_commands = ["grep", "ls", "cat", "find"]
 
 
+class ReflectorPermissions(RolePermissions):
+    """Diagnoses failures by reading source files, test files, and diffs. No writes."""
+
+    role = Roles.REFLECTOR
+    tools = [Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN]
+    allowed_commands = ["git", "grep", "ls", "cat", "find"]
+
+
 class OrchestratorPermissions(RolePermissions):
     """Never calls the gateway directly — mediates via agent roles (star
     topology). Empty allowlists are intentional."""
@@ -77,6 +85,7 @@ _REGISTRY = {
         CoderPermissions,
         TesterPermissions,
         ReviewerPermissions,
+        ReflectorPermissions,
         OrchestratorPermissions,
         BootstrapperPermissions,
     )

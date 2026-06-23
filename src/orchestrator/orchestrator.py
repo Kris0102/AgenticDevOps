@@ -80,7 +80,7 @@ class OrchestratorGraph:
 
     def _deploy(self, state: BlackboardState) -> Dict[str, Any]:
         """Gate producer for the deploy phase. Emits READY_TO_DEPLOY and funnels it
-        through the shared HITL gate — when 'deploy' is in policy.hitl_checkpoints the
+        through the shared HITL gate — when 'deploy' is in hitl.hitl_checkpoints the
         push pauses for human approval; otherwise it passes straight to deploy_push."""
         _log.info("node.enter", node="deploy")
         return HitlGate.apply(Phase.DEPLOY, {"status": RunStatus.READY_TO_DEPLOY}, state)

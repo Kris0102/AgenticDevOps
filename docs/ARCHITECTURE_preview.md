@@ -411,7 +411,7 @@ For each microtask in order:
 - Max attempts per microtask (e.g., 5). If exceeded → require HITL, re-plan, or fail.
 
 > **General HITL pattern:** every phase boundary in this workflow *may* be gated by
-> adding its phase name to `policy.hitl_checkpoints` (a per-run, per-risk-level choice —
+> adding its phase to `hitl.hitl_checkpoints` (a per-run, per-risk-level choice —
 > see §HITL below). All gates reuse the same `status=NEEDS_HITL_APPROVAL` /
 > `hitl.pending_approvals[]` mechanism; there is exactly one HITL code path, configured
 > differently per run. A `risk_level=high` run might gate every phase; a trusted

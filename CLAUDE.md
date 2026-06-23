@@ -123,12 +123,14 @@ bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 
   PENDING microtasks, tester emits `NEEDS_CODE` itself and routes straight back to
   coder for the next microtask (not a failure retry, so reflector isn't involved).
 - **HITL gate** (shared `hitl` node, see below + ADR 0006): any phase in
-  `policy.hitl_checkpoints` routes through `hitl` before advancing.
+  `hitl.hitl_checkpoints` routes through `hitl` before advancing.
 
 ## When HITL is triggered
 A phase emits `NEEDS_HITL_APPROVAL` (via `HitlGate.apply`, `orchestrator/hitl.py`) and the
 graph suspends at the `hitl` node (`interrupt()`) ONLY when that phase is listed in
-`policy.hitl_checkpoints` (set with `--hitl-checkpoints plan,code,test`; empty = no gates).
+`hitl.hitl_checkpoints` (set with `--hitl-checkpoints plan,code,test`; empty = no gates).
+The field lives on the `HITL` state model (was `Policy.hitl_checkpoints`; moved + retyped
+`List[str]` → `List[Phase]` — see ADR 0014).
 The three gate points and their resume routing:
 
 | Gate   | fires after            | approve →        | reject (note required) → |
@@ -253,7 +255,7 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | HITL gates (plan/code/test, native `interrupt()`) | Done — see ADR 0006 |
 | Plan Reviewer | Done — two-phase (independent investigation via read-only tools, then structured approve/reject). Appends a `ReviewFeedback` to the plan, emits `PLAN_REVIEWED`, caps the planner↔reviewer loop at `Constraints.max_total_iterations` (→ FAILED + `RUN_FAILED`). See ADR 0011 |
 | Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced |
-| Tester | Minimal stub — marks current microtask COMPLETED, `unit_tests` check recorded as "skipped" (not actually run), routes back to coder (more PENDING) or DONE. Unblocks coder<->tester loop end-to-end; real test execution still TODO |
+| Tester | Done (single-track) — detects project type (Python/JS), LLM writes a pytest/jest test file per microtask from acceptance criteria, runs it deterministically, routes PASS→next microtask/DONE or FAIL→REFLECT. HITL test-reject rewrites the tests with the human note. **UNDER-GROUNDED** (see TODO #9 + ADR 0015): same model writes code AND tests (tautology risk), never runs the repo's existing suite, no anti-trivial guard. "final-microtask checks" only re-run the one microtask's file, not a full regression |
 | Reflector | Stub (returns `{}`) — not yet exercised since the stub Tester never emits `REFLECT` |
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012 |
@@ -272,6 +274,7 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 6. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
 7. **`reflections` table missing**: reflections live in the checkpointed blackboard (so they survive a crash now, via ADR 0005), but there's no queryable `reflections` table for cross-run semantic memory. The `code`/`test` HITL-reject path already seeds `Reflection`s (ADR 0006) — a dedicated table makes them analyzable.
 8. ~~**Global sandbox command allowlist**~~ — **FIXED**: `tool_gateway/permissions.py` gives each role its own `RolePermissions` (`tools` + `allowed_commands`); `gateway.py` calls `get_permissions(role)`. `CoderPermissions.allowed_commands` no longer includes `pytest` — Coder is now gateway-blocked from running tests, not just prompt-forbidden. Reflector is still a stub returning `{}`, but the stub Tester (`tester_node.py`) now marks microtasks COMPLETED and the coder<->tester loop cycles — see graph topology above.
+9. **Tester under-grounded** (should-fix, weakens the grounded-verification invariant): the Tester uses the LLM to write the tests it then runs, so the same model authors both code and tests (tautology / self-rubber-stamp risk), it never runs the repo's existing suite (no regression coverage), and there is no deterministic anti-trivial guard. Target design (ADR 0015): **Track A** deterministic checks primary — run the existing suite + lint/typecheck/build, verdict from exit codes; **Track B** LLM synthesis only as a fallback when `acceptance_criteria` have no coverage, written from the Planner's `acceptance_criteria` (independent of the Coder — that's what kills the tautology; the tester still writes its own tests), guarded by an AST assertion-count check, and committed so they persist into Track A next run. Grounding interface: `acceptance_criteria` IS the "what to test" contract (≥1 assertion per criterion) — don't add a parallel field; the recommended enrichment is `List[str]` → `List[AcceptanceCriterion]` with optional planner-supplied `IOExample`s for deterministic assertions (schema change → new `microtasks` migration). Also: deps installed at test-time (`apt-get nodejs`, `pip`, `npm`) — bake Node into `sandbox/Dockerfile` instead.
 
 ## Coding conventions
 - All state mutations must go through the LangGraph node return dict — never mutate `state` in place.

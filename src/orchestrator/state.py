@@ -161,7 +161,7 @@ class Microtask(BaseModel):
     title: str
     description: str  # WHAT to build and WHERE — file paths + what goes in them
     approach: str  # HOW — concrete technical plan: signatures, data shapes, sequencing, edge cases
-    acceptance_criteria: List[str]
+    acceptance_criteria: List[str] # This field will be used by the tester to validate the microtask's output. It will be used to generate the test cases for the microtask.
     target_files: List[str] = Field(default_factory=list)  # exact paths to create/edit — declared before coding
     context_files: List[str] = Field(default_factory=list)  # paths the Coder should read (not edit) to match conventions
     status: MicrotaskStatus = MicrotaskStatus.PENDING
@@ -170,7 +170,7 @@ class Microtask(BaseModel):
     attempts: int = 0
     max_attempts: Optional[int] = None
     files_touched: List[str] = Field(default_factory=list)  # filled after coding, not before
-    test_strategy: Optional[str] = None
+    test_strategy: Optional[str] = None  # This field should be used by the tester to determine how to test the microtask's output. It will be used to generate the test cases for the microtask.
     notes: List[str] = Field(default_factory=list)
 
 class Diff(BaseModel):
@@ -230,20 +230,28 @@ class ApprovalStatus(str, Enum):
 class PendingApproval(BaseModel):
     """A single HITL gate request, recorded when a phase pauses for human approval."""
     approval_id: str
-    type: str  # gated phase name — matches a policy.hitl_checkpoints entry ("plan"/"code"/"test")
+    type: str  # gated phase name — matches a hitl.hitl_checkpoints entry ("plan"/"code"/"test")
     requested_at: str
     status: ApprovalStatus = ApprovalStatus.PENDING
     reviewer: Optional[str] = None
     notes: Optional[str] = None
+    # Original advance status before it was rewritten to NEEDS_HITL_APPROVAL.
+    # Used by resolve() to re-emit the correct status on approve (critical for gates
+    # with multiple triggers, e.g. TEST fires on both NEEDS_CODE and DONE).
+    forward_status: Optional[str] = None
+    # Microtask that was being processed when the gate fired.
+    # Required by TEST rejection to reset the microtask back to IN_PROGRESS so the
+    # tester can re-select and re-run it (the microtask is already COMPLETED in state
+    # by the time the gate fires — without this the tester finds no pending work).
+    microtask_id: Optional[str] = None
 
 
-    
-    
 class HITL(BaseModel):
     required: bool
     pending_approvals: List[PendingApproval] = Field(default_factory=list)
+    # Phases that pause the run at NEEDS_HITL_APPROVAL before proceeding —
+    # e.g. [Phase.PLAN, Phase.CODE, Phase.TEST]. One gate mechanism, configured per-run.
     hitl_checkpoints: List[Phase] = Field(default_factory=list)
-    
 
 class Result(BaseModel):
     outcome: str
@@ -318,6 +326,13 @@ class BlackboardState(TypedDict):
     # Execution diagnostics
     error_logs: List[str]
 
+    # Tester feedback channel: set by HITL reject on the test gate, cleared by the
+    # tester after it reads it so it doesn't leak into later microtasks.
+    test_rejection_note: Optional[str]
+    # Path to the on-disk tester output file — surfaced in the HITL prompt so the
+    # reviewer knows where to look for the full test output.
+    last_test_output_path: Optional[str]
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -331,7 +346,7 @@ def create_initial_blackboard_state(
     objective: Objective,
     constraints: Constraints,
     policy: Policy,
-    hitl :HITL,
+    hitl: HITL,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
@@ -371,4 +386,6 @@ def create_initial_blackboard_state(
         events=EventsPointer(stream_id=run_id),
         messages=[],
         error_logs=[],
+        test_rejection_note=None,
+        last_test_output_path=None,
     )

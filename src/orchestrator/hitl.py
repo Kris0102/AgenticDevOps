@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -14,6 +14,8 @@ from orchestrator.state import (
     EventType,
     FeedbackDecision,
     FeedbackSource,
+    Microtask,
+    MicrotaskStatus,
     PendingApproval,
     Phase,
     Reflection,
@@ -42,10 +44,13 @@ class HitlDecision(str, Enum):
 class GateSpec:
     """Static per-phase routing for a HITL gate.
 
-    `trigger` is the forward status the phase node emits when it wants to advance
-    past this gate (approve re-emits it). `reject` is where a rejection loops back to.
+    `trigger` is the forward status (or tuple of statuses) the phase node emits when it
+    wants to advance past this gate.  On approve, `resolve()` re-emits the *original*
+    status stored in `PendingApproval.forward_status` (so multi-trigger gates preserve
+    the exact advance status — e.g. TEST fires on both NEEDS_CODE and DONE).
+    `reject` is where a rejection loops back to.
     """
-    trigger: RunStatus
+    trigger: Any  # RunStatus or tuple[RunStatus, ...]
     reject: RunStatus
 
 
@@ -72,7 +77,7 @@ class HitlGate:
     """Single code path for every mid-run Human-In-The-Loop checkpoint.
 
     A phase node funnels its would-be result through `apply(phase, result, state)`:
-    if `phase` is in `policy.hitl_checkpoints` AND the node produced the forward
+    if `phase` is in `hitl.hitl_checkpoints` AND the node produced the forward
     status this gate sits in front of (`GateSpec.trigger`), the status is rewritten
     to NEEDS_HITL_APPROVAL and a `PendingApproval` is recorded — the graph then routes
     to the shared `hitl` node, which suspends via langgraph `interrupt()`.
@@ -99,9 +104,16 @@ class HitlGate:
     GATES: Dict[Phase, GateSpec] = {
         Phase.PLAN: GateSpec(trigger=RunStatus.NEEDS_CODE, reject=RunStatus.NEEDS_PLAN),
         Phase.CODE: GateSpec(trigger=RunStatus.NEEDS_TEST, reject=RunStatus.REFLECT),
-        # tester's pass status is provisional until the real Tester lands — it marks
-        # the microtask done / run done on a green check. Revisit when wired.
-        Phase.TEST: GateSpec(trigger=RunStatus.DONE, reject=RunStatus.REFLECT),
+        # TEST fires on every passing verdict: NEEDS_CODE (intermediate microtask) and
+        # DONE (final microtask).  Approve re-emits the original status via
+        # PendingApproval.forward_status so routing continues correctly.
+        # Reject loops back to NEEDS_TEST → the tester rewrites the tests with the
+        # human note injected into the prompt (preferred over reflector→coder because
+        # the human is reviewing test quality, not implementation correctness).
+        Phase.TEST: GateSpec(
+            trigger=(RunStatus.NEEDS_CODE, RunStatus.DONE),
+            reject=RunStatus.NEEDS_TEST,
+        ),
         # deploy is a one-shot outward push; approve → push, reject → end the run
         # un-deployed (no loop-back, so no feedback channel — see _write_feedback).
         Phase.DEPLOY: GateSpec(trigger=RunStatus.READY_TO_DEPLOY, reject=RunStatus.DONE),
@@ -130,35 +142,52 @@ class HitlGate:
     @staticmethod
     def apply(phase: Phase, result: Dict[str, Any], state: BlackboardState) -> Dict[str, Any]:
         """Gate a phase node's result. If `phase` has a HITL gate, is enabled in
-        `hitl_checkpoints`, AND the node produced this gate's trigger status: rewrite
+        `hitl.hitl_checkpoints`, AND the node produced this gate's trigger status: rewrite
         the status to NEEDS_HITL_APPROVAL, record a PendingApproval, and return the
         updated dict for the `hitl` node. Otherwise return `result` unmodified."""
         gate = HitlGate.GATES.get(phase)
         hitl = state.get("hitl")
-        if gate is None or hitl is None or phase.value not in hitl.hitl_checkpoints:
-            return result
-        if result.get("status") != gate.trigger:
-            # node didn't produce the advance-status this gate guards — nothing to gate
+        if gate is None or hitl is None or phase not in hitl.hitl_checkpoints:
             return result
 
+        forward = result.get("status")
+        triggers = gate.trigger if isinstance(gate.trigger, tuple) else (gate.trigger,)
+        if forward not in triggers:
+            # node didn't produce an advance-status this gate guards — nothing to gate
+            return result
+
+        # Capture the tested microtask_id (set by TesterRunner for TEST gates) and
+        # strip the internal key so it never reaches LangGraph's TypedDict state.
+        tested_microtask_id: Optional[str] = result.get("_tested_microtask_id")
+        clean_result = {k: v for k, v in result.items() if k != "_tested_microtask_id"}
+          
+        if not forward:
+            raise HitlStateError(f"phase '{phase.value}' is gated but produced no forward status") 
+        
         approval = PendingApproval(
             approval_id=f"appr_{uuid.uuid4().hex[:12]}",
             type=phase.value,
             requested_at=_utc_now_iso(),
             status=ApprovalStatus.PENDING,
+            # Preserve the exact advance status so resolve() re-emits it on approve.
+            forward_status=forward.value  if hasattr(forward, "value") else str(forward),
+            # Store which microtask triggered this gate so rejection can reset it.
+            microtask_id=tested_microtask_id,
         )
         new_hitl = hitl.model_copy(update={
             "required": True,
             "pending_approvals": list(hitl.pending_approvals) + [approval],
         })
 
-        HitlGate._log(state, Roles.ORCHESTRATOR.value, EventType.HITL_REQUESTED, {
-            "approval_id": approval.approval_id,
-            "phase": phase.value,
-            "current_microtask_id": state.get("current_microtask_id"),
-        })
+        with db.session_scope() as session:
+            EventLogger.log(session, state.get("run_id"), Roles.ORCHESTRATOR.value, EventType.HITL_REQUESTED.value, {
+                "approval_id": approval.approval_id,
+                "phase": phase.value,
+                "microtask_id": tested_microtask_id,
+                "current_microtask_id": state.get("current_microtask_id"),
+            })
 
-        return {**result, "status": RunStatus.NEEDS_HITL_APPROVAL, "hitl": new_hitl}
+        return {**clean_result, "status": RunStatus.NEEDS_HITL_APPROVAL, "hitl": new_hitl}
 
     @staticmethod
     def request_payload(state: BlackboardState) -> HitlRequest:
@@ -166,10 +195,32 @@ class HitlGate:
         approval = HitlGate._latest_approval(state)
         phase = approval.type
 
-        prompt = f"Approve or reject the '{phase}' phase. Reject requires a note."
-        plan_file = HitlGate._plan_file_ref(state) if phase == Phase.PLAN.value else None
-        if plan_file:
-            prompt += f"\nPlan file: {plan_file}"
+        plan_file: Optional[str] = None
+        if phase == "plan":
+            artifacts = state.get("artifacts_index") or []
+            plan_artifacts = [a for a in artifacts if a.kind == "plan_file"]
+            if plan_artifacts:
+                plan_file = plan_artifacts[-1].artifact_ref
+
+        if phase == "plan":
+            prompt = "Approve or reject the plan. Reject requires a note (it will be fed back to the planner as revision context)."
+            if plan_file:
+                prompt += f"\nPlan file: {plan_file}"
+        elif phase == "code":
+            prompt = "Approve or reject the coder's diff. Reject requires a note (it seeds a Reflection for the reflector → coder path)."
+        elif phase == "test":
+            test_output_path = state.get("last_test_output_path")
+            prompt = (
+                "Approve or reject the test output. Reject requires a note.\n"
+                "  • Approve → proceed to the next microtask (or deploy if this was the final one).\n"
+                "  • Reject  → the tester rewrites the tests using your note as guidance."
+            )
+            if test_output_path:
+                prompt += f"\nTest output file: {test_output_path}"
+        elif phase == "deploy":
+            prompt = "Approve to push to the branch and create a PR. Reject to end the run without deploying (no note required)."
+        else:
+            prompt = f"Approve or reject the '{phase}' phase. Reject requires a note."
 
         return HitlRequest(
             approval_id=approval.approval_id,
@@ -189,13 +240,19 @@ class HitlGate:
         gate = HitlGate.GATES[phase]
 
         if decision.decision == HitlDecision.APPROVE:
-            next_status = gate.trigger
+            # Re-emit the original advance status (stored when the gate fired).
+            # Falls back to the first trigger for backward-compat approvals without forward_status.
+            if approval.forward_status:
+                next_status = RunStatus(approval.forward_status)
+            else:
+                triggers = gate.trigger if isinstance(gate.trigger, tuple) else (gate.trigger,)
+                next_status = triggers[0]
             resolved = ApprovalStatus.APPROVED
             feedback: Dict[str, Any] = {}
         else:
             next_status = gate.reject
             resolved = ApprovalStatus.REJECTED
-            feedback = HitlGate._write_feedback(phase, decision.note or "", state)
+            feedback = HitlGate._write_feedback(phase, decision.note or "", state, approval)
 
         updated_approval = approval.model_copy(update={
             "status": resolved,
@@ -228,12 +285,13 @@ class HitlGate:
         return plan_artifacts[-1].artifact_ref if plan_artifacts else None
 
     @staticmethod
-    def _write_feedback(phase: Phase, note: str, state: BlackboardState) -> Dict[str, Any]:
-        """Route a rejection note into the channel its loop-back phase reads:
-        - plan       -> append a ReviewFeedback the planner reads on a revision pass
-        - code/test  -> seed a Reflection the reflector turns into coder guidance
-        - deploy     -> no loop-back phase, so no feedback channel
-        """
+    def _write_feedback(
+        phase: Phase,
+        note: str,
+        state: BlackboardState,
+        approval: Optional[PendingApproval] = None,
+    ) -> Dict[str, Any]:
+        """Route the human's rejection note into the channel the loop-back phase reads."""
         if phase == Phase.PLAN:
             plan = state.get("plan")
             if plan is None:
@@ -253,7 +311,24 @@ class HitlGate:
             # deploy reject ends the run (status → DONE); nothing downstream to seed
             return {}
 
-        # code / test -> seed a Reflection the reflector picks up
+        if phase == Phase.TEST:
+            feedback: Dict[str, Any] = {"test_rejection_note": note}
+            # The microtask was already marked COMPLETED before the gate fired.
+            # Reset it to IN_PROGRESS so _select_microtask can find it on the next
+            # tester invocation; also restore current_microtask_id so the tester
+            # picks up exactly the right task.
+            microtask_id = approval.microtask_id if approval else None
+            if microtask_id:
+                microtasks: List[Microtask] = list(state.get("microtasks") or [])
+                feedback["microtasks"] = [
+                    mt.model_copy(update={"status": MicrotaskStatus.IN_PROGRESS})
+                    if mt.microtask_id == microtask_id else mt
+                    for mt in microtasks
+                ]
+                feedback["current_microtask_id"] = microtask_id
+            return feedback
+
+        # code reject → seed a Reflection the reflector picks up (reflector → coder path)
         reflection = Reflection(
             timestamp=_utc_now_iso(),
             microtask_id=state.get("current_microtask_id"),
@@ -263,4 +338,4 @@ class HitlGate:
             linked_artifacts=[],
             should_store_in_semantic_memory=False,
         )
-        return {"reflections": list(state.get("reflections") or []) + [reflection]}
+        return {"reflections": list(state.get("reflections")) + [reflection]}

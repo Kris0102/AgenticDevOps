@@ -54,6 +54,11 @@ Open terminal in the repository root and run the following commands.
    python main.py --repo_url https://github.com/Kris0102/Test_env --base-sha fdb59fe600a683a21fd5c167a0658b0337ac2089 --hitl-checkpoints "plan,code,test" --task_description "Add Fahrenheit support to the weather module. In utils.js add a celsiusToFahrenheit(celsius) function (same style/validation as formatTemperature, CommonJS export). In weather.js, make getWeather accept an optional second argument unit ('C' default or 'F'); when 'F', convert the stored Celsius temperature using celsiusToFahrenheit and set the returned unit to 'F'. Keep the existing 'Unknown city' error behavior. Update main.js to print Munich's weather in Fahrenheit. Preserve existing exports and code style."
    ```
 
+   ```
+   python main.py --repo_url https://github.com/dopferstefan/python-test-project --base-sha 0223096697270d123063aa991488f39d4c4abfc8 --hitl-checkpoints "plan,code,test" --task_description "Add support for counting words to the python module. In counter.py add a count_words(text) function. In main.py, make sure that the word count function is called and added to the console output. Preserve the existing code style."
+   ```
+
+
 ## Notes
 
 - The application expects the `.env` file to be in the repository root.

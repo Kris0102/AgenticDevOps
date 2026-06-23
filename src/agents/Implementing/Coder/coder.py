@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from langgraph.errors import GraphRecursionError
 from openai import APIConnectionError, APITimeoutError
 from pydantic import SecretStr
 
@@ -162,11 +163,24 @@ class Coder:
             )
             _log.info("coder.attempt", microtask_id=microtask.microtask_id,
                       attempt=attempt, max_attempts=self.max_empty_diff_retries)
+            recursion_exceeded = False
             try:
                 agent_result = self.coding_agent.invoke(
                     {"messages": [HumanMessage(content=prompt)]},
                     config={"recursion_limit": _recursion_limit(self.max_tool_steps)},
                 )
+            except GraphRecursionError:
+                # Model hit the tool-call budget — likely stuck in a verify loop.
+                # Check the actual diff: if the coder wrote files before looping,
+                # the work is done and we can recover cleanly.
+                _log.warning(
+                    "coder.recursion_limit_exceeded",
+                    microtask_id=microtask.microtask_id,
+                    attempt=attempt,
+                    limit=_recursion_limit(self.max_tool_steps),
+                )
+                agent_result = {"messages": []}
+                recursion_exceeded = True
             except (APIConnectionError, APITimeoutError) as exception:
                 _log.error("coder.cluster_unreachable", phase="coding",
                            hint="ensure VPN connected", error=str(exception))
@@ -178,13 +192,23 @@ class Coder:
             attempts_log.append({
                 "attempt": attempt,
                 "prompt": prompt,
-                "transcript": transcript,
+                "transcript": transcript + ("\n[HIT RECURSION LIMIT]" if recursion_exceeded else ""),
                 "diff_empty": diff_empty,
             })
             if not diff_empty:
+                if recursion_exceeded:
+                    _log.info(
+                        "coder.diff_recovered_after_recursion_limit",
+                        microtask_id=microtask.microtask_id,
+                        attempt=attempt,
+                    )
                 return diff_text, attempts_log
 
             retry_feedback = (
+                "Your previous attempt hit the tool call limit without writing any files. "
+                "Be direct: call write_sandbox_file ONCE per target file with the complete "
+                "new content, then stop — do not call get_repo_diff in a loop."
+                if recursion_exceeded else
                 "Your previous attempt produced an EMPTY git diff — no file in the "
                 "repo actually changed. You must call write_sandbox_file with the "
                 "complete new content of each target file."

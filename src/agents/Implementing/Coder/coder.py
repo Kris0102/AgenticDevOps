@@ -275,9 +275,14 @@ class Coder:
         per-iteration file: coder_microtask_<n>_iteration_<m>.txt."""
         try:
             src_dir = Path(os.path.abspath(sys.argv[0])).parent
-            _date = datetime.now().strftime('%Y-%m-%d')
             _hash = run_id[:8] if len(run_id) >= 8 else run_id
-            folder = Path(src_dir, "output", f"{_date}_{_hash}", "implementing")
+            output_dir = Path(src_dir, "output")
+            existing = sorted(output_dir.glob(f"*_{_hash}")) if output_dir.exists() else []
+            if existing:
+                folder = existing[0] / "implementing"
+            else:
+                _date = datetime.now().strftime('%Y-%m-%d_%H-%M')
+                folder = output_dir / f"{_date}_{_hash}" / "implementing"
             mt_num = microtask.idx + 1
             existing_count = len(list(folder.glob(f"coder_microtask_{mt_num}_iteration_*.txt"))) if folder.exists() else 0
             iteration = existing_count + 1

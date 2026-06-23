@@ -73,6 +73,7 @@ def build_test_writing_prompt_python(
     microtask: Microtask,
     test_file: str,
     rejection_note: Optional[str] = None,
+    reflections: Optional[List] = None,
 ) -> str:
     sections: List[str] = []
 
@@ -81,6 +82,18 @@ def build_test_writing_prompt_python(
             f"HUMAN REVIEWER FEEDBACK (previous test attempt was rejected — address every point below):\n"
             f"{rejection_note}"
         )
+
+    task_reflections = [
+        r for r in (reflections or [])
+        if getattr(r, "microtask_id", None) in (None, microtask.microtask_id)
+    ]
+    if task_reflections:
+        lines = [f"PRIOR REFLECTOR FEEDBACK ({len(task_reflections)} round(s) — address any remaining issues):"]
+        for i, r in enumerate(task_reflections, 1):
+            lines.append(f"[{i}] Type: {r.failure_type}")
+            lines.append(f"    Root Cause: {r.root_cause}")
+            lines.append(f"    Fix Instructions: {r.fix_instructions}")
+        sections.append("\n".join(lines))
 
     if objective:
         sections.append(
@@ -133,6 +146,7 @@ def build_test_writing_prompt_js(
     microtask: Microtask,
     test_file: str,
     rejection_note: Optional[str] = None,
+    reflections: Optional[List] = None,
 ) -> str:
     sections: List[str] = []
 
@@ -141,6 +155,18 @@ def build_test_writing_prompt_js(
             f"HUMAN REVIEWER FEEDBACK (previous test attempt was rejected — address every point below):\n"
             f"{rejection_note}"
         )
+
+    task_reflections = [
+        r for r in (reflections or [])
+        if getattr(r, "microtask_id", None) in (None, microtask.microtask_id)
+    ]
+    if task_reflections:
+        lines = [f"PRIOR REFLECTOR FEEDBACK ({len(task_reflections)} round(s) — address any remaining issues):"]
+        for i, r in enumerate(task_reflections, 1):
+            lines.append(f"[{i}] Type: {r.failure_type}")
+            lines.append(f"    Root Cause: {r.root_cause}")
+            lines.append(f"    Fix Instructions: {r.fix_instructions}")
+        sections.append("\n".join(lines))
 
     if objective:
         sections.append(

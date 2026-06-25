@@ -25,10 +25,12 @@ class _MicrotaskFlags:
 def _check_microtask(task: Microtask) -> _MicrotaskFlags:
     weak = [
         c for c in task.acceptance_criteria
-        if c.strip().lower().startswith(("file exists", "directory exists"))
+        if c.text.strip().lower().startswith(("file exists", "directory exists"))
     ]
+    empty_text = [c for c in task.acceptance_criteria if not c.text.strip()]
     return _MicrotaskFlags(
-        no_acceptance_criteria=not task.acceptance_criteria,
+        # no criteria at all, OR a criterion with empty text — both leave the Tester nothing to ground on
+        no_acceptance_criteria=(not task.acceptance_criteria) or bool(empty_text),
         no_target_files=not task.target_files,
         target_files_count=len(task.target_files),
         description_len=len(task.description),

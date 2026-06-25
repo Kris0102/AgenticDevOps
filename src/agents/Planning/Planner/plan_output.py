@@ -33,7 +33,7 @@ def _next_iteration(folder: Path, glob_pattern: str) -> int:
 def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str]) -> str:
     """Write the plan to disk and return the absolute path."""
     try:
-        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
         folder = _output_folder(run_id, src_dir)
         iteration = _next_iteration(folder, "planner_iteration_*.txt")
         file_path = folder / f"planner_iteration_{iteration}.txt"
@@ -131,7 +131,7 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
                 f.write(f"\n    Acceptance Criteria:\n")
                 if task.acceptance_criteria:
                     for ac in task.acceptance_criteria:
-                        f.write(f"      ✓ {ac}\n")
+                        f.write(f"      ✓ {ac.render()}\n")
                 else:
                     f.write("      !! MISSING !!\n")
 

@@ -234,7 +234,7 @@ class Service:
                     title=m.title,
                     description=m.description,
                     approach=m.approach,
-                    acceptance_criteria=m.acceptance_criteria,
+                    acceptance_criteria=[c.render() for c in m.acceptance_criteria],
                     target_files=m.target_files,
                     status=str(m.status),
                 )

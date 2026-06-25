@@ -2,8 +2,9 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
+from agents.Implementing.Tester.results import CheckResult
 from observability import Category, get_logger
 from orchestrator.state import Microtask, Reflection
 
@@ -33,13 +34,13 @@ def create_test_file_as_output(
     project_type: str,
     test_file: str,
     test_file_content: str,
-    check_result: Dict[str, Any],
+    check_result: "CheckResult",
     rejection_note: Optional[str] = None,
     reflections: Optional[List[Reflection]] = None,
 ) -> str:
     """Write the tester output to disk and return the absolute path."""
     try:
-        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
         folder = _output_folder(run_id, src_dir)
         mt_num = microtask.idx + 1
         iteration = _next_iteration(folder, f"tester_microtask_{mt_num}_iteration_*.txt")
@@ -59,7 +60,7 @@ def create_test_file_as_output(
             # ── Verdict ───────────────────────────────────────────────────────
             f.write("TEST VERDICT\n")
             f.write("-" * 40 + "\n")
-            f.write(f"Status:       {check_result.get('status', 'unknown')}\n")
+            f.write(f"Status:       {check_result.status}\n")
             f.write(f"Project Type: {project_type}\n")
             if test_file:
                 f.write(f"Test File:    {test_file}\n")
@@ -132,7 +133,7 @@ def create_test_file_as_output(
             f.write("Acceptance Criteria:\n")
             if microtask.acceptance_criteria:
                 for ac in microtask.acceptance_criteria:
-                    f.write(f"  ✓ {ac}\n")
+                    f.write(f"  ✓ {ac.render()}\n")
             else:
                 f.write("  (none)\n")
             f.write("\n")
@@ -159,12 +160,12 @@ def create_test_file_as_output(
             f.write("TEST OUTPUT\n")
             f.write(f"{sep}\n\n")
 
-            command = check_result.get("command", [])
+            command = check_result.command
             f.write(f"Command:   {' '.join(command) if command else '(none)'}\n")
-            f.write(f"Exit Code: {check_result.get('exit_code', '-')}\n")
-            f.write(f"Duration:  {check_result.get('duration_ms', 0)} ms\n\n")
+            f.write(f"Exit Code: {check_result.exit_code}\n")
+            f.write(f"Duration:  {check_result.duration_ms} ms\n\n")
 
-            stdout = check_result.get("stdout", "")
+            stdout = check_result.stdout
             if stdout:
                 f.write("STDOUT:\n")
                 f.write(stdout)
@@ -172,7 +173,7 @@ def create_test_file_as_output(
                     f.write("\n")
                 f.write("\n")
 
-            stderr = check_result.get("stderr", "")
+            stderr = check_result.stderr
             if stderr:
                 f.write("STDERR:\n")
                 f.write(stderr)

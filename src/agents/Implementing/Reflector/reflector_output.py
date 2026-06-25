@@ -41,7 +41,7 @@ def create_reflection_file_as_output(
 ) -> str:
     """Write the reflector output to disk and return the absolute path."""
     try:
-        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
         folder = _output_folder(run_id, src_dir)
         mt_num = microtask.idx + 1
         iteration = _next_iteration(folder, f"reflector_microtask_{mt_num}_iteration_*.txt")
@@ -121,7 +121,7 @@ def create_reflection_file_as_output(
             f.write("Acceptance Criteria:\n")
             if microtask.acceptance_criteria:
                 for ac in microtask.acceptance_criteria:
-                    f.write(f"  ✓ {ac}\n")
+                    f.write(f"  ✓ {ac.render()}\n")
             else:
                 f.write("  (none)\n")
             f.write("\n")

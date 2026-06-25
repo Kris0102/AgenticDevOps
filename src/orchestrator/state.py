@@ -156,13 +156,39 @@ class Plan(BaseModel):
     open_questions: List[str]
     review_feedback: List[ReviewFeedback] = Field(default_factory=list)
 
+class IOExample(BaseModel):
+    """A concrete input→output example for an acceptance criterion. When present, the
+    Tester writes assertions directly from this planner-supplied data (deterministic,
+    no LLM re-interpretation of prose) — the strongest grounding against tautological
+    tests. `expect` is the expected return/result for the given inputs."""
+    given: Dict[str, Any] = Field(default_factory=dict)
+    expect: Any = None
+
+
+class AcceptanceCriterion(BaseModel):
+    """One observable behaviour a microtask must satisfy. `text` is the human-readable
+    intent (authored by the Planner, independent of the Coder's implementation);
+    `examples` are optional concrete I/O cases the Tester can assert on directly.
+    See ADR 0015/0016 — this is the Planner→Tester grounding contract."""
+    text: str
+    examples: List[IOExample] = Field(default_factory=list)
+
+    def render(self) -> str:
+        """One-line human/prompt rendering: intent text plus any concrete examples."""
+        line = self.text
+        if self.examples:
+            cases = "; ".join(f"given {e.given} → expect {e.expect!r}" for e in self.examples)
+            line += f"  (e.g. {cases})"
+        return line
+
+
 class Microtask(BaseModel):
     """A single deterministic objective given to the execution loop."""
     microtask_id: str
     title: str
     description: str  # WHAT to build and WHERE — file paths + what goes in them
     approach: str  # HOW — concrete technical plan: signatures, data shapes, sequencing, edge cases
-    acceptance_criteria: List[str] # This field will be used by the tester to validate the microtask's output. It will be used to generate the test cases for the microtask.
+    acceptance_criteria: List[AcceptanceCriterion]  # observable behaviours the Tester grounds tests on (text + optional concrete examples)
     target_files: List[str] = Field(default_factory=list)  # exact paths to create/edit — declared before coding
     context_files: List[str] = Field(default_factory=list)  # paths the Coder should read (not edit) to match conventions
     status: MicrotaskStatus = MicrotaskStatus.PENDING

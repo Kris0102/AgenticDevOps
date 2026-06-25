@@ -17,7 +17,7 @@ from orchestrator.state import (
     Microtask,
     MicrotaskStatus,
     PendingApproval,
-    Phase,
+    Phase,  # single source of truth — re-exported here so callers importing Phase from hitl still work
     Reflection,
     ReviewFeedback,
     RunStatus,
@@ -72,14 +72,6 @@ class HitlResume(BaseModel):
     note: Optional[str] = None
     reviewer: str = "cli-user"
 
-class Phase(str, Enum):
-    PLAN = "plan"
-    CODE = "code"
-    DEPLOY = "deploy"
-    def __to_enum__(self, word):
-        return self.__class__(word)
-    def __str__(self) -> str:
-        return self.value
 class HitlGate:
     """Single code path for every mid-run Human-In-The-Loop checkpoint.
 
@@ -313,7 +305,7 @@ class HitlGate:
             # deploy reject ends the run (status → DONE); nothing downstream to seed
             return {}
 
-        # code reject — the reflector already approved, but the human disagrees.
+        # code reject — the tester passed the microtask, but the human disagrees.
         # Reset the microtask to IN_PROGRESS so the coder retries it, and seed a
         # Reflection carrying the human note so the coder has concrete fix instructions.
         microtask_id = approval.microtask_id if approval else None

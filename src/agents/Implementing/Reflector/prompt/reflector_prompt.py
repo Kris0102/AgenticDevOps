@@ -65,7 +65,7 @@ def build_investigation_prompt(
         f"Target files: {', '.join(microtask.target_files) or '(none declared)'}\n"
         f"Context files: {', '.join(microtask.context_files) or '(none)'}\n"
         "Acceptance criteria (the ground truth — not just what tests happen to check):\n"
-        + "\n".join(f"  - {ac}" for ac in microtask.acceptance_criteria)
+        + "\n".join(f"  - {ac.render()}" for ac in microtask.acceptance_criteria)
     )
 
     if diff:

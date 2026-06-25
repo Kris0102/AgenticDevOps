@@ -65,17 +65,20 @@ class OrchestratorGraph:
 
     def _tester(self, state: BlackboardState) -> Dict[str, Any]:
         _log.info("node.enter", node="tester")
-        return TesterRunner(state).invoke()
+        result = TesterRunner(state).invoke()
+        # On a PASS the Tester advances (NEEDS_CODE/DONE) and sets _tested_microtask_id;
+        # the CODE gate fires here so the human reviews the diff + test output before
+        # advancing. A FAIL (REFLECT) has no _tested_microtask_id → passes through ungated.
+        if result.get("_tested_microtask_id"):
+            return HitlGate.apply(Phase.CODE, result, state)
+        return result
 
     def _reflector(self, state: BlackboardState) -> Dict[str, Any]:
+        """Failure-only diagnosis: only reached on a tester FAIL (REFLECT). Diagnoses the
+        failure, seeds a Reflection, and routes back to the coder (NEEDS_CODE). It never
+        approves or gates — the Tester owns the PASS verdict (ADR 0016)."""
         _log.info("node.enter", node="reflector")
-        result = ReflectorRunner(state).invoke()
-        if result.get("_tested_microtask_id"):
-            # Reflector approved — CODE gate lets the human review the full
-            # microtask result (code + tests + reflection) before advancing.
-            return HitlGate.apply(Phase.CODE, result, state)
-        # Improve path — return directly; coder retries with the new Reflection.
-        return result
+        return ReflectorRunner(state).invoke()
 
     def _deploy(self, state: BlackboardState) -> Dict[str, Any]:
         """Gate producer for the deploy phase. Emits READY_TO_DEPLOY and funnels it
@@ -90,6 +93,11 @@ class OrchestratorGraph:
         _log.info("node.enter", node="deploy_push")
         result = DeployRunner(state).invoke()
         return {**result, "status": RunStatus.DONE}
+    
+    def cleanup(self, state: BlackboardState) -> None:
+        """Cleanup after the run completes (success or failure)."""
+    
+
 
     def _hitl(self, state: BlackboardState) -> Dict[str, Any]:
         """Shared HITL pause point. Suspends the graph via langgraph `interrupt()`
@@ -150,26 +158,27 @@ class OrchestratorGraph:
 
     @staticmethod
     def _tester_router(state: BlackboardState) -> str:
-        """Tester always emits REFLECT — route unconditionally to the reflector,
-        which decides approve (advance) or improve (retry). Any unexpected status
-        halts at END."""
+        """Tester verdict (ADR 0016): REFLECT (fail) → reflector; NEEDS_HITL_APPROVAL
+        (CODE gate fired on a pass) → hitl; NEEDS_CODE (pass, more microtasks) → coder;
+        DONE (pass, final) → deploy. Any other status halts at END."""
         status = state.get("status")
         if status == RunStatus.REFLECT:
             return "reflector"
-        return END
-
-    @staticmethod
-    def _reflector_router(state: BlackboardState) -> str:
-        """Reflector verdict: NEEDS_HITL_APPROVAL means a gate fired (→ hitl);
-        NEEDS_CODE means the Coder should retry with the new reflection (→ coder);
-        DONE means all microtasks approved (→ deploy). Any other status halts."""
-        status = state.get("status")
         if status == RunStatus.NEEDS_HITL_APPROVAL:
             return "hitl"
         if status == RunStatus.NEEDS_CODE:
             return "coder"
         if status == RunStatus.DONE:
             return "deploy"
+        return END
+
+    @staticmethod
+    def _reflector_router(state: BlackboardState) -> str:
+        """Failure-only Reflector: always diagnoses and routes back to the coder
+        (NEEDS_CODE). Any other status halts at END."""
+        status = state.get("status")
+        if status == RunStatus.NEEDS_CODE:
+            return "coder"
         return END
 
     @staticmethod
@@ -240,7 +249,7 @@ class OrchestratorGraph:
             {"hitl": "hitl", "planner": "planner", "coder": "coder", END: END},
         )
 
-        # Execution loop: coder → tester → reflector → coder, CODE gate on reflector approve
+        # Execution loop: coder → tester → (pass: CODE gate → coder/deploy | fail: reflector → coder)
         builder.add_conditional_edges(
             "coder",
             self._coder_router,
@@ -249,12 +258,12 @@ class OrchestratorGraph:
         builder.add_conditional_edges(
             "tester",
             self._tester_router,
-            {"reflector": "reflector", END: END},
+            {"reflector": "reflector", "hitl": "hitl", "coder": "coder", "deploy": "deploy", END: END},
         )
         builder.add_conditional_edges(
             "reflector",
             self._reflector_router,
-            {"hitl": "hitl", "coder": "coder", "deploy": "deploy", END: END},
+            {"coder": "coder", END: END},
         )
 
         # Deploy (terminal): reflector DONE → deploy gate → (hitl) → deploy_push → END.

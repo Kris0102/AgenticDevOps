@@ -220,7 +220,27 @@ class DockerSandboxTools:
             c.remove(force=True)
         except Exception:
             pass
-
+        
+    def sanxbox_stop_container(self, *, sandbox_id: str) -> None:
+        _log.info("sandbox.stop_container", sandbox_id=sandbox_id)
+        with db.session_scope() as session:
+            record = session.get(Sandbox, sandbox_id)
+            if not record:
+                return
+            cid = record.container_id
+            
+        try:
+            c = self.client.containers.get(cid)
+            try:
+                if c.status == "running":
+                    c.stop(timeout=5)  
+                    _log.info("sandbox.stop_container_success", sandbox_id=sandbox_id, container_id=cid)
+            except Exception:
+                _log.warning("sandbox.stop_container_failed", sandbox_id=sandbox_id, container_id=cid)
+                pass
+        except Exception:
+            pass
+          
     # ---- core exec ----
 
     def sandbox_exec(

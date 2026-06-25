@@ -5,7 +5,8 @@ from db.db import db
 from db.event_log import EventLogger
 from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
-from agents.Implementing.Tester.tester import Tester
+from agents.Implementing.Tester.pipeline import TestPipeline
+from agents.Implementing.Tester.results import CheckResult, CheckStatus
 from agents.Implementing.Tester.tester_tools import TesterTools
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
@@ -27,8 +28,13 @@ _FINISHED = {MicrotaskStatus.COMPLETED, MicrotaskStatus.DONE}
 
 
 class TesterRunner:
-    """Owns one Tester invocation: select the current microtask, run checks,
-    persist the results, and return the next run status for the orchestrator."""
+    """Owns one Tester invocation: select the current microtask, run the phase pipeline,
+    derive the deterministic PASS/FAIL verdict, persist it, and return the next run status.
+
+    Contract (ADR 0016): the Tester owns its verdict. On PASS it marks the microtask
+    COMPLETED/DONE and advances (NEEDS_CODE/DONE) — the CODE HITL gate fires here. On FAIL
+    it emits REFLECT, routing to the failure-only Reflector for diagnosis. The verdict is
+    read deterministically from the `unit_tests` check the pipeline emits."""
 
     def __init__(self, state: BlackboardState):
         self.state = state
@@ -40,15 +46,14 @@ class TesterRunner:
         if microtask is None:
             return self._finish_run()
 
-        remaining = self._has_remaining_microtasks(microtask.microtask_id)
-        final_validation = not remaining
+        final_validation = not self._has_remaining_microtasks(microtask.microtask_id)
 
         with db.session_scope() as db_session:
             try:
                 gateway = self._init_gateway(db_session)
                 tester_tools = TesterTools(gateway=gateway)
-                tester = Tester(run_id=self.run_id, tester_tools=tester_tools)
-                result = tester.invoke(self.state, microtask, final_validation=final_validation)
+                pipeline = TestPipeline(run_id=self.run_id, tester_tools=tester_tools)
+                result = pipeline.run(self.state, microtask, final_validation=final_validation)
             except RunExecutionError as error:
                 _log.error("tester.run_execution_error", error=str(error))
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, error)
@@ -56,8 +61,26 @@ class TesterRunner:
                 _log.error("tester.unexpected_error", error=str(error))
                 raise
 
-            new_microtasks, new_evidence = self._persist_results(db_session, microtask, result)
-            return self._build_state_result(microtask, result, new_microtasks, new_evidence)
+            passed = self._verdict_passed(result)
+            new_microtasks, new_evidence = self._persist_results(
+                db_session, microtask, result, passed, final_validation)
+            return self._build_state_result(
+                microtask, result, new_microtasks, new_evidence, passed, final_validation)
+
+    @staticmethod
+    def _verdict_passed(result: Dict[str, Any]) -> bool:
+        """Deterministic verdict from the canonical unit_tests check (skipped = passed,
+        nothing to fix). Missing check = treat as failure (route to reflector)."""
+        for check in result.get("check_results") or []:
+            if check.label == "unit_tests":
+                return check.status in (CheckStatus.PASSED, CheckStatus.SKIPPED)
+        return False
+
+    @staticmethod
+    def _next_status(passed: bool, final_validation: bool) -> RunStatus:
+        if not passed:
+            return RunStatus.REFLECT
+        return RunStatus.DONE if final_validation else RunStatus.NEEDS_CODE
 
     def _select_microtask(self) -> Optional[Microtask]:
         microtasks: List[Microtask] = list(self.state.get("microtasks") or [])
@@ -86,30 +109,43 @@ class TesterRunner:
         db_session,
         microtask: Microtask,
         result: Dict[str, Any],
+        passed: bool,
+        final_validation: bool,
     ) -> tuple[List[Microtask], Evidence]:
         now = datetime.now(timezone.utc)
-        # Tester always routes to REFLECT — the Reflector decides approve/improve.
-        # Reflector marks microtasks COMPLETED on approve; tester never does.
-        next_status = RunStatus.REFLECT
-        final_validation = bool(result.get("final_validation"))
+        next_status = self._next_status(passed, final_validation)
         checks = list(result.get("check_results") or [])
 
         evidence = self.state.get("evidence") or Evidence()
         check_updates: Dict[str, CheckOutput] = {}
         for check in checks:
-            artifact_ref = self._store_check_artifact(db_session, microtask.microtask_id, check, result, now)
-            check_updates[check["label"]] = CheckOutput(
-                status=check["status"],
-                exit_code=int(check["exit_code"]),
+            artifact_ref = self._store_check_artifact(db_session, microtask.microtask_id, check, result, now)  # Stores an artifcat per check meaning for lint, typecheck, build, unit_tests, integration_tests
+            check_updates[check.label] = CheckOutput(   # label has values : unit_tests, integration_tests, build, typecheck, or lint   !one of those!
+                status=check.status.value,
+                exit_code=check.exit_code,
                 artifact_ref=artifact_ref,
             )
 
         new_evidence = evidence.model_copy(update={
-            "checks": evidence.checks.model_copy(update=check_updates),
+            "checks": evidence.checks.model_copy(update=check_updates),   # Here the art ref is saved to state.py 
         })
+
+        # On PASS the Tester owns completion: mark the microtask DONE (final) / COMPLETED.
+        # TODO the reflector should alsways be triggert regardless of pass or not!
+        
+        updated_microtasks: List[Microtask] = list(self.state.get("microtasks") or [])
+        completed_status = MicrotaskStatus.DONE if final_validation else MicrotaskStatus.COMPLETED
+        if passed:
+            updated_microtasks = [
+                mt.model_copy(update={"status": completed_status})
+                if mt.microtask_id == microtask.microtask_id else mt
+                for mt in updated_microtasks
+            ]
 
         record = db_session.get(MicrotaskRecord, microtask.microtask_id)
         if record:
+            if passed:
+                record.status = completed_status.value
             record.updated_at = now
 
         run_record = db_session.get(Run, self.run_id)
@@ -118,19 +154,18 @@ class TesterRunner:
             run_record.status = next_status.value
             run_record.updated_at = now
 
-        # MICROTASK_UPDATED: tests ran, routing to reflector for verdict.
-        check_status = checks[0]["status"] if checks else "unknown"
-        EventLogger.log(db_session, self.run_id, self.name, EventType.MICROTASK_UPDATED, {
+        # PASS → microtask.completed; FAIL → microtask.failed (routes to the reflector).
+        event_type = EventType.MICROTASK_COMPLETED if passed else EventType.MICROTASK_FAILED
+        EventLogger.log(db_session, self.run_id, self.name, event_type, {
             "microtask_id": microtask.microtask_id,
             "final_validation": final_validation,
             "summary": result.get("summary", ""),
-            "check_status": check_status,
             "checks": [
                 {
-                    "label": check["label"],
-                    "status": check["status"],
-                    "exit_code": check["exit_code"],
-                    "artifact_ref": check.get("artifact_ref", ""),
+                    "label": check.label,
+                    "status": check.status.value,
+                    "exit_code": check.exit_code,
+                    "artifact_ref": check.artifact_ref,
                 }
                 for check in checks
             ],
@@ -138,36 +173,39 @@ class TesterRunner:
         EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_STATUS_CHANGED, {
             "from": old_status,
             "to": next_status.value,
-            "reason": result.get("summary", "tester completed, routing to reflector"),
+            "reason": result.get("summary", "tester verdict"),
         })
+        if next_status == RunStatus.DONE:
+            EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_COMPLETED, {
+                "summary": result.get("summary", "tester passed final validation"),
+            })
 
-        updated_microtasks: List[Microtask] = list(self.state.get("microtasks") or [])
         return updated_microtasks, new_evidence
 
     def _store_check_artifact(
         self,
         db_session,
         microtask_id: str,
-        check: Dict[str, Any],
+        check: "CheckResult",
         result: Dict[str, Any],
         now: datetime,
     ) -> str:
-        artifact_ref = f"art_{self.run_id}_test_{microtask_id}_{check['label']}_{now.strftime('%Y%m%d%H%M%S%f')}"
+        artifact_ref = f"art_{self.run_id}_test_{microtask_id}_{check.label}_{now.strftime('%Y%m%d%H%M%S%f')}"
         db_session.merge(DbArtifact(
             artifact_id=artifact_ref,
             run_id=self.run_id,
-            kind=f"test-{check['label']}",
+            kind=f"test-{check.label}",
             content_text=(
-                f"Command: {' '.join(check['command'])}\n"
-                f"Status: {check['status']}\n"
-                f"Exit code: {check['exit_code']}\n"
-                f"Duration ms: {check['duration_ms']}\n"
+                f"Command: {' '.join(check.command)}\n"
+                f"Status: {check.status}\n"
+                f"Exit code: {check.exit_code}\n"
+                f"Duration ms: {check.duration_ms}\n"
                 f"Summary: {result.get('summary', '')}\n\n"
-                f"{check.get('artifact_text', '')}"
+                f"{check.artifact_text}"  # STDOUT/STDERR/Gateway error
             ),
             created_at=now,
         ))
-        check["artifact_ref"] = artifact_ref
+        check.artifact_ref = artifact_ref
         return artifact_ref
 
     def _build_state_result(
@@ -176,18 +214,31 @@ class TesterRunner:
         result: Dict[str, Any],
         updated_microtasks: List[Microtask],
         new_evidence: Evidence,
+        passed: bool,
+        final_validation: bool,
     ) -> Dict[str, Any]:
         # Fields propagated on every exit path so they're always up-to-date in state.
         shared: Dict[str, Any] = {
             "last_test_output_path": result.get("last_test_output_path"),
             "test_rejection_note": result.get("test_rejection_note"),  # None clears it
-        }
-        # Always route to REFLECT — the Reflector reads evidence.checks and decides
-        # whether to approve (advance) or improve (coder retries with new Reflection).
-        return {
-            "status": RunStatus.REFLECT,
-            "current_microtask_id": microtask.microtask_id,
             "evidence": new_evidence,
+        }
+
+        if not passed:
+            # FAIL → reflector diagnoses; keep the microtask in flight for the coder retry.
+            return {
+                "status": RunStatus.REFLECT,
+                "current_microtask_id": microtask.microtask_id,
+                **shared,
+            }
+
+        # PASS → advance. The CODE gate fires here (orchestrator wraps this result).
+        return {
+            "status": self._next_status(passed, final_validation),  # NEEDS_CODE or DONE
+            "microtasks": updated_microtasks,
+            "current_microtask_id": None,
+            # Consumed by HitlGate.apply(Phase.CODE) so a gate rejection can reset this microtask.
+            "_tested_microtask_id": microtask.microtask_id,
             **shared,
         }
 

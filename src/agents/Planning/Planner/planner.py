@@ -269,7 +269,7 @@ class Planner:
                   microtasks=len(result.microtasks), summary=result.plan.summary)
         for idx, task in enumerate(result.microtasks):
             _log.debug("planner.microtask", idx=idx + 1, id=task.microtask_id,
-                       title=task.title, acceptance_criteria=list(task.acceptance_criteria))
+                       title=task.title, acceptance_criteria=[c.text for c in task.acceptance_criteria])
 
         now = datetime.now(timezone.utc).isoformat()
         plan_artifact = Artifact(

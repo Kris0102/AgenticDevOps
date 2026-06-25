@@ -77,18 +77,6 @@ def _last_ai_text(messages: List) -> Optional[str]:
     return None
 
 
-def _read_host_file(path: Optional[str]) -> str:
-    """Read a file from the host filesystem (e.g. the tester output written to disk)."""
-    if not path:
-        return ""
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read()
-    except Exception as exc:
-        _log.warning("reflector.host_file_read_failed", path=path, error=str(exc))
-        return ""
-
-
 def _tests_passed_from_evidence(state: BlackboardState) -> bool:
     """Derive test pass/fail from the evidence.checks written by the tester node."""
     evidence = state.get("evidence")
@@ -143,7 +131,16 @@ class Reflector:
             system_prompt=REFLECTOR_SYSTEM_PROMPT,
         )
 
-    def invoke(self, state: BlackboardState, microtask: Microtask, test_passed: bool) -> Dict[str, Any]:
+    def invoke(
+        self,
+        state: BlackboardState,
+        microtask: Microtask,
+        test_passed: bool,
+        test_output: str = "",
+    ) -> Dict[str, Any]:
+        """`test_output` is the failing tester output, fetched by ReflectorRunner from the
+        durable `unit_tests` artifact (blackboard carries only the ref) and passed in — the
+        node owns DB access, the agent just reasons over the text."""
         rejection_note: Optional[str] = state.get("reflection_rejection_note")
         mode = "quality-review" if test_passed else "failure-diagnosis"
         _log.info(
@@ -155,7 +152,6 @@ class Reflector:
             is_re_reflection=bool(rejection_note),
         )
 
-        test_output = _read_host_file(state.get("last_test_output_path"))
         diff = self.reflector_tools.get_repo_diff()
 
         # Phase 1: investigation
@@ -298,3 +294,8 @@ class Reflector:
                 should_store_in_semantic_memory=False,
             )
         return output
+    
+    
+
+
+            

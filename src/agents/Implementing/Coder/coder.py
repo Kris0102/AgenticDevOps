@@ -373,6 +373,8 @@ class Coder:
             "current_microtask_id": microtask.microtask_id,
             "evidence": new_evidence,
             "artifacts_index": list(state.get("artifacts_index") or []) + [diff_artifact],
+            # New code → fresh test re-synthesis budget for the reflector→tester loop (GH #33).
+            "test_resynth_count": 0,
             # consumed by CoderRunner._persist_results, not a BlackboardState key
             "_diff_text": diff_text,
         }

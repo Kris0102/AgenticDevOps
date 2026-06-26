@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -71,11 +72,19 @@ class ReflectorRunner:
                 _log.error("reflector.unexpected_error", error=str(error))
                 raise
 
-            # Drop any approve signal — failure-only runner always loops back to the coder.
+            # Drop the approve signal (failure-only) and read the fix target.
             raw.pop("_reflector_approved", None)
-            result = self._build_state_result(raw, microtask)
+            fix_target = raw.pop("_fix_target", "code")
+            result = self._build_state_result(raw, microtask, fix_target)
             self._persist_results(db_session, microtask, result)
             return result
+
+    @staticmethod
+    def _max_test_resynth() -> int:
+        try:
+            return max(0, int(os.getenv("REFLECTOR_MAX_TEST_RESYNTH", "2")))
+        except ValueError:
+            return 2
 
     # ------------------------------------------------------------------ #
     # Helpers                                                               #
@@ -146,12 +155,35 @@ class ReflectorRunner:
         self,
         raw: Dict[str, Any],
         microtask: Microtask,
+        fix_target: str,
     ) -> Dict[str, Any]:
-        """Failure-only: keep the microtask in flight and loop back to the coder with
-        the new Reflection (carried in `raw`)."""
+        """Route the diagnosis. `fix_target == "test"` (and budget left) → regenerate the
+        synthesized test (NEEDS_TEST + note for the tester); otherwise → coder retry
+        (NEEDS_CODE). The microtask stays in flight either way (GH #33)."""
+        count = int(self.state.get("test_resynth_count") or 0)
+        cap = self._max_test_resynth()
+
+        if fix_target == "test" and count < cap:
+            reflections: List[Reflection] = list(raw.get("reflections") or [])
+            note = (reflections[-1].fix_instructions if reflections else
+                    "The previous synthesized test asserted a wrong expectation — regenerate it.")
+            _log.info("reflector.fix_target_test", run_id=self.run_id,
+                      microtask_id=microtask.microtask_id, attempt=count + 1, cap=cap)
+            return {
+                **raw,
+                "status": RunStatus.NEEDS_TEST,        # → tester re-synthesizes the test
+                "current_microtask_id": microtask.microtask_id,
+                "test_rejection_note": note,           # SynthesisPhase reads this
+                "test_resynth_count": count + 1,
+            }
+
+        if fix_target == "test":
+            _log.warning("reflector.test_resynth_exhausted", run_id=self.run_id,
+                         microtask_id=microtask.microtask_id, count=count, cap=cap,
+                         reason="test-fix budget hit — falling back to the code path")
         return {
             **raw,
-            "status": RunStatus.NEEDS_CODE,
+            "status": RunStatus.NEEDS_CODE,            # → coder retries with the Reflection
             "current_microtask_id": microtask.microtask_id,
         }
 

@@ -104,7 +104,7 @@ first architecture audit and its remediation order.
 ```
 START → planner → plan_reviewer → (planner | coder | hitl)        # planning loop
                   coder → tester → (reflector | hitl | coder | deploy)  # execution loop
-                  tester → reflector → coder                      # FAIL path only
+                  tester → reflector → (coder | tester)           # FAIL: code-fix→coder | test-bug→tester
                   tester → deploy → (hitl) → deploy_push → END    # deploy (terminal)
                   hitl → (planner | coder | deploy | deploy_push | END)
 
@@ -123,7 +123,10 @@ bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 
   deploy); the **CODE** gate fires here. On a **FAIL** (`REFLECT`) it routes to the
   **failure-only Reflector**, which diagnoses, seeds a `Reflection`, and is the SOLE path
   back to coder after a failure (`NEEDS_CODE`) — no blind retries, and no LLM call on a
-  green pass.
+  green pass. The reflector also emits a `fix_target` (GH #33): `code` → coder retry;
+  `test` → **tester** re-synthesizes the wrong test (`NEEDS_TEST`, note via
+  `test_rejection_note`), bounded by `test_resynth_count < REFLECTOR_MAX_TEST_RESYNTH`
+  (then it falls back to the code path; the counter resets when the coder runs).
 - **HITL gate** (shared `hitl` node, see below + ADR 0006): any phase in
   `hitl.hitl_checkpoints` routes through `hitl` before advancing.
 
@@ -214,10 +217,12 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `LLM_MODEL` | Model name for LLM cluster endpoint (default `google/gemma-4-31B-it`) |
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
 | `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
+| `TESTER_MAX_TOOL_STEPS` | Tool-call rounds for the test-writer ReAct loop (default 6 → recursion limit 17). Kept tight so a wandering synth fails fast; on GraphRecursionError the SynthesisPhase degrades (no crash). The test-writer is NOT given `get_repo_diff` (avoids a verify-loop) |
 | `PLANNER_MAX_SYNTHESIS_ATTEMPTS` | Max synthesis retries when `_normalize_output` raises `BadMicroTaskException` (default 3) — Planner feeds the validation error back into the next prompt as context |
 | `CODER_MAX_TOOL_STEPS` | Max tool call rounds for the coder's ReAct loop (default 16) |
 | `CODER_MAX_EMPTY_DIFF_RETRIES` | Re-prompt attempts when the post-loop `repo.diff` comes back empty (default 2) |
 | `CODER_MAX_COMPILE_RETRIES` | Warm in-loop compile-fix attempts when the target files don't compile (default 2). Coder needs `node` in its allowlist for the JS `node --check`; Python `py_compile` runs via `python` |
+| `REFLECTOR_MAX_TEST_RESYNTH` | Bound on the reflector→tester test re-synthesis loop when the reflector judges the synthesized TEST (not the code) wrong (default 2). After the cap it forces the code path; reset when the coder runs (GH #33) |
 | `CODER_TIMEOUT_SECONDS` | LLM request timeout for the Coder (default 120 — code gen is long) |
 | `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
 | `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
@@ -258,7 +263,7 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Plan Reviewer | Done — two-phase (independent investigation via read-only tools, then structured approve/reject). Appends a `ReviewFeedback` to the plan, emits `PLAN_REVIEWED`, caps the planner↔reviewer loop at `Constraints.max_total_iterations` (→ FAILED + `RUN_FAILED`). See ADR 0011 |
 | Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced. **Compile gate** (GH #27): after the diff, the runner compiles the microtask's target files (`py_compile` / `node --check`); on failure it appends the error to the SAME ReAct conversation and re-runs (warm, no cold re-prompt), up to `CODER_MAX_COMPILE_RETRIES`. On exhaustion it proceeds — the Tester's build check is the deterministic backstop |
 | Tester | Done — phase-based pipeline (ADR 0016): `TestPipeline` runs ordered `TestPhase`s under `agents/Implementing/Tester/phases/` (detect → deterministic-checks → synthesis → trivial-guard → execute → verdict). Two-track grounding: **Track A** (`DeterministicChecksPhase`) runs the repo's existing suite + **build/typecheck/lint** (config-gated; build+typecheck+suite gate, lint advisory); **Track B** LLM-synthesizes tests from the Planner's `acceptance_criteria` (independent of the Coder), guarded by a deterministic AST/regex assertion check (`grounding.py`). Combined verdict emitted as the canonical `unit_tests` check. Tester owns its PASS/FAIL verdict; CODE gate fires on pass |
-| Reflector | Done — failure-only (ADR 0016): reached ONLY on a tester FAIL (`REFLECT`). Diagnoses, seeds a `Reflection`, emits `NEEDS_CODE` → coder. No approve path / no LLM call on green (the Tester owns the PASS verdict) |
+| Reflector | Done — failure-only (ADR 0016): reached ONLY on a tester FAIL (`REFLECT`). Diagnoses, seeds a `Reflection`, and routes by `fix_target`: `code` → coder retry (`NEEDS_CODE`); `test` → tester re-synthesizes the wrong test (`NEEDS_TEST`, bounded by `REFLECTOR_MAX_TEST_RESYNTH`, GH #33). No approve path / no LLM call on green (the Tester owns the PASS verdict) |
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012 |
 | Control API + dashboard backend | Done — FastAPI (`src/api/`, ADR 0013). Trigger runs + HITL approve/reject over HTTP (`POST /runs/{id}/resume` → `Command(resume=...)`); one `graph.invoke()` per gate (no re-bootstrap on resume — mid-graph pause, sandbox alive). HITL review context (`GET /runs/{id}/hitl`): plan + microtasks for a `plan` gate, raw green/red diff for a `code` gate. Notify by poll (`GET /runs/{id}` → `run_state`/`hitl_phase`). Live logs: structlog → in-memory `RunLogBus` → SSE (`/logs/stream`); durable history: `events` table poll (`/events?after=<seq>`). Runs in `BackgroundTasks` (move to a worker before prod). CLI (`main.py`) being deleted — don't mirror it |

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langchain_core.messages import AnyMessage
 
 
@@ -95,6 +95,13 @@ class Repo(BaseModel):
     base_sha: Optional[str] = None
     workspace_branch: str
     pr_url: Optional[str] = None
+
+    @field_validator("repo_url", "base_ref", "base_sha", "default_branch", "workspace_branch", mode="before")
+    @classmethod
+    def _strip(cls, v: Any) -> Any:
+        # Stray leading/trailing whitespace (copy-paste, trailing newline, form input) breaks
+        # `git clone` — "protocol '  https' is not supported". Strip it at the boundary.
+        return v.strip() if isinstance(v, str) else v
 
 class Sandbox(BaseModel):
     sandbox_id: str
@@ -353,12 +360,17 @@ class BlackboardState(TypedDict):
     # Execution diagnostics
     error_logs: List[str]
 
-    # Tester feedback channel: set by HITL reject on the test gate, cleared by the
-    # tester after it reads it so it doesn't leak into later microtasks.
+    # Tester feedback channel: set by HITL reject on the test gate OR by the Reflector
+    # when it judges the synthesized TEST (not the code) wrong; cleared by the tester
+    # after it reads it so it doesn't leak into later microtasks.
     test_rejection_note: Optional[str]
     # Path to the on-disk tester output file — surfaced in the HITL prompt so the
     # reviewer knows where to look for the full test output.
     last_test_output_path: Optional[str]
+    # Bounds the reflector→tester test re-synthesis sub-loop (ADR 0016/GH #33): the
+    # Reflector increments it on each fix_target="test" decision; once it hits
+    # REFLECTOR_MAX_TEST_RESYNTH the reflector forces the code path. Reset by the coder.
+    test_resynth_count: int
 
 
 def _utc_now_iso() -> str:
@@ -415,4 +427,5 @@ def create_initial_blackboard_state(
         error_logs=[],
         test_rejection_note=None,
         last_test_output_path=None,
+        test_resynth_count=0,
     )

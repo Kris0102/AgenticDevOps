@@ -42,10 +42,12 @@ _log = get_logger(Category.TESTER)
 
 
 def _max_tool_steps() -> int:
+    # A test-writer needs only a handful of tool calls (read targets → maybe one find →
+    # write). Keep this tight so a wandering agent fails fast instead of burning the budget.
     try:
-        return max(1, int(os.getenv("TESTER_MAX_TOOL_STEPS", "10")))
+        return max(1, int(os.getenv("TESTER_MAX_TOOL_STEPS", "6")))
     except ValueError:
-        return 10
+        return 6
 
 
 class TestPipeline:

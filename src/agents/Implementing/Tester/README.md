@@ -145,6 +145,12 @@ an input authored by the **Planner**, independent of the Coder, which is what st
 from just mirroring (and rubber-stamping) the implementation. Writes to
 `tests/test_<id>.py` / `.test.js`, reads it back into `ctx.synth_test_content`.
 
+**Synthesizes ONLY when needed** (`should_run`): the first time (no test exists) or when a
+rewrite is explicitly requested (`rejection_note` — reflector `fix_target="test"` / HITL
+test-reject). On a normal coder-retry it **reuses** the existing test (which still runs via
+Track A). Regenerating every retry would make the test a moving target the coder can never
+converge on — it satisfies vN, we hand it vN+1, it fails forever.
+
 ### 4. TrivialGuardPhase (deterministic, `grounding.py`)
 Rejects a synthesized file that can pass without verifying anything: **0 assertions**, all
 `@skip`, or empty. Python uses the `ast` (counts `assert` + `assertX`/`pytest.raises`); JS

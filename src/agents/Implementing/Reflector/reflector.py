@@ -36,6 +36,16 @@ class ReflectionOutput(BaseModel):
     decision: Literal["approve", "improve"] = Field(
         description="'approve' to advance to next microtask; 'improve' to send back for fixes."
     )
+    fix_target: Literal["code", "test"] = Field(
+        default="code",
+        description=(
+            "Only meaningful when decision='improve'. 'code' = the IMPLEMENTATION is wrong "
+            "(default) → Coder retries. 'test' = the implementation is correct but the "
+            "SYNTHESIZED TEST is wrong (asserts a wrong expected value, bad assertion, "
+            "broken setup) → the test is regenerated. Choose 'test' ONLY when you are "
+            "confident the code satisfies the acceptance criteria and the test itself is at fault."
+        ),
+    )
     failure_type: str = Field(
         default="",
         description="Category when decision=improve: assertion_error | missing_implementation | logic_error | type_error | quality_issue | other.",
@@ -203,6 +213,8 @@ class Reflector:
             "last_reflection_output_path": output_path or None,
             # _INTERNAL_: stripped by ReflectorRunner before reaching LangGraph state.
             "_reflector_approved": approved,
+            # _INTERNAL_: "code" (coder retry) | "test" (regenerate the synthesized test).
+            "_fix_target": output.fix_target,
         }
 
         if not approved:

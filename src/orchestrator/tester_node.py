@@ -58,8 +58,13 @@ class TesterRunner:
                 _log.error("tester.run_execution_error", error=str(error))
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, error)
             except Exception as error:
+                # Don't let a tester crash escape graph.invoke (→ ASGI 500 + stuck run).
+                # End the run cleanly as FAILED; the error is logged for debugging.
                 _log.error("tester.unexpected_error", error=str(error))
-                raise
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(phase="test", reason=f"Tester crashed: {error}"),
+                )
 
             passed = self._verdict_passed(result)
             new_microtasks, new_evidence = self._persist_results(

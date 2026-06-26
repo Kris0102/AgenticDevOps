@@ -174,11 +174,14 @@ class OrchestratorGraph:
 
     @staticmethod
     def _reflector_router(state: BlackboardState) -> str:
-        """Failure-only Reflector: always diagnoses and routes back to the coder
-        (NEEDS_CODE). Any other status halts at END."""
+        """Failure-only Reflector diagnosis (GH #33): NEEDS_CODE → coder (fix the code);
+        NEEDS_TEST → tester (the synthesized test was wrong — regenerate it, bounded by
+        test_resynth_count). Any other status halts at END."""
         status = state.get("status")
         if status == RunStatus.NEEDS_CODE:
             return "coder"
+        if status == RunStatus.NEEDS_TEST:
+            return "tester"
         return END
 
     @staticmethod
@@ -263,7 +266,7 @@ class OrchestratorGraph:
         builder.add_conditional_edges(
             "reflector",
             self._reflector_router,
-            {"coder": "coder", END: END},
+            {"coder": "coder", "tester": "tester", END: END},
         )
 
         # Deploy (terminal): reflector DONE → deploy gate → (hitl) → deploy_push → END.

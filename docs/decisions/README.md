@@ -56,3 +56,6 @@ What this makes easier, harder, or newly possible. What it costs.
 | [0008](0008-coder-single-react-loop-grounded.md) | Coder: single ReAct loop, pre-fetched grounding, deterministic diff verification, microtask attempt limit | accepted |
 | [0009](0009-per-role-permissions-classes.md) | Per-role `RolePermissions` classes replace global `ROLE_PERMISSIONS`/`ALLOWED_SANDBOX_CMDS`; Coder loses `pytest` | accepted |
 | [0010](0010-context-engine-pgvector-semantic-memory.md) | Context Engine: pgvector code semantic memory (baseline + workspace), local MiniLM embeddings, tree-sitter chunking, `semantic.search` Planner tool | accepted |
+| [0011](0011-plan-reviewer-and-planning-loop-cap.md) | Plan Reviewer: two-phase investigate+review, structured approve/reject, planning-loop cap | accepted |
+| [0012](0012-deploy-node-gitops-stub.md) | Deploy node + GitOps boundary: terminal deploy/deploy_push push sandbox to `agent/run-<id>`, HITL-gateable | accepted |
+| [0013](0013-control-api-and-dashboard-backend.md) | Control API + dashboard backend: HITL over HTTP, review context (plan/diff), live logs via structlog→SSE, history via `events.seq`; right-sized to self-hosted single-user | accepted |

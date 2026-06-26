@@ -77,9 +77,17 @@ For EACH microtask you MUST provide:
           data is hardcoded per data_contracts; do not add persistence."
    BAD:  "Implement the endpoint so it returns the results data." (just restates description)
 
-4. acceptance_criteria — observable behaviour, not file existence.
-   GOOD: "GET /api/results returns HTTP 200 with JSON array where each item has player_1, player_2, score, round, court"
-   BAD:  "server/index.js exists"
+4. acceptance_criteria — a list of objects, each {{"text": ..., "examples": [...]}}.
+   `text` = one observable behaviour, not file existence. The Tester grounds its tests on
+   these (independent of how the Coder implements), so make them concrete and checkable.
+   `examples` = optional list of {{"given": {{...inputs...}}, "expect": ...output...}} —
+   concrete input→output cases. INCLUDE examples whenever the behaviour has a clean,
+   deterministic I/O (pure functions, parsers, formatters, calculations); the Tester turns
+   each into a direct assertion. Omit examples (empty list) for side-effecting or
+   hard-to-exemplify behaviour (logging, file writes, network) — `text` alone is fine then.
+   GOOD: {{"text": "add(a, b) returns the sum", "examples": [{{"given": {{"a": 2, "b": 3}}, "expect": 5}}]}}
+   GOOD: {{"text": "GET /api/results returns HTTP 200 with a JSON array of Result objects", "examples": []}}
+   BAD:  {{"text": "server/index.js exists", "examples": []}}
 
 5. context_files — existing files the Coder should READ (not edit) to match this repo's
    conventions: a sibling file showing established patterns, a shared types/schema file,

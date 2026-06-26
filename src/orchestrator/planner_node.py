@@ -96,7 +96,7 @@ class PlannerRunner:
                 approach=mt.approach,
                 status=mt.status.value,
                 attempts=mt.attempts,
-                acceptance_criteria=list(mt.acceptance_criteria),
+                acceptance_criteria=[c.model_dump() for c in mt.acceptance_criteria],
                 target_files=list(mt.target_files),
                 context_files=list(mt.context_files),
                 dependencies=list(mt.dependencies),

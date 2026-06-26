@@ -65,7 +65,7 @@ def build_investigation_prompt(
         f"Target files: {', '.join(microtask.target_files) or '(none declared)'}\n"
         f"Context files: {', '.join(microtask.context_files) or '(none)'}\n"
         "Acceptance criteria (the ground truth — not just what tests happen to check):\n"
-        + "\n".join(f"  - {ac}" for ac in microtask.acceptance_criteria)
+        + "\n".join(f"  - {ac.render()}" for ac in microtask.acceptance_criteria)
     )
 
     if diff:
@@ -154,12 +154,19 @@ def build_diagnosis_prompt(
     else:
         sections.append(
             "Based on the above, produce a structured failure diagnosis.\n\n"
+            "First decide WHO is at fault:\n"
+            "  • The IMPLEMENTATION is wrong → fix_target = \"code\" (default).\n"
+            "  • The implementation is CORRECT but the synthesized TEST is wrong — it asserts a\n"
+            "    wrong expected value, has a broken assertion, or bad setup → fix_target = \"test\".\n"
+            "    Choose \"test\" ONLY when you are confident the code satisfies the acceptance\n"
+            "    criteria (check the criteria's concrete examples) and the test itself is at fault.\n\n"
             "Respond ONLY with valid JSON (no markdown fences, no extra keys):\n"
             "{\n"
             '  "decision": "improve",\n'
+            '  "fix_target": "code" or "test",\n'
             '  "failure_type": "<import_error | assertion_error | missing_implementation | logic_error | type_error | other>",\n'
             '  "root_cause": "<precise technical explanation — name file, function, line>",\n'
-            '  "fix_instructions": "<step-by-step for the Coder: which file, which function, what to change>",\n'
+            '  "fix_instructions": "<for fix_target=code: what the Coder must change; for fix_target=test: what the test asserted wrongly and the correct expectation>",\n'
             '  "quality_notes": "",\n'
             '  "should_store_in_semantic_memory": <true if reusable anti-pattern>\n'
             "}"

@@ -90,7 +90,9 @@ def _format_planner_output(review_context: str) -> str:
         if task.get("acceptance_criteria"):
             lines.append("  Acceptance Criteria:")
             for criterion in task["acceptance_criteria"]:
-                lines.append(f"    - {criterion}")
+                # raw JSON dict after DB/checkpoint round-trip: {"text": ..., "examples": [...]}
+                text = criterion["text"] if isinstance(criterion, dict) else str(criterion)
+                lines.append(f"    - {text}")
         if task.get("test_strategy"):
             lines.append(f"  Test Strategy: {task['test_strategy']}")
         lines.append("")
@@ -125,7 +127,7 @@ def create_review_file_as_output(
 ) -> str:
     """Write the review to disk and return the absolute path."""
     try:
-        src_dir = Path(os.path.abspath(sys.argv[0])).parent
+        src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
         folder = _output_folder(run_id, src_dir)
         iteration = _next_iteration(folder, "reviewer_iteration_*.txt")
         file_path = folder / f"reviewer_iteration_{iteration}.txt"

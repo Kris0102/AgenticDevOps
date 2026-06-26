@@ -37,3 +37,8 @@ argparse>=1.4.0
 
 # Logging (structured operational logs; stdlib `logging` is built-in — no dep)
 structlog>=24.1.0
+
+# API — control plane + dashboard backend. uvicorn is the ASGI server that runs it
+# (SSE log streaming uses Starlette's StreamingResponse — no extra SSE dep needed).
+fastapi>=0.105.0
+uvicorn[standard]>=0.27.0

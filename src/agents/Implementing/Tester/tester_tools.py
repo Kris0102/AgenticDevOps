@@ -37,15 +37,10 @@ class TesterTools:
             ),
         )
 
-        diff_tool = StructuredTool.from_function(
-            func=self.get_repo_diff,
-            name="get_repo_diff",
-            description=(
-                "Return the git diff of all changes made so far in the repo "
-                "(including newly created files). Use to verify your edits."
-            ),
-        )
-
+        # NOTE: get_repo_diff is intentionally NOT exposed to the test-writer LLM — it
+        # doesn't need the diff to write tests, and exposing it invites a verify-loop that
+        # burns the tool-call budget (the same trap the Coder hit). VerdictPhase still calls
+        # the get_repo_diff() method directly.
         execute_tool = StructuredTool.from_function(
             func=self.execute_in_sandbox,
             name="execute_in_sandbox",
@@ -67,7 +62,7 @@ class TesterTools:
             ),
         )
 
-        return [read_tool, write_tool, diff_tool, execute_tool]
+        return [read_tool, write_tool, execute_tool]
 
     def read_sandbox_file(self, filepath: str) -> str:
         result = self.gateway.execute_tool(
@@ -106,6 +101,16 @@ class TesterTools:
         if "error" in result:
             return result["error"]
         return result.get("diff", "")
+
+    def run(self, argv: list[str], timeout_s: int = 300) -> dict:
+        """Raw allowlisted sandbox command — returns the gateway result dict
+        (exit_code/stdout/stderr/duration_ms). Used by the deterministic test phases
+        (detect / install / run-suite); LLM-facing string wrappers are separate."""
+        return self.gateway.execute_tool(
+            actor_role=self.role,
+            tool_name=Tools.SANDBOX_RUN,
+            args={"cmd": argv, "cwd": REPO_ROOT, "timeout_s": timeout_s},
+        )
 
     def execute_in_sandbox(self, command: str) -> str:
         cmd_list = shlex.split(command)

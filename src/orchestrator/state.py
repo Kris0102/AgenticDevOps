@@ -3,8 +3,29 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langchain_core.messages import AnyMessage
+
+
+class Phase(str, Enum):
+    """The gateable phases of a run. Lives here (not in hitl.py) so the state models
+    can type `hitl_checkpoints` against it without a state<->hitl import cycle; hitl.py
+    imports it back from here."""
+    PLAN = "plan"
+    CODE = "code"
+    TEST = "test"
+    DEPLOY = "deploy"
+
+    @classmethod
+    def try_from_str(cls, s: str) -> Optional["Phase"]:
+        try:
+            return cls(s)
+        except ValueError:
+            return None
+
+    def __str__(self) -> str:
+        return self.value
+
 
 class MicrotaskStatus(str, Enum):
     PENDING = "PENDING"
@@ -75,6 +96,13 @@ class Repo(BaseModel):
     workspace_branch: str
     pr_url: Optional[str] = None
 
+    @field_validator("repo_url", "base_ref", "base_sha", "default_branch", "workspace_branch", mode="before")
+    @classmethod
+    def _strip(cls, v: Any) -> Any:
+        # Stray leading/trailing whitespace (copy-paste, trailing newline, form input) breaks
+        # `git clone` — "protocol '  https' is not supported". Strip it at the boundary.
+        return v.strip() if isinstance(v, str) else v
+
 class Sandbox(BaseModel):
     sandbox_id: str
     workspace_path: str
@@ -101,9 +129,6 @@ class Policy(BaseModel):
     require_hitl_for_pr: bool
     require_hitl_for_merge: bool
     require_hitl_for_prod_deploy: bool
-    # Phase names that pause the run at NEEDS_HITL_APPROVAL before proceeding —
-    # e.g. ["plan", "code"]. One gate mechanism, configured per-run/risk-level.
-    hitl_checkpoints: List[str] = Field(default_factory=list)
     security_scans_required: List[str]
     ci_required: bool
     protected_branches: List[str]
@@ -138,13 +163,39 @@ class Plan(BaseModel):
     open_questions: List[str]
     review_feedback: List[ReviewFeedback] = Field(default_factory=list)
 
+class IOExample(BaseModel):
+    """A concrete input→output example for an acceptance criterion. When present, the
+    Tester writes assertions directly from this planner-supplied data (deterministic,
+    no LLM re-interpretation of prose) — the strongest grounding against tautological
+    tests. `expect` is the expected return/result for the given inputs."""
+    given: Dict[str, Any] = Field(default_factory=dict)
+    expect: Any = None
+
+
+class AcceptanceCriterion(BaseModel):
+    """One observable behaviour a microtask must satisfy. `text` is the human-readable
+    intent (authored by the Planner, independent of the Coder's implementation);
+    `examples` are optional concrete I/O cases the Tester can assert on directly.
+    See ADR 0015/0016 — this is the Planner→Tester grounding contract."""
+    text: str
+    examples: List[IOExample] = Field(default_factory=list)
+
+    def render(self) -> str:
+        """One-line human/prompt rendering: intent text plus any concrete examples."""
+        line = self.text
+        if self.examples:
+            cases = "; ".join(f"given {e.given} → expect {e.expect!r}" for e in self.examples)
+            line += f"  (e.g. {cases})"
+        return line
+
+
 class Microtask(BaseModel):
     """A single deterministic objective given to the execution loop."""
     microtask_id: str
     title: str
     description: str  # WHAT to build and WHERE — file paths + what goes in them
     approach: str  # HOW — concrete technical plan: signatures, data shapes, sequencing, edge cases
-    acceptance_criteria: List[str]
+    acceptance_criteria: List[AcceptanceCriterion]  # observable behaviours the Tester grounds tests on (text + optional concrete examples)
     target_files: List[str] = Field(default_factory=list)  # exact paths to create/edit — declared before coding
     context_files: List[str] = Field(default_factory=list)  # paths the Coder should read (not edit) to match conventions
     status: MicrotaskStatus = MicrotaskStatus.PENDING
@@ -153,7 +204,7 @@ class Microtask(BaseModel):
     attempts: int = 0
     max_attempts: Optional[int] = None
     files_touched: List[str] = Field(default_factory=list)  # filled after coding, not before
-    test_strategy: Optional[str] = None
+    test_strategy: Optional[str] = None  # This field should be used by the tester to determine how to test the microtask's output. It will be used to generate the test cases for the microtask.
     notes: List[str] = Field(default_factory=list)
 
 class Diff(BaseModel):
@@ -213,7 +264,7 @@ class ApprovalStatus(str, Enum):
 class PendingApproval(BaseModel):
     """A single HITL gate request, recorded when a phase pauses for human approval."""
     approval_id: str
-    type: str  # gated phase name — matches a policy.hitl_checkpoints entry ("plan"/"code"/"test")
+    type: str  # gated phase name — matches a hitl.hitl_checkpoints entry ("plan"/"code"/"test")
     requested_at: str
     status: ApprovalStatus = ApprovalStatus.PENDING
     reviewer: Optional[str] = None
@@ -228,9 +279,13 @@ class PendingApproval(BaseModel):
     # by the time the gate fires — without this the tester finds no pending work).
     microtask_id: Optional[str] = None
 
+
 class HITL(BaseModel):
     required: bool
     pending_approvals: List[PendingApproval] = Field(default_factory=list)
+    # Phases that pause the run at NEEDS_HITL_APPROVAL before proceeding —
+    # e.g. [Phase.PLAN, Phase.CODE, Phase.TEST]. One gate mechanism, configured per-run.
+    hitl_checkpoints: List[Phase] = Field(default_factory=list)
 
 class Result(BaseModel):
     outcome: str
@@ -305,12 +360,17 @@ class BlackboardState(TypedDict):
     # Execution diagnostics
     error_logs: List[str]
 
-    # Tester feedback channel: set by HITL reject on the test gate, cleared by the
-    # tester after it reads it so it doesn't leak into later microtasks.
+    # Tester feedback channel: set by HITL reject on the test gate OR by the Reflector
+    # when it judges the synthesized TEST (not the code) wrong; cleared by the tester
+    # after it reads it so it doesn't leak into later microtasks.
     test_rejection_note: Optional[str]
     # Path to the on-disk tester output file — surfaced in the HITL prompt so the
     # reviewer knows where to look for the full test output.
     last_test_output_path: Optional[str]
+    # Bounds the reflector→tester test re-synthesis sub-loop (ADR 0016/GH #33): the
+    # Reflector increments it on each fix_target="test" decision; once it hits
+    # REFLECTOR_MAX_TEST_RESYNTH the reflector forces the code path. Reset by the coder.
+    test_resynth_count: int
 
 
 def _utc_now_iso() -> str:
@@ -325,6 +385,7 @@ def create_initial_blackboard_state(
     objective: Objective,
     constraints: Constraints,
     policy: Policy,
+    hitl: HITL,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
@@ -359,11 +420,12 @@ def create_initial_blackboard_state(
         artifacts_index=[],
         reflections=[],
         security=Security(),
-        hitl=HITL(required=False),
+        hitl=hitl,   # use the caller's HITL (gate checkpoints) — NOT a fresh empty one
         result=None,
         events=EventsPointer(stream_id=run_id),
         messages=[],
         error_logs=[],
         test_rejection_note=None,
         last_test_output_path=None,
+        test_resynth_count=0,
     )

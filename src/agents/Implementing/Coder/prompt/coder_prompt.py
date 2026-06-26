@@ -2,6 +2,12 @@ from typing import Dict, List, Optional
 
 from orchestrator.state import Microtask, Objective, Plan, Reflection
 
+COMPILE_AFTER_CHANGES_PROMPT = (
+    "After your edits, run the build/compile command for the project (e.g. `python -m compileall .` or `npm run build`) to verify your changes don't break the build. "
+    "If the build fails, fix the errors and re-run the build until it succeeds."
+    "Do NOT run tests (pytest, python -m unittest, ...) — the Tester agent does that. Do NOT commit, push, or run any git command that mutates history."
+)
+
 CODER_SYSTEM_PROMPT = (
     "You are the Coder Agent in an autonomous DevOps pipeline. Your job is to "
     "implement exactly ONE microtask by editing files in the repository at "
@@ -71,7 +77,7 @@ def build_coder_prompt(
         f"Title: {microtask.title}",
         f"Description (WHAT/WHERE): {microtask.description}",
         f"Approach (HOW): {microtask.approach}",
-        "Acceptance criteria:\n  - " + "\n  - ".join(microtask.acceptance_criteria),
+        "Acceptance criteria:\n  - " + "\n  - ".join(c.render() for c in microtask.acceptance_criteria),
         f"Target files (the ONLY files you should edit/create): {microtask.target_files}",
         f"Context files (read-only, for conventions): {microtask.context_files}",
     ]

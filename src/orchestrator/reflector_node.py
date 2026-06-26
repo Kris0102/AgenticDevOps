@@ -1,9 +1,10 @@
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from db.db import db
 from db.event_log import EventLogger
-from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
+from db.models import Artifact as DbArtifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from agents.Implementing.Reflector.reflector import Reflector
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
@@ -26,17 +27,11 @@ _FINISHED = {MicrotaskStatus.COMPLETED, MicrotaskStatus.DONE}
 
 
 class ReflectorRunner:
-    """Owns one Reflector invocation: select the in-flight microtask, read
-    test-pass context written by the tester, invoke the Reflector agent, then
-    persist and advance state.
-
-    Approve path: marks the microtask COMPLETED (or DONE if it was the last),
-    clears current_microtask_id, and emits NEEDS_CODE / DONE so the coder picks
-    up the next task (or the pipeline deploys).
-
-    Improve path: keeps the microtask in VERIFYING with current_microtask_id
-    set, emits NEEDS_CODE so the coder retries using the new Reflection.
-    """
+    """Owns one Reflector invocation. Failure-only (ADR 0016): the Reflector is reached
+    ONLY after a tester FAIL (REFLECT). It diagnoses the failure, seeds a Reflection with
+    concrete fix instructions, keeps the microtask in flight (current_microtask_id set),
+    and emits NEEDS_CODE so the coder retries. It never approves or marks a microtask
+    complete — the Tester owns the PASS verdict."""
 
     def __init__(self, state: BlackboardState):
         self.state = state
@@ -44,10 +39,6 @@ class ReflectorRunner:
         self.name = Roles.REFLECTOR.value
 
     def invoke(self) -> Dict[str, Any]:
-        # Derive test pass/fail from evidence.checks written by the tester node
-        # (not from a side-channel key — side-channel keys don't survive the
-        # TypedDict merge that LangGraph performs between nodes).
-        test_passed: bool = self._tests_passed_from_evidence()
         microtask = self._select_microtask(self.state.get("current_microtask_id"))
         if microtask is None:
             _log.warning(
@@ -68,7 +59,10 @@ class ReflectorRunner:
                 gateway = self._init_gateway(db_session)
                 reflector_tools = ReflectorTools(gateway=gateway)
                 reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools)
-                raw = reflector.invoke(self.state, microtask, test_passed=test_passed)
+                # Always a failure here — the Reflector only runs after a tester FAIL.
+                # TODO Change thisn behaviour to always run!
+                test_output = self._test_output(db_session)
+                raw = reflector.invoke(self.state, microtask, test_passed=False, test_output=test_output)
             except RunExecutionError as error:
                 _log.error("reflector.run_execution_error", error=str(error))
                 return RunFailureHandler.handle(
@@ -78,29 +72,23 @@ class ReflectorRunner:
                 _log.error("reflector.unexpected_error", error=str(error))
                 raise
 
-            # Consume the internal flag before it touches LangGraph state.
-            approved: bool = bool(raw.pop("_reflector_approved", False))
-            # Compute final_validation here (after selecting the microtask) so the
-            # approve path knows whether to emit DONE or NEEDS_CODE for the next task.
-            final_validation: bool = not self._has_remaining_microtasks(microtask.microtask_id)
-            result = self._build_state_result(raw, microtask, approved, final_validation)
-            self._persist_results(db_session, microtask, result, approved, final_validation)
+            # Drop the approve signal (failure-only) and read the fix target.
+            raw.pop("_reflector_approved", None)
+            fix_target = raw.pop("_fix_target", "code")
+            result = self._build_state_result(raw, microtask, fix_target)
+            self._persist_results(db_session, microtask, result)
             return result
+
+    @staticmethod
+    def _max_test_resynth() -> int:
+        try:
+            return max(0, int(os.getenv("REFLECTOR_MAX_TEST_RESYNTH", "2")))
+        except ValueError:
+            return 2
 
     # ------------------------------------------------------------------ #
     # Helpers                                                               #
     # ------------------------------------------------------------------ #
-
-    def _tests_passed_from_evidence(self) -> bool:
-        """Derive test pass/fail from evidence.checks set by the tester node.
-        Skipped counts as passed — nothing to fix."""
-        evidence = self.state.get("evidence")
-        if not evidence:
-            return False
-        unit = evidence.checks.unit_tests if evidence.checks else None
-        if unit is None:
-            return False
-        return unit.status in ("passed", "skipped")
 
     def _select_microtask(self, current_id: Optional[str]) -> Optional[Microtask]:
         """Pick the in-flight microtask: current_microtask_id first, then first
@@ -117,13 +105,6 @@ class ReflectorRunner:
 
         return None
 
-    def _has_remaining_microtasks(self, current_id: str) -> bool:
-        microtasks: List[Microtask] = list(self.state.get("microtasks") or [])
-        return any(
-            mt.microtask_id != current_id and mt.status not in _FINISHED
-            for mt in microtasks
-        )
-
     # ------------------------------------------------------------------ #
     # Gateway                                                               #
     # ------------------------------------------------------------------ #
@@ -131,6 +112,40 @@ class ReflectorRunner:
     def _init_gateway(self, db_session) -> ToolGateway:
         sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
         return ToolGateway(db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools)
+
+    # Every check kind whose detail the reflector may want (one Checks field each).
+    _CHECK_LABELS = ("unit_tests", "integration_tests", "build", "typecheck", "lint")
+
+    def _test_output(self, db_session) -> str:
+        """Full tester output, read from the durable check artifacts (not a host file).
+
+        The blackboard carries only refs (`evidence.checks.<kind>.artifact_ref`); the content
+        lives in the `artifacts` table — restart-safe, no side channel. Reads every check
+        that actually ran (a check is `None` when the repo didn't opt into it), so the
+        reflector sees suite + build + typecheck + lint detail, not just the failure. This is
+        ready for the always-on judge (#26); under failure-only the failing gating check is
+        what matters. Empty if nothing is available. The output of each artifact is added regardless of whether it passed or failed, 
+        so the reflector can see the full context of what was run."""
+        evidence = self.state.get("evidence")
+        checks = evidence.checks if evidence else None
+        if checks is None:
+            _log.warning("reflector.no_evidence", run_id=self.run_id,
+                         reason="no evidence.checks on state — reflector runs without test output")
+            return ""
+        blocks: List[str] = []
+        for label in self._CHECK_LABELS:
+            check_output = getattr(checks, label, None)
+            if not (check_output and check_output.artifact_ref):
+                _log.info("reflector.no_check_artifact", run_id=self.run_id, label=label,
+                          reason="no artifact_ref for this check — reflector runs without test output")
+                continue  # check didn't run (no config / not applicable)
+            row = db_session.get(DbArtifact, check_output.artifact_ref)
+            if row and row.content_text:
+                blocks.append(f"===== {label} ({check_output.status}) =====\n{row.content_text}")  # Add the content of the artifact regardless of pass/fail, so the reflector can see the full context of what was run.
+        if not blocks:
+            _log.warning("reflector.no_test_artifact", run_id=self.run_id,
+                         reason="no readable check artifacts — reflector runs without test output")
+        return "\n\n".join(blocks)
 
     # ------------------------------------------------------------------ #
     # State result assembly                                                 #
@@ -140,37 +155,36 @@ class ReflectorRunner:
         self,
         raw: Dict[str, Any],
         microtask: Microtask,
-        approved: bool,
-        final_validation: bool,
+        fix_target: str,
     ) -> Dict[str, Any]:
-        """Build the dict that will be merged into BlackboardState."""
-        if not approved:
-            # Improve path: keep microtask in VERIFYING so coder retries.
+        """Route the diagnosis. `fix_target == "test"` (and budget left) → regenerate the
+        synthesized test (NEEDS_TEST + note for the tester); otherwise → coder retry
+        (NEEDS_CODE). The microtask stays in flight either way (GH #33)."""
+        count = int(self.state.get("test_resynth_count") or 0)
+        cap = self._max_test_resynth()
+
+        if fix_target == "test" and count < cap:
+            reflections: List[Reflection] = list(raw.get("reflections") or [])
+            note = (reflections[-1].fix_instructions if reflections else
+                    "The previous synthesized test asserted a wrong expectation — regenerate it.")
+            _log.info("reflector.fix_target_test", run_id=self.run_id,
+                      microtask_id=microtask.microtask_id, attempt=count + 1, cap=cap)
             return {
                 **raw,
-                "status": RunStatus.NEEDS_CODE,
+                "status": RunStatus.NEEDS_TEST,        # → tester re-synthesizes the test
                 "current_microtask_id": microtask.microtask_id,
+                "test_rejection_note": note,           # SynthesisPhase reads this
+                "test_resynth_count": count + 1,
             }
 
-        # Approve path: mark microtask COMPLETED/DONE and advance pipeline.
-        remaining = self._has_remaining_microtasks(microtask.microtask_id)
-        next_status = RunStatus.NEEDS_CODE if remaining else RunStatus.DONE
-        completed_flag = MicrotaskStatus.DONE if not remaining else MicrotaskStatus.COMPLETED
-
-        updated_microtasks = [
-            mt.model_copy(update={"status": completed_flag})
-            if mt.microtask_id == microtask.microtask_id else mt
-            for mt in list(self.state.get("microtasks") or [])
-        ]
-
+        if fix_target == "test":
+            _log.warning("reflector.test_resynth_exhausted", run_id=self.run_id,
+                         microtask_id=microtask.microtask_id, count=count, cap=cap,
+                         reason="test-fix budget hit — falling back to the code path")
         return {
             **raw,
-            "status": next_status,
-            "microtasks": updated_microtasks,
-            "current_microtask_id": None,
-            # Consumed by HitlGate.apply(Phase.CODE) in the orchestrator node so
-            # CODE-gate rejection can reset the microtask back to IN_PROGRESS.
-            "_tested_microtask_id": microtask.microtask_id,
+            "status": RunStatus.NEEDS_CODE,            # → coder retries with the Reflection
+            "current_microtask_id": microtask.microtask_id,
         }
 
     # ------------------------------------------------------------------ #
@@ -182,8 +196,6 @@ class ReflectorRunner:
         db_session,
         microtask: Microtask,
         result: Dict[str, Any],
-        approved: bool,
-        final_validation: bool,
     ) -> None:
         now = datetime.now(timezone.utc)
         reflections: List[Reflection] = list(result.get("reflections") or [])
@@ -202,7 +214,7 @@ class ReflectorRunner:
                 kind="reflection",
                 content_text=(
                     f"Microtask:         {microtask.microtask_id}\n"
-                    f"Decision:          {'approve' if approved else 'improve'}\n"
+                    f"Decision:          improve\n"
                     f"Failure Type:      {latest.failure_type}\n"
                     f"Root Cause:        {latest.root_cause}\n"
                     f"Fix Instructions:  {latest.fix_instructions}\n"
@@ -217,24 +229,14 @@ class ReflectorRunner:
                 EventType.REFLECTION_CREATED,
                 {
                     "microtask_id": microtask.microtask_id,
-                    "decision": "approve" if approved else "improve",
+                    "decision": "improve",
                     "failure_type": latest.failure_type,
                     "artifact_ref": artifact_ref,
                     "should_store_in_semantic_memory": latest.should_store_in_semantic_memory,
                 },
             )
 
-        # On approve: update MicrotaskRecord to COMPLETED/DONE.
-        if approved:
-            completed_flag = (
-                MicrotaskStatus.DONE if next_status == RunStatus.DONE else MicrotaskStatus.COMPLETED
-            )
-            record = db_session.get(MicrotaskRecord, microtask.microtask_id)
-            if record:
-                record.status = completed_flag.value
-                record.updated_at = now
-
-        # Update Run.status.
+        # Update Run.status (always loops back to the coder).
         run_record = db_session.get(Run, self.run_id)
         old_status = (
             run_record.status if run_record else self.state.get("status", RunStatus.REFLECT).value
@@ -243,7 +245,6 @@ class ReflectorRunner:
             run_record.status = next_status.value
             run_record.updated_at = now
 
-        action = "approved" if approved else "improve-requested"
         EventLogger.log(
             db_session,
             self.run_id,
@@ -252,15 +253,6 @@ class ReflectorRunner:
             {
                 "from": old_status,
                 "to": next_status.value,
-                "reason": f"reflector {action} microtask {microtask.microtask_id}",
+                "reason": f"reflector improve-requested microtask {microtask.microtask_id}",
             },
         )
-
-        if next_status == RunStatus.DONE:
-            EventLogger.log(
-                db_session,
-                self.run_id,
-                self.name,
-                EventType.RUN_COMPLETED,
-                {"summary": f"reflector approved final microtask {microtask.microtask_id}"},
-            )

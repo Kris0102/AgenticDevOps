@@ -21,6 +21,18 @@ from typing import Dict, Union
 import structlog
 
 from observability.categories import Category
+from observability.log_bus import log_bus
+
+
+def _bus_tee(logger, method_name, event_dict):
+    """structlog processor: tee each surviving log line into the per-run live bus for
+    the dashboard. Pass-through — returns event_dict unchanged. Placed AFTER the level
+    filter (dropped lines don't reach the dashboard) and AFTER merge_contextvars (so
+    run_id is present). Only lines bound to a run are tee'd."""
+    run_id = event_dict.get("run_id")
+    if run_id:
+        log_bus.append(run_id, dict(event_dict))
+    return event_dict
 
 # ---- ANSI palette: one distinct color per category, plus per-level colors ----
 
@@ -178,6 +190,7 @@ def configure_logging(json_logs: Union[bool, None] = None, level: Union[str, Non
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            _bus_tee,                                       # tee enriched dict → live dashboard bus
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(min_level),

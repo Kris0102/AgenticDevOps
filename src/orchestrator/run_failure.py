@@ -32,8 +32,13 @@ class RunFailureHandler:
             run_record.status = RunStatus.FAILED.value
             run_record.updated_at = datetime.now(timezone.utc)
 
+        # `status` may be an enum (same-invoke) or a deserialized string (resumed run) —
+        # never call `.value` blindly here, or this failure handler itself crashes and the
+        # run is left in a non-terminal status ("never ends").
+        prev = state.get("status")
+        from_value = prev.value if hasattr(prev, "value") else (str(prev) if prev is not None else "unknown")
         EventLogger.log(session, run_id, actor, EventType.RUN_STATUS_CHANGED, {
-            "from": state["status"].value,
+            "from": from_value,
             "to": RunStatus.FAILED.value,
             "reason": error.reason,
         })

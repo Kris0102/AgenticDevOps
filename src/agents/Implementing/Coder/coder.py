@@ -82,6 +82,7 @@ class Coder:
         self.name = Roles.CODER.value
         self.max_tool_steps = _max_tool_steps()
         self.max_empty_diff_retries = int(os.getenv("CODER_MAX_EMPTY_DIFF_RETRIES", "2"))
+        self.max_compile_retries = int(os.getenv("CODER_MAX_COMPILE_RETRIES", "2"))
         self.timeout_seconds = int(os.getenv("CODER_TIMEOUT_SECONDS", "120"))
 
         # LLM Initialization
@@ -118,7 +119,11 @@ class Coder:
         file_contents: Dict[str, str],
     ) -> Dict[str, Any]:
         """Run the coding loop for one microtask and return the node-result dict."""
-        diff_text, attempts_log = self._code_until_diff(state, microtask, file_contents)
+        diff_text, messages, attempts_log = self._code_until_diff(state, microtask, file_contents)
+        # Deterministic compile gate (warm): if the changes don't compile, feed the error
+        # back into the SAME conversation and let the coder fix it in-context — no cold
+        # re-prompt. On exhaustion, proceed: the Tester's build check is the backstop.
+        diff_text = self._ensure_compiles(microtask, messages, attempts_log)
 
         files_touched = _files_from_diff(diff_text)
         constraints = state.get("constraints")
@@ -137,11 +142,11 @@ class Coder:
         state: BlackboardState,
         microtask: Microtask,
         file_contents: Dict[str, str],
-    ) -> tuple[str, List[Dict[str, Any]]]:
+    ) -> tuple[str, List[Any], List[Dict[str, Any]]]:
         """ReAct attempts until repo.diff (deterministic, gateway-routed) is non-empty.
 
-        Returns the winning diff plus a per-attempt log (prompt + full ReAct
-        transcript + outcome) for create_code_file_log."""
+        Returns the winning diff, the winning attempt's message list (so the compile gate
+        can continue the SAME conversation), plus a per-attempt log for create_code_file_log."""
         retry_feedback: Optional[str] = None
         attempts_log: List[Dict[str, Any]] = []
         for attempt in range(1, self.max_empty_diff_retries + 1):
@@ -202,7 +207,7 @@ class Coder:
                         microtask_id=microtask.microtask_id,
                         attempt=attempt,
                     )
-                return diff_text, attempts_log
+                return diff_text, agent_result.get("messages", []), attempts_log
 
             retry_feedback = (
                 "Your previous attempt hit the tool call limit without writing any files. "
@@ -222,6 +227,92 @@ class Coder:
                 f"after {self.max_empty_diff_retries} attempt(s)."
             ),
         )
+
+    # ------------------------------------------------------------------ #
+    # Compile gate (deterministic, warm in-loop)                          #
+    # ------------------------------------------------------------------ #
+
+    def _ensure_compiles(
+        self,
+        microtask: Microtask,
+        messages: List[Any],
+        attempts_log: List[Dict[str, Any]],
+    ) -> str:
+        """Compile the microtask's target files. On failure, append the compiler error to
+        the SAME message thread and re-run the coder so it fixes in-context (no cold
+        re-prompt). Returns the final diff. On exhaustion, proceeds with a warning — the
+        Tester's deterministic build check is the backstop, so we don't hard-fail here."""
+        targets = self._compilable_targets(microtask.target_files)
+        if not targets:
+            return self.coder_tools.get_repo_diff()  # nothing compilable (e.g. .md/.json/.yaml)
+
+        for attempt in range(1, self.max_compile_retries + 1):
+            ok, report = self._compile(targets)
+            if ok:
+                _log.info("coder.compile_ok", microtask_id=microtask.microtask_id, attempt=attempt)
+                return self.coder_tools.get_repo_diff()
+
+            _log.warning("coder.compile_failed", microtask_id=microtask.microtask_id,
+                         attempt=attempt, max_attempts=self.max_compile_retries)
+            if attempt == self.max_compile_retries:
+                break
+
+            # Warm retry: continue the existing conversation with the compiler error.
+            # We need to provide context for the coder to fix the error, so we append a new HumanMessage with the compiler error report to the existing messages list. The coder will then generate a new response that addresses the compilation issues.
+            messages = list(messages) + [HumanMessage(content=(
+                "Your changes do NOT compile. Fix the error(s) below by rewriting the "
+                "affected target file(s) with write_sandbox_file (complete file content), "
+                "then stop. Do not run tests.\n\n" + report
+            ))]
+            try:
+                agent_result = self.coding_agent.invoke(
+                    {"messages": messages},
+                    config={"recursion_limit": _recursion_limit(self.max_tool_steps)},
+                )
+                messages = agent_result.get("messages", messages)
+                attempts_log.append({
+                    "attempt": f"compile-fix-{attempt}",
+                    "prompt": report,
+                    "transcript": format_react_transcript(agent_result.get("messages", [])),
+                    "diff_empty": False,
+                })
+            except GraphRecursionError:
+                _log.warning("coder.compile_fix_recursion_limit",
+                             microtask_id=microtask.microtask_id, attempt=attempt)
+            except (APIConnectionError, APITimeoutError) as exception:
+                _log.error("coder.cluster_unreachable", phase="compile-fix",
+                           hint="ensure VPN connected", error=str(exception))
+                raise
+
+        _log.warning("coder.compile_unresolved", microtask_id=microtask.microtask_id,
+                     reason="handing to tester anyway — tester build check is the backstop")
+        return self.coder_tools.get_repo_diff()
+
+    @staticmethod
+    def _compilable_targets(target_files: List[str]) -> Dict[str, List[str]]:
+        """Bucket target files by the compiler that can check them. Files we can't
+        statically compile (json/yaml/md/ts/...) are left out (the Tester still covers them)."""
+        py = [f for f in target_files if f.endswith(".py")]
+        js = [f for f in target_files if f.endswith((".js", ".mjs", ".cjs"))]
+        buckets: Dict[str, List[str]] = {}
+        if py:
+            buckets["python"] = py
+        if js:
+            buckets["javascript"] = js
+        return buckets
+
+    def _compile(self, targets: Dict[str, List[str]]) -> tuple[bool, str]:
+        """Run the scoped compile checks. Returns (ok, error_report)."""
+        reports: List[str] = []
+        if targets.get("python"):
+            res = self.coder_tools.run(["python", "-m", "py_compile", *targets["python"]])
+            if int(res.get("exit_code", 1)) != 0:
+                reports.append("$ python -m py_compile\n" + (res.get("stderr") or res.get("stdout") or "").strip())
+        for js_file in targets.get("javascript", []):
+            res = self.coder_tools.run(["node", "--check", js_file])
+            if int(res.get("exit_code", 1)) != 0:
+                reports.append(f"$ node --check {js_file}\n" + (res.get("stderr") or res.get("stdout") or "").strip())
+        return (not reports), "\n\n".join(reports)
 
     @staticmethod
     def _enforce_forbidden_paths(
@@ -282,6 +373,8 @@ class Coder:
             "current_microtask_id": microtask.microtask_id,
             "evidence": new_evidence,
             "artifacts_index": list(state.get("artifacts_index") or []) + [diff_artifact],
+            # New code → fresh test re-synthesis budget for the reflector→tester loop (GH #33).
+            "test_resynth_count": 0,
             # consumed by CoderRunner._persist_results, not a BlackboardState key
             "_diff_text": diff_text,
         }
@@ -298,7 +391,7 @@ class Coder:
         """Write a structured record of this microtask's coding attempts to a
         per-iteration file: coder_microtask_<n>_iteration_<m>.txt."""
         try:
-            src_dir = Path(os.path.abspath(sys.argv[0])).parent
+            src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
             _hash = run_id[:8] if len(run_id) >= 8 else run_id
             output_dir = Path(src_dir, "output")
             existing = sorted(output_dir.glob(f"*_{_hash}")) if output_dir.exists() else []
@@ -381,7 +474,7 @@ class Coder:
                 f.write("Acceptance Criteria:\n")
                 if microtask.acceptance_criteria:
                     for ac in microtask.acceptance_criteria:
-                        f.write(f"  ✓ {ac}\n")
+                        f.write(f"  ✓ {ac.render()}\n")
                 else:
                     f.write("  (none)\n")
                 f.write("\n")

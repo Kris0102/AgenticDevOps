@@ -6,13 +6,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from db.db import db
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
-from orchestrator.hitl import HitlDecision, HitlResume
+from orchestrator.hitl import HitlDecision, HitlResume, Phase
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.bootstrap_node import BootStrapper
 from orchestrator.checkpointer import setup_checkpointer
 from orchestrator.orchestrator import graph
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import (
+    HITL,
     Constraints,
     Objective,
     Policy,
@@ -250,12 +251,18 @@ class RunLauncher:
             allowed_network="none",
             risk_level="medium"
         )
-        hitl_checkpoints = [p.strip() for p in self.args.hitl_checkpoints.split(",") if p.strip()]
+        
+        hitl_checkpoints = [Phase(p.strip()) for p in self.args.hitl_checkpoints.split(",") if p.strip()]
+        
+        hitl = HITL(
+            required=bool(hitl_checkpoints),
+            hitl_checkpoints=hitl_checkpoints
+        )   
+        
         policy = Policy(
             require_hitl_for_pr=True,
             require_hitl_for_merge=True,
             require_hitl_for_prod_deploy=True,
-            hitl_checkpoints=hitl_checkpoints,
             security_scans_required=["bandit", "safety"],
             ci_required=True,
             protected_branches=["main", "master"]
@@ -268,6 +275,7 @@ class RunLauncher:
             objective=objective,
             constraints=constraints,
             policy=policy,
+            hitl=hitl,
             status=RunStatus.NEEDS_BOOTSTRAP,
         )
 

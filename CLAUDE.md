@@ -65,6 +65,14 @@ src/
     chunker.py                   # tree-sitter AST chunking (function/class) + whole-file fallback
     engine.py                    # ContextEngine: ingest_baseline / sync_workspace / search
   providers/                     # Pluggable LLM provider interface (TODO: implement)
+  api/                           # FastAPI control plane + dashboard backend (ADR 0013) — NOT an LLM agent, bypasses ToolGateway
+    app.py                       # Routes: POST /runs, /runs/{id}/resume; GET /runs/{id}{,/hitl,/events,/logs,/logs/stream}
+    service/service.py           # Service — headless run engine: run/resume (one graph.invoke per gate), HITL review context, log+event feeds
+    requests/requests.py         # RunRequest (objective/repo/constraints/policy/hitl/trigger)
+    responses/responses.py       # RunResponse, HitlReviewContext (PlanView/DiffView), EventView (durable history), LogView (live)
+  observability/
+    log_bus.py                   # RunLogBus — in-memory per-run ring buffer; structlog tee → dashboard SSE (live logs, ephemeral). ADR 0013
+    logging_config.py            # structlog setup + _bus_tee processor (feeds log_bus)
 deploy/
   docker-compose.yml             # Postgres + pgAdmin + sandbox image builder
 scripts/
@@ -95,10 +103,10 @@ first architecture audit and its remediation order.
 ## Graph topology (current)
 ```
 START → planner → plan_reviewer → (planner | coder | hitl)        # planning loop
-                  coder → tester → (reflector | hitl)             # execution loop
-                  tester → reflector → coder
+                  coder → tester → (reflector | hitl | coder | deploy)  # execution loop
+                  tester → reflector → (coder | tester)           # FAIL: code-fix→coder | test-bug→tester
                   tester → deploy → (hitl) → deploy_push → END    # deploy (terminal)
-                  hitl → (planner | coder | tester | reflector | deploy_push | END)
+                  hitl → (planner | coder | deploy | deploy_push | END)
 
 bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 0005.
 ```
@@ -109,32 +117,38 @@ bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 
   (run finished, un-deployed). See ADR 0012.
 - **Planning loop**: `planner → plan_reviewer`. Reviewer rejects (`NEEDS_PLAN`) → back to
   planner to revise; approves (`NEEDS_CODE`) → coder.
-- **Execution loop**: `coder → tester`. On test failure (`REFLECT`) tester goes to
-  `reflector`, which diagnoses and is the SOLE path back to coder after a FAILURE
-  (`NEEDS_CODE`) — no blind retries off an undiagnosed failure. On a PASS with more
-  PENDING microtasks, tester emits `NEEDS_CODE` itself and routes straight back to
-  coder for the next microtask (not a failure retry, so reflector isn't involved).
+- **Execution loop** (ADR 0016): `coder → tester`. The **Tester owns its verdict**
+  (deterministic, from `evidence.checks.unit_tests`). On a **PASS** it marks the microtask
+  COMPLETED/DONE and emits `NEEDS_CODE` (more microtasks → coder) or `DONE` (final →
+  deploy); the **CODE** gate fires here. On a **FAIL** (`REFLECT`) it routes to the
+  **failure-only Reflector**, which diagnoses, seeds a `Reflection`, and is the SOLE path
+  back to coder after a failure (`NEEDS_CODE`) — no blind retries, and no LLM call on a
+  green pass. The reflector also emits a `fix_target` (GH #33): `code` → coder retry;
+  `test` → **tester** re-synthesizes the wrong test (`NEEDS_TEST`, note via
+  `test_rejection_note`), bounded by `test_resynth_count < REFLECTOR_MAX_TEST_RESYNTH`
+  (then it falls back to the code path; the counter resets when the coder runs).
 - **HITL gate** (shared `hitl` node, see below + ADR 0006): any phase in
-  `policy.hitl_checkpoints` routes through `hitl` before advancing.
+  `hitl.hitl_checkpoints` routes through `hitl` before advancing.
 
 ## When HITL is triggered
 A phase emits `NEEDS_HITL_APPROVAL` (via `HitlGate.apply`, `orchestrator/hitl.py`) and the
 graph suspends at the `hitl` node (`interrupt()`) ONLY when that phase is listed in
-`policy.hitl_checkpoints` (set with `--hitl-checkpoints plan,code,test`; empty = no gates).
-The three gate points and their resume routing:
+`hitl.hitl_checkpoints` (set with `--hitl-checkpoints plan,code,deploy`; empty = no gates).
+The field lives on the `HITL` state model (was `Policy.hitl_checkpoints`; moved + retyped
+`List[str]` → `List[Phase]` — see ADR 0014). There are three gates (`Phase`: PLAN, CODE,
+DEPLOY — no TEST gate; the gate enum is single-sourced in `state.py`, ADR 0016).
+The gate points and their resume routing:
 
-| Gate   | fires after            | approve →        | reject (note required) → |
-|--------|------------------------|------------------|--------------------------|
-| `plan` | plan_reviewer approves | coder            | planner (note → `plan.review_feedback`) |
-| `code` | coder produces a diff  | tester           | **reflector** → coder (note → a `Reflection`) |
-| `test` | tester passes          | next microtask   | **reflector** → coder (note → a `Reflection`) |
-| `deploy` | tester emits `DONE`  | `deploy_push` (push) | END, un-deployed (`DONE`; no loop-back, no note channel) |
+| Gate   | fires after                | approve →                       | reject (note required) → |
+|--------|----------------------------|---------------------------------|--------------------------|
+| `plan` | plan_reviewer approves (`NEEDS_CODE`) | coder                | planner (note → `plan.review_feedback`) |
+| `code` | **tester passes** (`NEEDS_CODE`/`DONE`) | coder (next microtask) / deploy (if final) | reset microtask → IN_PROGRESS + seed a `Reflection` → coder |
+| `deploy` | tester passes final → `deploy` node (`READY_TO_DEPLOY`) | `deploy_push` (push) | END, un-deployed (`DONE`; no loop-back, no note channel) |
 
-Reject is stage-dependent and ALWAYS requires a note (no note = re-`interrupt()`, stays
-paused). `code`/`test` reject does NOT go straight to the coder — it goes through the
-reflector (carrying the human note as the diagnosis seed), preserving the
-only-reflector-talks-to-coder invariant. Resume via
-`python main.py --run_id <id> --approve | --reject --note "..."`.
+Reject ALWAYS requires a note (no note = re-`interrupt()`, stays paused). A `code` reject
+does NOT re-run the reflector — it resets the tested microtask to IN_PROGRESS and seeds a
+`Reflection` carrying the human note directly for the coder retry (`hitl._write_feedback`).
+Resume via `python main.py --run_id <id> --approve | --reject --note "..."`.
 
 ## Run the pipeline
 ```bash
@@ -147,13 +161,38 @@ docker compose -f deploy/docker-compose.yml --profile donotstart build sandbox-i
 # 3. Run migrations
 cd /home/kristian/project/AgenticDevOps && venv/bin/alembic upgrade head
 
-# 4. Run
+# 4a. Run via CLI (being deleted — see ADR 0013; prefer the API below)
 cd src
 ../venv/bin/python main.py \
   --repo_url https://github.com/owner/repo \
   --base-sha <SHA> \          # omit for brand-new repos with no commits
   --task_description "Your task here"
+
+# 4b. Run via Control API (dashboard backend — the going-forward surface)
+cd src
+../venv/bin/uvicorn api.app:app --port 8000     # serves REST + SSE; needs Postgres up
+#   POST /runs                         trigger a run (body = RunRequest)
+#   GET  /runs/{id}                    poll status / run_state / hitl_phase
+#   GET  /runs/{id}/hitl               paused-gate review context (plan or green/red diff)
+#   POST /runs/{id}/resume             {decision: approve|reject, note}
+#   GET  /runs/{id}/logs/stream        live logs over SSE (structlog bus)
+#   GET  /runs/{id}/events?after=<seq> durable history (events audit table)
 ```
+
+## Control API ↔ graph (ADR 0013)
+The API in `src/api/` is the dashboard's only backend — it drives the **same checkpointed
+graph**, it is not a second engine. Key invariants:
+- **One `graph.invoke()` per gate.** `POST /runs` drives to the first HITL pause or END;
+  each `POST /resume` (`Command(resume=HitlResume…)`) advances exactly one gate. Runs in a
+  `BackgroundTasks` worker → endpoints return `202` immediately; the dashboard polls.
+- **Resume does NOT re-bootstrap** (the CLI did, because each `--approve` was a cold process).
+  A HITL pause is a mid-graph suspend in the same live process — sandbox + checkpoint intact.
+- **Approve/reject routing is unchanged** — `HitlGate.resolve()` sets the next status and
+  routes the note into the existing channel (plan→`review_feedback`, code/test→`Reflection`).
+- **Two log feeds, by purpose:** *live* = structlog tee'd into `observability/log_bus.py` →
+  SSE (ephemeral, granular: `node.enter`, tool steps); *durable history* = `events` table
+  polled by `seq`. The logger is the live source; the table is the record. Right-sized to the
+  self-hosted single-user deployment — no resumable-SSE / LISTEN-NOTIFY machinery.
 
 ## DB management scripts
 ```bash
@@ -178,9 +217,12 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `LLM_MODEL` | Model name for LLM cluster endpoint (default `google/gemma-4-31B-it`) |
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
 | `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
+| `TESTER_MAX_TOOL_STEPS` | Tool-call rounds for the test-writer ReAct loop (default 6 → recursion limit 17). Kept tight so a wandering synth fails fast; on GraphRecursionError the SynthesisPhase degrades (no crash). The test-writer is NOT given `get_repo_diff` (avoids a verify-loop) |
 | `PLANNER_MAX_SYNTHESIS_ATTEMPTS` | Max synthesis retries when `_normalize_output` raises `BadMicroTaskException` (default 3) — Planner feeds the validation error back into the next prompt as context |
 | `CODER_MAX_TOOL_STEPS` | Max tool call rounds for the coder's ReAct loop (default 16) |
 | `CODER_MAX_EMPTY_DIFF_RETRIES` | Re-prompt attempts when the post-loop `repo.diff` comes back empty (default 2) |
+| `CODER_MAX_COMPILE_RETRIES` | Warm in-loop compile-fix attempts when the target files don't compile (default 2). Coder needs `node` in its allowlist for the JS `node --check`; Python `py_compile` runs via `python` |
+| `REFLECTOR_MAX_TEST_RESYNTH` | Bound on the reflector→tester test re-synthesis loop when the reflector judges the synthesized TEST (not the code) wrong (default 2). After the cap it forces the code path; reset when the coder runs (GH #33) |
 | `CODER_TIMEOUT_SECONDS` | LLM request timeout for the Coder (default 120 — code gen is long) |
 | `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
 | `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
@@ -200,7 +242,7 @@ Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.
 | `sandboxes` | Docker container ID per run — survives restarts |
 | `microtasks` | Planner output persisted after each plan — survives crashes |
 | `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |
-| `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. |
+| `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. Has a monotonic `seq` (BIGSERIAL identity) — the dashboard history cursor (`GET /runs/{id}/events?after=<seq>`). See ADR 0013 |
 | `code_chunks` | Context Engine semantic index — AST chunks + `Vector(384)` embedding, `namespace` baseline/workspace (ADR 0010). Needs the `vector` extension (`pgvector/pgvector` image) |
 | `checkpoints*` | LangGraph PostgresSaver — blackboard snapshot per superstep (ADR 0005; replaced `run_state`) |
 
@@ -219,11 +261,12 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Planner↔Reviewer + Coder→Tester→Reflector loops (wired) | Done |
 | HITL gates (plan/code/test, native `interrupt()`) | Done — see ADR 0006 |
 | Plan Reviewer | Done — two-phase (independent investigation via read-only tools, then structured approve/reject). Appends a `ReviewFeedback` to the plan, emits `PLAN_REVIEWED`, caps the planner↔reviewer loop at `Constraints.max_total_iterations` (→ FAILED + `RUN_FAILED`). See ADR 0011 |
-| Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced |
-| Tester | Minimal stub — marks current microtask COMPLETED, `unit_tests` check recorded as "skipped" (not actually run), routes back to coder (more PENDING) or DONE. Unblocks coder<->tester loop end-to-end; real test execution still TODO |
-| Reflector | Stub (returns `{}`) — not yet exercised since the stub Tester never emits `REFLECT` |
+| Coder | Done — hybrid grounding (runner pre-reads target/context files), single ReAct loop, deterministic diff verification, per-microtask attempt limit enforced. **Compile gate** (GH #27): after the diff, the runner compiles the microtask's target files (`py_compile` / `node --check`); on failure it appends the error to the SAME ReAct conversation and re-runs (warm, no cold re-prompt), up to `CODER_MAX_COMPILE_RETRIES`. On exhaustion it proceeds — the Tester's build check is the deterministic backstop |
+| Tester | Done — phase-based pipeline (ADR 0016): `TestPipeline` runs ordered `TestPhase`s under `agents/Implementing/Tester/phases/` (detect → deterministic-checks → synthesis → trivial-guard → execute → verdict). Two-track grounding: **Track A** (`DeterministicChecksPhase`) runs the repo's existing suite + **build/typecheck/lint** (config-gated; build+typecheck+suite gate, lint advisory); **Track B** LLM-synthesizes tests from the Planner's `acceptance_criteria` (independent of the Coder), guarded by a deterministic AST/regex assertion check (`grounding.py`). Combined verdict emitted as the canonical `unit_tests` check. Tester owns its PASS/FAIL verdict; CODE gate fires on pass |
+| Reflector | Done — failure-only (ADR 0016): reached ONLY on a tester FAIL (`REFLECT`). Diagnoses, seeds a `Reflection`, and routes by `fix_target`: `code` → coder retry (`NEEDS_CODE`); `test` → tester re-synthesizes the wrong test (`NEEDS_TEST`, bounded by `REFLECTOR_MAX_TEST_RESYNTH`, GH #33). No approve path / no LLM call on green (the Tester owns the PASS verdict) |
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012 |
+| Control API + dashboard backend | Done — FastAPI (`src/api/`, ADR 0013). Trigger runs + HITL approve/reject over HTTP (`POST /runs/{id}/resume` → `Command(resume=...)`); one `graph.invoke()` per gate (no re-bootstrap on resume — mid-graph pause, sandbox alive). HITL review context (`GET /runs/{id}/hitl`): plan + microtasks for a `plan` gate, raw green/red diff for a `code` gate. Notify by poll (`GET /runs/{id}` → `run_state`/`hitl_phase`). Live logs: structlog → in-memory `RunLogBus` → SSE (`/logs/stream`); durable history: `events` table poll (`/events?after=<seq>`). Runs in `BackgroundTasks` (move to a worker before prod). CLI (`main.py`) being deleted — don't mirror it |
 | Provider abstraction | Not started |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
 | `reflections` DB table | Not started |
@@ -238,6 +281,7 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 6. **Provider coupling in planner**: `ChatOpenAI` instantiated directly. Should use `providers/` abstraction.
 7. **`reflections` table missing**: reflections live in the checkpointed blackboard (so they survive a crash now, via ADR 0005), but there's no queryable `reflections` table for cross-run semantic memory. The `code`/`test` HITL-reject path already seeds `Reflection`s (ADR 0006) — a dedicated table makes them analyzable.
 8. ~~**Global sandbox command allowlist**~~ — **FIXED**: `tool_gateway/permissions.py` gives each role its own `RolePermissions` (`tools` + `allowed_commands`); `gateway.py` calls `get_permissions(role)`. `CoderPermissions.allowed_commands` no longer includes `pytest` — Coder is now gateway-blocked from running tests, not just prompt-forbidden. Reflector is still a stub returning `{}`, but the stub Tester (`tester_node.py`) now marks microtasks COMPLETED and the coder<->tester loop cycles — see graph topology above.
+9. ~~**Tester under-grounded**~~ — **DONE (ADR 0016)**: phase-based `TestPipeline`, two-track grounding. Track A (`DeterministicChecksPhase`) runs the existing suite + config-gated build/typecheck/lint (build+typecheck+suite gate, lint advisory); Track B synthesizes from structured `acceptance_criteria` (`List[AcceptanceCriterion]` + `IOExample`s, migration `b1c2d3e4f5a6`) gated by a deterministic assertion guard (`grounding.py`). Tester owns its verdict; Reflector failure-only. Node is baked into `sandbox/Dockerfile`. STILL OPEN: SynthesisPhase "only when uncovered" precision; typecheck/lint run only when the repo configured the tool; reflector-as-judge (GH #26) + coder compile self-check (GH #27) under discussion.
 
 ## Coding conventions
 - All state mutations must go through the LangGraph node return dict — never mutate `state` in place.

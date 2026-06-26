@@ -161,7 +161,7 @@ class CoderRunner:
             approach=updated.approach,
             status=updated.status.value,
             attempts=updated.attempts,
-            acceptance_criteria=list(updated.acceptance_criteria),
+            acceptance_criteria=[c.model_dump() for c in updated.acceptance_criteria],
             target_files=list(updated.target_files),
             context_files=list(updated.context_files),
             dependencies=list(updated.dependencies),

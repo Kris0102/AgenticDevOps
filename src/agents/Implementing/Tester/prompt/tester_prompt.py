@@ -112,7 +112,18 @@ def build_test_writing_prompt_python(
         "Acceptance criteria (each must be covered by at least one test):",
     ]
     for criterion in microtask.acceptance_criteria:
-        microtask_lines.append(f"  - {criterion}")
+        microtask_lines.append(f"  - {criterion.render()}")
+    microtask_lines.append(
+        "ASSERTION RULES (critical — wrong expected values fail correct code):\n"
+        "  • If a criterion lists concrete examples (given → expect), assert EXACTLY those "
+        "input→output pairs, copying the expected values verbatim. Never recompute, round, "
+        "or 'improve' them.\n"
+        "  • For behaviour WITHOUT a concrete example (an input the criteria don't show), assert "
+        "only properties you can be CERTAIN of — correct keys/shape, that an error is raised, a "
+        "type. Do NOT assert a specific number you computed yourself: a wrong guess rejects "
+        "correct code and wastes the whole loop. When unsure of an exact value, assert structure, "
+        "not the value."
+    )
     microtask_lines.append(
         f"Target source files (read these to understand what to import and test): "
         f"{', '.join(microtask.target_files)}"
@@ -133,8 +144,8 @@ def build_test_writing_prompt_python(
         f"   - Do NOT write to any other path.\n"
         f"   - Include one test function per acceptance criterion at minimum.\n"
         f"   - Every `import` statement must refer to a Python module you have confirmed exists."
-        + (f"\n6. IMPORTANT — this is a rewrite: the previous tests were rejected. "
-           f"Read the HUMAN REVIEWER FEEDBACK above and address every point." if rejection_note else "")
+        + ("\n6. IMPORTANT — this is a rewrite: the previous tests were rejected. "
+           "Read the HUMAN REVIEWER FEEDBACK above and address every point." if rejection_note else "")
     )
 
     return "\n\n".join(sections)
@@ -185,7 +196,18 @@ def build_test_writing_prompt_js(
         "Acceptance criteria (each must be covered by at least one Jest test):",
     ]
     for criterion in microtask.acceptance_criteria:
-        microtask_lines.append(f"  - {criterion}")
+        microtask_lines.append(f"  - {criterion.render()}")
+    microtask_lines.append(
+        "ASSERTION RULES (critical — wrong expected values fail correct code):\n"
+        "  • If a criterion lists concrete examples (given → expect), assert EXACTLY those "
+        "input→output pairs, copying the expected values verbatim. Never recompute, round, "
+        "or 'improve' them.\n"
+        "  • For behaviour WITHOUT a concrete example (an input the criteria don't show), assert "
+        "only properties you can be CERTAIN of — correct keys/shape, that an error is raised, a "
+        "type. Do NOT assert a specific number you computed yourself: a wrong guess rejects "
+        "correct code and wastes the whole loop. When unsure of an exact value, assert structure, "
+        "not the value."
+    )
     microtask_lines.append(
         f"Target source files (read these to understand what to require/import and test): "
         f"{', '.join(microtask.target_files)}"

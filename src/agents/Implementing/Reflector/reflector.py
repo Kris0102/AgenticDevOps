@@ -36,6 +36,16 @@ class ReflectionOutput(BaseModel):
     decision: Literal["approve", "improve"] = Field(
         description="'approve' to advance to next microtask; 'improve' to send back for fixes."
     )
+    fix_target: Literal["code", "test"] = Field(
+        default="code",
+        description=(
+            "Only meaningful when decision='improve'. 'code' = the IMPLEMENTATION is wrong "
+            "(default) → Coder retries. 'test' = the implementation is correct but the "
+            "SYNTHESIZED TEST is wrong (asserts a wrong expected value, bad assertion, "
+            "broken setup) → the test is regenerated. Choose 'test' ONLY when you are "
+            "confident the code satisfies the acceptance criteria and the test itself is at fault."
+        ),
+    )
     failure_type: str = Field(
         default="",
         description="Category when decision=improve: assertion_error | missing_implementation | logic_error | type_error | quality_issue | other.",
@@ -75,18 +85,6 @@ def _last_ai_text(messages: List) -> Optional[str]:
         if isinstance(msg, AIMessage) and isinstance(msg.content, str) and msg.content.strip():
             return msg.content.strip()
     return None
-
-
-def _read_host_file(path: Optional[str]) -> str:
-    """Read a file from the host filesystem (e.g. the tester output written to disk)."""
-    if not path:
-        return ""
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read()
-    except Exception as exc:
-        _log.warning("reflector.host_file_read_failed", path=path, error=str(exc))
-        return ""
 
 
 def _tests_passed_from_evidence(state: BlackboardState) -> bool:
@@ -143,7 +141,16 @@ class Reflector:
             system_prompt=REFLECTOR_SYSTEM_PROMPT,
         )
 
-    def invoke(self, state: BlackboardState, microtask: Microtask, test_passed: bool) -> Dict[str, Any]:
+    def invoke(
+        self,
+        state: BlackboardState,
+        microtask: Microtask,
+        test_passed: bool,
+        test_output: str = "",
+    ) -> Dict[str, Any]:
+        """`test_output` is the failing tester output, fetched by ReflectorRunner from the
+        durable `unit_tests` artifact (blackboard carries only the ref) and passed in — the
+        node owns DB access, the agent just reasons over the text."""
         rejection_note: Optional[str] = state.get("reflection_rejection_note")
         mode = "quality-review" if test_passed else "failure-diagnosis"
         _log.info(
@@ -155,7 +162,6 @@ class Reflector:
             is_re_reflection=bool(rejection_note),
         )
 
-        test_output = _read_host_file(state.get("last_test_output_path"))
         diff = self.reflector_tools.get_repo_diff()
 
         # Phase 1: investigation
@@ -207,6 +213,8 @@ class Reflector:
             "last_reflection_output_path": output_path or None,
             # _INTERNAL_: stripped by ReflectorRunner before reaching LangGraph state.
             "_reflector_approved": approved,
+            # _INTERNAL_: "code" (coder retry) | "test" (regenerate the synthesized test).
+            "_fix_target": output.fix_target,
         }
 
         if not approved:
@@ -298,3 +306,8 @@ class Reflector:
                 should_store_in_semantic_memory=False,
             )
         return output
+    
+    
+
+
+            

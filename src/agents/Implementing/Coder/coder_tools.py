@@ -107,6 +107,16 @@ class CoderTools:
             return result["error"]
         return result.get("diff", "")
 
+    def run(self, argv: list[str], timeout_s: int = 60) -> dict:
+        """Raw allowlisted sandbox command — returns the gateway result dict
+        (exit_code/stdout/stderr). Used by the deterministic compile gate; the
+        LLM-facing string wrapper (execute_in_sandbox) is separate."""
+        return self.gateway.execute_tool(
+            actor_role=self.role,
+            tool_name=Tools.SANDBOX_RUN,
+            args={"cmd": argv, "cwd": REPO_ROOT, "timeout_s": timeout_s},
+        )
+
     def execute_in_sandbox(self, command: str) -> str:
         cmd_list = shlex.split(command)
         result = self.gateway.execute_tool(

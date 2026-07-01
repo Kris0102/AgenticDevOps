@@ -17,6 +17,7 @@ from agents.Implementing.Reflector.prompt.reflector_prompt import (
 )
 from agents.Implementing.Reflector.reflector_output import create_reflection_file_as_output
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
+from db.lessons import LessonStore
 from observability import Category, get_logger
 from orchestrator.state import BlackboardState, Microtask, Reflection, RunStatus
 from tool_gateway.Roles import Roles
@@ -169,9 +170,21 @@ class Reflector:
             microtask, test_output, diff, test_passed, rejection_note
         )
 
+        # Advisory: top-k confirmed code lessons from past runs on THIS repo to ground the
+        # diagnosis (ADR 0018). Semantic top-k → bounded regardless of how many accumulate.
+        repo = state.get("repo")
+        lessons = LessonStore.find_lessons(
+            repo.repo_url if repo else "",
+            f"{microtask.title} {microtask.description} {' '.join(microtask.target_files)}",
+            scope="code",
+            exclude_run_id=self.run_id,
+        )
+        lessons_block = LessonStore.render_block(lessons)
+
         # Phase 2: structured assessment
         output = self._assess(
-            microtask, test_output, diff, investigation_summary, test_passed, rejection_note
+            microtask, test_output, diff, investigation_summary, test_passed, rejection_note,
+            lessons_block,
         )
         approved = output.decision == "approve"
 
@@ -183,6 +196,7 @@ class Reflector:
             fix_instructions=output.fix_instructions,
             linked_artifacts=[],
             should_store_in_semantic_memory=output.should_store_in_semantic_memory,
+            fix_target=output.fix_target,
         )
 
         existing: List[Reflection] = list(state.get("reflections") or [])
@@ -197,6 +211,7 @@ class Reflector:
             test_passed=test_passed,
             approved=approved,
             prior_reflections=existing,
+            lessons_block=lessons_block,
         )
         _log.info(
             "reflector.invoke.end",
@@ -276,6 +291,7 @@ class Reflector:
         investigation_summary: str,
         test_passed: bool,
         rejection_note: Optional[str],
+        lessons_block: str = "",
     ) -> ReflectionOutput:
         prompt = build_diagnosis_prompt(
             microtask=microtask,
@@ -285,6 +301,8 @@ class Reflector:
             test_passed=test_passed,
             rejection_note=rejection_note,
         )
+        if lessons_block:
+            prompt = f"{lessons_block}\n\n{prompt}"
         try:
             raw = self.structured_llm.invoke([HumanMessage(content=prompt)])
             output = raw if isinstance(raw, ReflectionOutput) else ReflectionOutput.model_validate(raw)

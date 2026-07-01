@@ -38,6 +38,7 @@ def create_reflection_file_as_output(
     test_passed: bool = False,
     approved: bool = False,
     prior_reflections: Optional[List[Reflection]] = None,
+    lessons_block: str = "",
 ) -> str:
     """Write the reflector output to disk and return the absolute path."""
     try:
@@ -69,6 +70,12 @@ def create_reflection_file_as_output(
             if rejection_note:
                 f.write("Re-reflection: yes (human feedback applied)\n")
             f.write("\n")
+
+            # ── Retrieved lessons injected into the diagnosis prompt ──────────
+            f.write(f"{sep}\n")
+            f.write("RETRIEVED LESSONS (injected into prompt)\n")
+            f.write(f"{sep}\n\n")
+            f.write((lessons_block or "No past-run lessons retrieved.") + "\n\n")
 
             # ── Prior reflections for this microtask ─────────────────────────
             task_reflections = [

@@ -106,3 +106,18 @@ class CodeChunk(Base):
     embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     metadata_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    
+    
+class Lesson(Base):
+    """A single lesson learned from a microtask, embedded for semantic search."""
+    __tablename__ = "lessons"
+    repo_url: Mapped[str] = mapped_column(String, nullable=False, index=True) # Important for repo isolation and search
+    lesson_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    agent: Mapped[str] = mapped_column(String, nullable=False)  # The agent that generated the lesson ("reviewer", "reflector")
+    scope: Mapped[str] = mapped_column(String, nullable=False)  # The scope of the lesson ("plan", "microtask")
+    failure_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # The type of failure that led to the lesson (if applicable)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    guidance: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Optional guidance for future runs
+    embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

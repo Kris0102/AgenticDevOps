@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from db.db import db
 from db.event_log import EventLogger
+from db.lessons import LessonStore
 from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from agents.Implementing.Tester.pipeline import TestPipeline
@@ -17,6 +18,7 @@ from orchestrator.state import (
     EventType,
     Microtask,
     MicrotaskStatus,
+    Reflection,
     RunStatus,
 )
 from sandbox.sandbox_tools import DockerSandboxTools
@@ -124,7 +126,7 @@ class TesterRunner:
         evidence = self.state.get("evidence") or Evidence()
         check_updates: Dict[str, CheckOutput] = {}
         for check in checks:
-            artifact_ref = self._store_check_artifact(db_session, microtask.microtask_id, check, result, now)  # Stores an artifcat per check meaning for lint, typecheck, build, unit_tests, integration_tests
+            artifact_ref = self._store_check_artifact(db_session, microtask.microtask_id, check, result, now)  # Stores an artifact per check meaning for lint, typecheck, build, unit_tests, integration_tests
             check_updates[check.label] = CheckOutput(   # label has values : unit_tests, integration_tests, build, typecheck, or lint   !one of those!
                 status=check.status.value,
                 exit_code=check.exit_code,
@@ -146,6 +148,9 @@ class TesterRunner:
                 if mt.microtask_id == microtask.microtask_id else mt
                 for mt in updated_microtasks
             ]
+            # Outcome-validated lesson write (ADR 0018): the microtask is green, so the
+            # reflector's code diagnosis that drove the fix is confirmed reusable.
+            self._record_code_lesson(db_session, microtask)
 
         record = db_session.get(MicrotaskRecord, microtask.microtask_id)
         if record:
@@ -212,6 +217,20 @@ class TesterRunner:
         ))
         check.artifact_ref = artifact_ref
         return artifact_ref
+
+    def _record_code_lesson(self, db_session, microtask: Microtask) -> None:
+        """Persist the reflector's code diagnosis for this (now-passing) microtask as a
+        durable per-repo lesson. The latest reflection on this microtask is the diagnosis the
+        green run confirmed; LessonStore gates it to code-target, reusable, non-empty. A
+        microtask that passed first try has no reflection → nothing stored."""
+        reflections: List[Reflection] = list(self.state.get("reflections") or [])
+        latest = next(
+            (r for r in reversed(reflections) if r.microtask_id == microtask.microtask_id),
+            None,
+        )
+        repo = self.state.get("repo")
+        LessonStore.record_code_lessons(
+            db_session, self.run_id, repo.repo_url if repo else "", latest, self.name)
 
     def _build_state_result(
         self,

@@ -215,7 +215,7 @@ class Diff(BaseModel):
 class CheckOutput(BaseModel):
     status: str
     exit_code: int
-    artifact_ref: str
+    artifact_ref: str  # references the artifacts that were created by the tester! Contains information about the test output
 
 class Checks(BaseModel):
     lint: Optional[CheckOutput] = None
@@ -250,6 +250,10 @@ class Reflection(BaseModel):
     fix_instructions: str
     linked_artifacts: List[str] = Field(default_factory=list)
     should_store_in_semantic_memory: bool
+    # Routing decision that produced this reflection: "code" (coder retry) | "test"
+    # (regenerate the synthesized test). Persisted so the tester PASS path can store a
+    # code-only lesson without re-deriving the target (ADR 0018).
+    fix_target: str = "code"
 
 class Security(BaseModel):
     scan_results: List[Dict[str, Any]] = Field(default_factory=list)
@@ -319,7 +323,11 @@ class Iteration(BaseModel):
     planner_reviewer_iteration_current:int
     coder_tester_reflector_iteration_current:int
     global_iterations_used:int    
-    
+
+# NOTE: lessons are DURABLE cross-run memory → the `lessons` DB table (db/models.py +
+# db/lessons.py), NOT blackboard state (which is per-run and wiped). See ADR 0018.
+
+
 class BlackboardState(TypedDict):
     """
     The authoritative Run State Machine (Blackboard) for a run.
@@ -350,7 +358,7 @@ class BlackboardState(TypedDict):
     reflections: List[Reflection]
     security: Security
     hitl: HITL
-    
+
     result: Optional[Result]
     events: EventsPointer
     

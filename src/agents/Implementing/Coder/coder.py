@@ -19,6 +19,7 @@ from agents.Implementing.Coder.prompt.coder_prompt import (
     CODER_SYSTEM_PROMPT,
     build_coder_prompt,
 )
+from db.lessons import LessonStore
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import (
     Artifact,
@@ -119,7 +120,18 @@ class Coder:
         file_contents: Dict[str, str],
     ) -> Dict[str, Any]:
         """Run the coding loop for one microtask and return the node-result dict."""
-        diff_text, messages, attempts_log = self._code_until_diff(state, microtask, file_contents)
+        # Advisory: top-k confirmed code lessons from PAST runs on this repo (ADR 0018).
+        # Computed once (constant across empty-diff retries), injected into the prompt and
+        # recorded in the debug log. Excludes this run — same-run reflections already reach
+        # the coder via state.reflections.
+        repo = state.get("repo")
+        lessons_query = f"{microtask.title} {microtask.description} {' '.join(microtask.target_files)}"
+        lessons_block = LessonStore.render_block(LessonStore.find_lessons(
+            repo.repo_url if repo else "", lessons_query,
+            scope="code", exclude_run_id=state.get("run_id"),
+        ))
+        diff_text, messages, attempts_log = self._code_until_diff(
+            state, microtask, file_contents, lessons_block)
         # Deterministic compile gate (warm): if the changes don't compile, feed the error
         # back into the SAME conversation and let the coder fix it in-context — no cold
         # re-prompt. On exhaustion, proceed: the Tester's build check is the backstop.
@@ -134,7 +146,8 @@ class Coder:
         _log.info("coder.diff_produced", microtask_id=microtask.microtask_id,
                   title=microtask.title, files_touched=files_touched)
         self.create_code_file_log(self.run_id, microtask, diff_text, files_touched, attempts_log,
-                                  reflections=list(state.get("reflections") or []))
+                                  reflections=list(state.get("reflections") or []),
+                                  lessons_block=lessons_block)
         return self._build_result(state, microtask, diff_text, files_touched)
 
     def _code_until_diff(
@@ -142,6 +155,7 @@ class Coder:
         state: BlackboardState,
         microtask: Microtask,
         file_contents: Dict[str, str],
+        lessons_block: str = "",
     ) -> tuple[str, List[Any], List[Dict[str, Any]]]:
         """ReAct attempts until repo.diff (deterministic, gateway-routed) is non-empty.
 
@@ -166,6 +180,8 @@ class Coder:
                                  if state.get("constraints") else None),
                 retry_feedback=retry_feedback,
             )
+            if lessons_block:
+                prompt = f"{lessons_block}\n\n{prompt}"
             _log.info("coder.attempt", microtask_id=microtask.microtask_id,
                       attempt=attempt, max_attempts=self.max_empty_diff_retries)
             recursion_exceeded = False
@@ -387,6 +403,7 @@ class Coder:
         files_touched: List[str],
         attempts_log: List[Dict[str, Any]],
         reflections: Optional[List] = None,
+        lessons_block: str = "",
     ) -> None:
         """Write a structured record of this microtask's coding attempts to a
         per-iteration file: coder_microtask_<n>_iteration_<m>.txt."""
@@ -424,6 +441,12 @@ class Coder:
                 f.write(f"Attempts:      {len(attempts_log)}\n")
                 f.write(f"Files Touched: {', '.join(files_touched) if files_touched else '(none)'}\n")
                 f.write("\n")
+
+                # ── Retrieved lessons injected into the coder prompt ──────────
+                f.write(f"{sep}\n")
+                f.write("RETRIEVED LESSONS (injected into prompt)\n")
+                f.write(f"{sep}\n\n")
+                f.write((lessons_block or "No past-run lessons retrieved.") + "\n\n")
 
                 # ── Prior Reflections ─────────────────────────────────────────
                 task_reflections = [

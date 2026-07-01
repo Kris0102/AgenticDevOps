@@ -6,6 +6,7 @@ from langchain_core.tools import BaseTool
 
 from db.db import db
 from db.event_log import EventLogger
+from db.lessons import LessonStore
 from db.models import Artifact, Run
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from context_engine.engine import ContextEngine
@@ -88,6 +89,18 @@ class ReviewerRunner:
             result["iteration"] = next_iteration
             self._persist_results(db_session, result)
             self._emit_review_event(db_session, result)
+
+            # Outcome-validated lesson write (ADR 0018): persist the addressed rejections
+            # ONLY when the reviewer APPROVES (status NEEDS_CODE) — that's the confirmation
+            # the prior rejections were valid and got fixed. Saving on rejection would store
+            # unvalidated (possibly wrong) lessons. Best-effort, never breaks the run.
+            if result.get("status") == RunStatus.NEEDS_CODE:
+                repo = self.state.get("repo")
+                LessonStore.record_plan_lessons(
+                    db_session, self.run_id, repo.repo_url if repo else "",
+                    result.get("plan"), self.name,
+                )
+
             return result
 
     def _persist_results(self, db_session, result: Dict[str, Any]) -> None:

@@ -1,4 +1,5 @@
-import type { RunResponse } from '../api'
+import { api, type RunResponse } from '../api'
+
 
 export function StatusBar({ run }: { run: RunResponse | null }) {
   if (!run) return <div className="statusbar">loading…</div>
@@ -8,6 +9,7 @@ export function StatusBar({ run }: { run: RunResponse | null }) {
       <code className="rid">{run.run_id}</code>
       {run.status && <span className="meta">status: {run.status}</span>}
       {run.run_state === 'paused_hitl' && <span className="gate">⏸ gate: {run.hitl_phase}</span>}
+      {run.run_state === 'stalled' && <span className="gate">⚠ worker stopped — continue to resume</span>}
     </div>
   )
 }

@@ -9,6 +9,21 @@
   --red: #f85149;
   --yellow: #d29922;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* per-agent/category log hues — distinct, legible on the dark bg */
+  --cat-planner: #58a6ff;      /* blue */
+  --cat-reviewer: #bc8cff;     /* purple */
+  --cat-coder: #3fb950;        /* green */
+  --cat-tester: #39c5cf;       /* teal */
+  --cat-reflector: #db61a2;    /* pink */
+  --cat-deployer: #e3b341;     /* gold */
+  --cat-hitl: #d29922;         /* amber */
+  --cat-orchestrator: #ff7b72; /* coral */
+  --cat-tool: #a5d6ff;         /* light blue */
+  --cat-semantic: #7ee787;     /* light green */
+  --cat-sandbox: #ffa657;      /* orange */
+  --cat-bootstrap: #79c0ff;    /* sky */
+  --cat-db: #8b949e;           /* grey */
 }
 
 * { box-sizing: border-box; }
@@ -55,8 +70,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .statusbar.state-paused_hitl .badge { background: #d2992233; color: var(--yellow); }
 .statusbar.state-completed .badge { background: #3fb95033; color: var(--green); }
 .statusbar.state-failed .badge { background: #f8514933; color: var(--red); }
+.statusbar.state-stalled .badge { background: #e3b34133; color: var(--yellow); }
 .statusbar .rid { color: var(--muted); font-size: 12px; }
 .statusbar .gate { color: var(--yellow); font-weight: 600; }
+
+/* ---- stalled: continue bar ---- */
+.continue-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; margin-bottom: 12px;
+  border: 1px solid var(--yellow); border-radius: 8px; background: #e3b34114;
+  color: var(--fg);
+}
+.continue-bar span { color: var(--muted); font-size: 13px; }
+button.continue { background: var(--yellow); color: #0d1117; white-space: nowrap; }
 
 /* ---- panels ---- */
 .cols { display: grid; grid-template-columns: 1fr 360px; gap: 12px; }
@@ -68,13 +94,44 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .closed { color: var(--muted); font-weight: 400; font-size: 12px; }
 @keyframes pulse { 50% { opacity: 0.3; } }
 .logfeed { font-family: var(--mono); font-size: 12px; max-height: 460px; overflow: auto; }
-.logline { display: flex; gap: 8px; padding: 1px 0; white-space: pre-wrap; }
+.logline {
+  display: flex; gap: 8px; padding: 1px 0 1px 8px; white-space: pre-wrap;
+  border-left: 3px solid transparent;   /* per-agent bar, colored below */
+}
 .logline .lts { color: var(--muted); }
-.logline .lcat { color: var(--accent); }
+.logline .lcat { color: var(--accent); font-weight: 600; }   /* default / unknown category */
 .logline .lev { font-weight: 600; }
 .logline .lfields { color: var(--muted); }
 .logline.lvl-warning .lev { color: var(--yellow); }
 .logline.lvl-error .lev, .logline.lvl-critical .lev { color: var(--red); }
+
+/* per-agent color: the [category] tag + a thin left bar keyed off l.category */
+.logline.cat-planner      { border-left-color: var(--cat-planner); }
+.logline.cat-planner      .lcat { color: var(--cat-planner); }
+.logline.cat-reviewer     { border-left-color: var(--cat-reviewer); }
+.logline.cat-reviewer     .lcat { color: var(--cat-reviewer); }
+.logline.cat-coder        { border-left-color: var(--cat-coder); }
+.logline.cat-coder        .lcat { color: var(--cat-coder); }
+.logline.cat-tester       { border-left-color: var(--cat-tester); }
+.logline.cat-tester       .lcat { color: var(--cat-tester); }
+.logline.cat-reflector    { border-left-color: var(--cat-reflector); }
+.logline.cat-reflector    .lcat { color: var(--cat-reflector); }
+.logline.cat-deployer     { border-left-color: var(--cat-deployer); }
+.logline.cat-deployer     .lcat { color: var(--cat-deployer); }
+.logline.cat-hitl         { border-left-color: var(--cat-hitl); }
+.logline.cat-hitl         .lcat { color: var(--cat-hitl); }
+.logline.cat-orchestrator { border-left-color: var(--cat-orchestrator); }
+.logline.cat-orchestrator .lcat { color: var(--cat-orchestrator); }
+.logline.cat-tool         { border-left-color: var(--cat-tool); }
+.logline.cat-tool         .lcat { color: var(--cat-tool); }
+.logline.cat-semantic     { border-left-color: var(--cat-semantic); }
+.logline.cat-semantic     .lcat { color: var(--cat-semantic); }
+.logline.cat-sandbox      { border-left-color: var(--cat-sandbox); }
+.logline.cat-sandbox      .lcat { color: var(--cat-sandbox); }
+.logline.cat-bootstrap    { border-left-color: var(--cat-bootstrap); }
+.logline.cat-bootstrap    .lcat { color: var(--cat-bootstrap); }
+.logline.cat-db           { border-left-color: var(--cat-db); }
+.logline.cat-db           .lcat { color: var(--cat-db); }
 
 /* ---- events ---- */
 .eventfeed { font-family: var(--mono); font-size: 12px; max-height: 460px; overflow: auto; }
@@ -106,6 +163,33 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .difffile { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin: 8px 0; }
 .difffile .fhead { font-family: var(--mono); font-size: 12px; background: #0d1117; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .rawdiff { font-family: var(--mono); font-size: 12px; background: #0d1117; padding: 10px; border-radius: 6px; overflow: auto; }
+
+/* react-diff-view dark retheme — subtle like the VS Code / Copilot inline diff. The lib
+   ships bright light-theme pastels via its :root vars; override them (all overridable) so
+   greens/reds are muted low-alpha tints with legible text on our dark bg. */
+.diffreview {
+  --diff-background-color: transparent;
+  --diff-text-color: var(--fg);
+  --diff-font-family: var(--mono);
+  --diff-selection-background-color: #264f78;   /* VS Code selection blue */
+
+  --diff-gutter-insert-background-color: rgba(63, 185, 80, 0.22);
+  --diff-gutter-delete-background-color: rgba(248, 81, 73, 0.22);
+  --diff-code-insert-background-color: rgba(63, 185, 80, 0.12);
+  --diff-code-delete-background-color: rgba(248, 81, 73, 0.12);
+  --diff-code-insert-edit-background-color: rgba(63, 185, 80, 0.30);
+  --diff-code-delete-edit-background-color: rgba(248, 81, 73, 0.30);
+  --diff-code-selected-background-color: rgba(88, 166, 255, 0.14);
+  --diff-omit-gutter-line-color: var(--red);
+}
+.diffreview .diff { font-size: 12px; background: #0d1117; color: var(--fg); }
+.diffreview .diff-gutter { color: var(--muted); }
+.diffreview .diff-code { color: var(--fg); }
+/* hunk (@@) headers: muted bar, not glaring */
+.diffreview .diff-hunk-header,
+.diffreview .diff-hunk-header-content {
+  background: #161b22; color: var(--muted); font-family: var(--mono); font-size: 11px;
+}
 
 .error { color: var(--red); background: #f8514922; border: 1px solid var(--red); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
 .loading { color: var(--muted); }

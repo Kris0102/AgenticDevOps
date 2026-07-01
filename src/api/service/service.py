@@ -27,7 +27,7 @@ from orchestrator.checkpointer import setup_checkpointer
 from orchestrator.hitl import HitlResume, Phase
 from orchestrator.orchestrator import graph
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.state import EventType, RunStatus, create_initial_blackboard_state
+from orchestrator.state import BlackboardState, EventType, RunStatus, create_initial_blackboard_state
 from tool_gateway.Roles import Roles
 
 # How often the live-log SSE drains the in-memory bus. Localhost + in-memory, so this
@@ -61,6 +61,20 @@ class Service:
     def __init__(self) -> None:
         configure_logging()      # reads LOG_LEVEL / LOG_JSON from env
         setup_checkpointer()     # idempotent — ensures checkpoint tables exist
+        # run_ids currently being driven by a background worker in THIS process. Lets us
+        # tell a genuinely-RUNNING run from a STALLED one (checkpoint non-terminal but no
+        # worker driving it — the process died before the _drive guard could FAIL it). The
+        # set is empty after a restart, so every previously-running run reads as STALLED and
+        # becomes continuable. Single-worker assumption (see class note + ADR 0019).
+        self._active: set[str] = set()
+
+    def mark_active(self, run_id: str) -> None:
+        """Register a run as being driven NOW. Called synchronously from the route handler
+        before the BackgroundTask starts, so the 202 response never briefly reports STALLED."""
+        self._active.add(run_id)
+
+    def is_active(self, run_id: str) -> bool:
+        return run_id in self._active
 
     # --------------------------------------------------------------- public API
 
@@ -89,6 +103,7 @@ class Service:
             self._finalize(run_id)
             return self._response(run_id)
         finally:
+            self._active.discard(run_id)
             clear_context()
 
     def resume(self, run_id: str, decision: HitlResume) -> RunResponse:
@@ -111,6 +126,28 @@ class Service:
             self._finalize(run_id)
             return self._response(run_id)
         finally:
+            self._active.discard(run_id)
+            clear_context()
+
+    def continue_run(self, run_id: str) -> RunResponse:
+        """Re-drive a STALLED run from its checkpoint. Used when the worker that was driving
+        the graph died (uvicorn crash/restart, OOM-kill) leaving a non-terminal checkpoint
+        with no pending interrupt. `graph.invoke(None, ...)` is the canonical LangGraph
+        resume — no bootstrap (sandbox may be gone, but the graph continues from state; a
+        node that needs the sandbox re-creates via the idempotent bootstrapper path) and no
+        Command (there is no interrupt to answer). Runs to the next pause or END.
+
+        Distinct from resume(): resume answers a HITL interrupt; continue restarts a graph
+        that simply stopped being driven."""
+        bind_run(run_id)
+        try:
+            log_bus.reset(run_id)   # stalled run is producing again — reopen its live stream
+            _log.info("run.continue", run_id=run_id)
+            self._drive(run_id, None)
+            self._finalize(run_id)
+            return self._response(run_id)
+        finally:
+            self._active.discard(run_id)
             clear_context()
 
     def status(self, run_id: str) -> RunResponse:
@@ -182,8 +219,34 @@ class Service:
 
     def _drive(self, run_id: str, graph_input) -> None:
         """One invoke == run until the next interrupt() or END (LangGraph batches all
-        intervening supersteps). Headless: no in-process HITL prompt loop."""
-        graph.invoke(graph_input, config=self._config(run_id))
+        intervening supersteps). Headless: no in-process HITL prompt loop.
+
+        Safety net: any exception a node did NOT convert to a clean FAILED escapes
+        `graph.invoke` here. Without this guard it would unwind through the background
+        worker and leave `Run.status` non-terminal — the run would look stuck forever.
+        HITL pauses do NOT hit this: `interrupt()` suspends and `invoke` returns normally
+        (LangGraph swallows its internal GraphInterrupt), so catching Exception is safe."""
+        try:
+            graph.invoke(graph_input, config=self._config(run_id))
+        except Exception as exc:
+            _log.error("graph.uncaught", run_id=run_id, error=str(exc), exc_info=True)
+            self._force_failed(run_id, f"Uncaught {type(exc).__name__}: {exc}")
+
+    def _force_failed(self, run_id: str, reason: str) -> None:
+        """Terminal FAILED bookkeeping for a crash no node handled. Reuses
+        RunFailureHandler so the runs-table status + RUN_FAILED events match every other
+        failure path. Pulls the last checkpointed state for the `from` status; tolerates
+        that read failing too (best-effort — the point is to reach a terminal status)."""
+        try:
+            snapshot = graph.get_state(self._config(run_id))
+            state: BlackboardState = snapshot.values if snapshot else {}  # type: ignore[assignment]
+        except Exception:
+            state = {}  # type: ignore[assignment]  # handle() does state.get(...) — must not be None
+        with db.session_scope() as session:
+            RunFailureHandler.handle(
+                session, run_id, Roles.ORCHESTRATOR.value, state,
+                RunExecutionError(phase="graph", reason=reason),
+            )
 
     def _bootstrap(self, run_id: str, state) -> dict:
         try:
@@ -210,7 +273,7 @@ class Service:
         pending = self._pending_payload(run_id)
         return RunResponse(
             run_id=run_id,
-            run_state=self._derive_state(status, pending),
+            run_state=self._derive_state(status, pending, self.is_active(run_id)),
             status=status.value if isinstance(status, RunStatus) else status,
             hitl_phase=pending.get("phase") if pending else None,
             hitl_approval_id=pending.get("approval_id") if pending else None,
@@ -323,13 +386,17 @@ class Service:
         log_bus.mark_done(run_id)
 
     @staticmethod
-    def _derive_state(status, pending: Optional[dict]) -> RunState:
+    def _derive_state(status, pending: Optional[dict], is_active: bool) -> RunState:
         """Coarse lifecycle derived from the blackboard status — single source of
-        truth, no parallel state field."""
+        truth, no parallel state field. `is_active` = a worker in THIS process is driving
+        the graph right now; it separates RUNNING from STALLED (same non-terminal status,
+        but STALLED has no driver — the process died before the _drive guard could FAIL it)."""
         if pending is not None:
             return RunState.PAUSED_HITL
         if status == RunStatus.FAILED:
             return RunState.FAILED
         if status == RunStatus.DONE:
             return RunState.COMPLETED
-        return RunState.RUNNING
+        if is_active:
+            return RunState.RUNNING
+        return RunState.STALLED

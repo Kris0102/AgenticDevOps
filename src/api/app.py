@@ -18,6 +18,7 @@ def create_run(request: RunRequest, background: BackgroundTasks) -> RunResponse:
     """Start a run. Returns immediately with the run_id; the graph executes in the
     background (bootstrap + planning can take minutes). Poll GET /runs/{id} for state."""
     run_id = str(uuid.uuid4())
+    service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
     background.add_task(service.run, request, run_id)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
 
@@ -37,7 +38,6 @@ def get_hitl(run_id: str) -> HitlReviewContext:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run is not paused at a HITL gate")
     return context
 
-
 @app.post("/runs/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED, response_model=RunResponse)
 def resume_run(run_id: str, decision: HitlResume, background: BackgroundTasks) -> RunResponse:
     """Apply a human verdict (approve/reject) and resume. Validated up front so a bad
@@ -46,7 +46,25 @@ def resume_run(run_id: str, decision: HitlResume, background: BackgroundTasks) -
         raise HTTPException(status.HTTP_409_CONFLICT, "run is not paused at a HITL gate")
     if decision.decision == HitlDecision.REJECT and not decision.note:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "reject requires a note")
+    service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
     background.add_task(service.resume, run_id, decision)
+    return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
+
+
+@app.post("/runs/{run_id}/continue", status_code=status.HTTP_202_ACCEPTED, response_model=RunResponse)
+def continue_run(run_id: str, background: BackgroundTasks) -> RunResponse:
+    """Re-drive a STALLED run (worker died mid-graph, checkpoint left non-terminal with no
+    pending interrupt). Distinct from /resume, which answers a HITL gate. Rejected if the
+    run is terminal, paused at a gate (use /resume), or already being driven."""
+    current = service.status(run_id)
+    if current.run_state in (RunState.COMPLETED, RunState.FAILED):
+        raise HTTPException(status.HTTP_409_CONFLICT, "run is already terminal")
+    if current.run_state == RunState.PAUSED_HITL:
+        raise HTTPException(status.HTTP_409_CONFLICT, "run is paused at a HITL gate — use /resume")
+    if current.run_state == RunState.RUNNING:
+        raise HTTPException(status.HTTP_409_CONFLICT, "run is already being driven")
+    service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
+    background.add_task(service.continue_run, run_id)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
 
 

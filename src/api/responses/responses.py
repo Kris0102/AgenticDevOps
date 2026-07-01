@@ -34,6 +34,11 @@ class RunState(str, Enum):
     PAUSED_HITL = "paused_hitl"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Non-terminal + no pending interrupt + no worker driving it: the process that was
+    # running the graph died (uvicorn crash/restart, OOM-kill, reboot) before the _drive
+    # guard could mark it FAILED. Recoverable — POST /runs/{id}/continue re-drives from the
+    # checkpoint. Distinct from RUNNING (a worker IS driving it). See ADR 0019.
+    STALLED = "stalled"
 
 
 class RunResponse(BaseModel):

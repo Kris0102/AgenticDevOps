@@ -8,6 +8,8 @@ from db.db import db
 from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.models import Artifact, Run
+from Exceptions.RunExecutionError import RunExecutionError
+from orchestrator.run_failure import RunFailureHandler
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
@@ -83,8 +85,13 @@ class ReviewerRunner:
                 tools = self._init_tools(db_session)
                 result = Reviewer(run_id=self.run_id, tools=tools).invoke(self.state)
             except Exception as error:
+                # Convert to a clean FAILED (phase-attributed) instead of unwinding into
+                # graph.invoke. The _drive guard is the net; this gives the better label.
                 _log.error("reviewer.unexpected_error", error=str(error))
-                raise
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(phase="plan_review", reason=f"Reviewer crashed: {error}"),
+                )
 
             result["iteration"] = next_iteration
             self._persist_results(db_session, result)

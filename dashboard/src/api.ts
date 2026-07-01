@@ -1,6 +1,6 @@
 // Typed client for the FastAPI control plane. Shapes mirror src/api/responses/responses.py.
 
-export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed'
+export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'stalled'
 
 export interface RunResponse {
   run_id: string
@@ -89,4 +89,8 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ decision, note: note ?? null }),
     }).then(asJson<RunResponse>),
+
+  // Re-drive a stalled run (worker died mid-graph) from its checkpoint. Not for HITL gates.
+  continueRun: (id: string) =>
+    fetch(`/runs/${id}/continue`, { method: 'POST' }).then(asJson<RunResponse>),
 }

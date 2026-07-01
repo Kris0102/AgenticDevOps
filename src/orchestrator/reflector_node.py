@@ -69,8 +69,13 @@ class ReflectorRunner:
                     db_session, self.run_id, self.name, self.state, error
                 )
             except Exception as error:
+                # Convert to a clean FAILED (phase-attributed) instead of unwinding into
+                # graph.invoke. The _drive guard is the net; this gives the better label.
                 _log.error("reflector.unexpected_error", error=str(error))
-                raise
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(phase="reflect", reason=f"Reflector crashed: {error}"),
+                )
 
             # Drop the approve signal (failure-only) and read the fix target.
             raw.pop("_reflector_approved", None)

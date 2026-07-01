@@ -22,7 +22,7 @@ class RunFailureHandler:
         session: Session,
         run_id: str,
         actor: str,
-        state: BlackboardState,
+        state: BlackboardState | None,
         error: RunExecutionError,
     ) -> Dict[str, Any]:
         result: Dict[str, Any] = {"status": RunStatus.FAILED, "error_logs": [error.reason]}
@@ -32,6 +32,13 @@ class RunFailureHandler:
             run_record.status = RunStatus.FAILED.value
             run_record.updated_at = datetime.now(timezone.utc)
 
+        if not state:
+              EventLogger.log(session, run_id, actor, EventType.RUN_FAILED, {
+            "reason": error.reason,
+            "failed_phase": error.phase,
+            "State cant be recovered.The run is marked as failed.": "Unrecovable state",
+               })
+              return result
         # `status` may be an enum (same-invoke) or a deserialized string (resumed run) —
         # never call `.value` blindly here, or this failure handler itself crashes and the
         # run is left in a non-terminal status ("never ends").

@@ -15,7 +15,7 @@ export function LogPanel({ runId, active }: { runId: string; active: boolean }) 
       <h3>live logs {active ? <span className="live-dot">●</span> : <span className="closed">(closed)</span>}</h3>
       <div className="logfeed">
         {logs.map((l) => (
-          <div key={l.seq} className={`logline lvl-${l.level ?? 'info'}`}>
+          <div key={l.seq} className={`logline lvl-${l.level ?? 'info'} cat-${l.category ?? 'none'}`}>
             <span className="lts">{l.ts?.slice(11, 19) ?? ''}</span>
             <span className="lcat">[{l.category ?? '-'}]</span>
             <span className="lev">{l.event}</span>

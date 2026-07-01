@@ -57,7 +57,8 @@ src/
   db/
     db.py                        # SQLAlchemy engine + session_scope
     event_log.py                 # EventLogger — centralized Event-row construction (session.add only, never commit)
-    models.py                    # ORM models: Run, Event, Artifact, Sandbox, MicrotaskRecord, CodeChunk
+    models.py                    # ORM models: Run, Event, Artifact, Sandbox, MicrotaskRecord, CodeChunk, Lesson
+    lessons.py                   # LessonStore — per-repo cross-run failure memory (ADR 0018): write on confirmation (record_plan_lessons/record_code_lessons), read via find_lessons (pgvector top-k) + render_block
     embedder.py                  # Embedder — lazy sentence-transformers (all-MiniLM-L6-v2, 384-dim)
     semantic_store.py            # SemanticStore — pgvector upsert/search/delete over code_chunks
     migrations/                  # Alembic migrations
@@ -244,6 +245,7 @@ Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.
 | `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |
 | `events` | Full audit trail — run.created, repo.cloned, plan.drafted, tool.executed, etc. Has a monotonic `seq` (BIGSERIAL identity) — the dashboard history cursor (`GET /runs/{id}/events?after=<seq>`). See ADR 0013 |
 | `code_chunks` | Context Engine semantic index — AST chunks + `Vector(384)` embedding, `namespace` baseline/workspace (ADR 0010). Needs the `vector` extension (`pgvector/pgvector` image) |
+| `lessons` | Per-repo cross-run failure memory (ADR 0018) — `Vector(384)` embedding, indexed by `repo_url`/`run_id`, `scope` plan/code. Written on CONFIRMATION (reviewer approve / tester PASS), retrieved semantically top-k (`find_lessons`, current-run excluded), injected advisory into reviewer/coder/reflector prompts. Migration `b2c3d4e5f6a7` |
 | `checkpoints*` | LangGraph PostgresSaver — blackboard snapshot per superstep (ADR 0005; replaced `run_state`) |
 
 Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 1.x `Column()` style — Pylance will report type errors.
@@ -269,7 +271,8 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Control API + dashboard backend | Done — FastAPI (`src/api/`, ADR 0013). Trigger runs + HITL approve/reject over HTTP (`POST /runs/{id}/resume` → `Command(resume=...)`); one `graph.invoke()` per gate (no re-bootstrap on resume — mid-graph pause, sandbox alive). HITL review context (`GET /runs/{id}/hitl`): plan + microtasks for a `plan` gate, raw green/red diff for a `code` gate. Notify by poll (`GET /runs/{id}` → `run_state`/`hitl_phase`). Live logs: structlog → in-memory `RunLogBus` → SSE (`/logs/stream`); durable history: `events` table poll (`/events?after=<seq>`). Runs in `BackgroundTasks` (move to a worker before prod). CLI (`main.py`) being deleted — don't mirror it |
 | Provider abstraction | Not started |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
-| `reflections` DB table | Not started |
+| `reflections` DB table | Not started (reflections live in the checkpointed blackboard; subsumed by the `lessons` table for cross-run reuse) |
+| Per-repo lessons memory | Done (ADR 0018) — `lessons` table + `db/lessons.py`. **Write** (outcome-validated): `record_plan_lessons` on reviewer APPROVE, `record_code_lessons` on tester PASS (gated `fix_target=="code"` + `should_store_in_semantic_memory`); `record_test_lessons` is a deliberate no-op. **Read**: `find_lessons` (pgvector cosine top-k, repo+scope filtered, current run excluded) + `render_block` → advisory prompt block in reviewer/coder/reflector, also dumped to each agent's debug output file. Open: per-repo prune/cap hygiene; retrieval-usefulness reinforcement |
 
 ## Known bugs / remaining TODOs (priority order)
 See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.

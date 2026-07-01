@@ -124,6 +124,7 @@ def create_review_file_as_output(
     run_id: str,
     investigation_summary: Optional[str] = None,
     prior_feedback: Optional[List[ReviewFeedback]] = None,
+    lessons_block: str = "",
 ) -> str:
     """Write the review to disk and return the absolute path."""
     try:
@@ -169,7 +170,12 @@ def create_review_file_as_output(
             f.write(f"{sep}\n")
             f.write("INVESTIGATION SUMMARY\n")
             f.write(f"{sep}\n\n")
-            f.write((investigation_summary or "No reviewer investigation summary provided.") + "\n")
+            f.write((investigation_summary or "No reviewer investigation summary provided.") + "\n\n")
+
+            f.write(f"{sep}\n")
+            f.write("RETRIEVED LESSONS (injected into prompt)\n")
+            f.write(f"{sep}\n\n")
+            f.write((lessons_block or "No past-run lessons retrieved.") + "\n")
 
         _log.info("reviewer.review_file_written", path=str(file_path))
         return str(file_path)

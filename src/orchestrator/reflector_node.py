@@ -1,7 +1,6 @@
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Artifact as DbArtifact, Run
@@ -61,6 +60,7 @@ class ReflectorRunner:
                 reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools)
                 # Always a failure here — the Reflector only runs after a tester FAIL.
                 # TODO Change thisn behaviour to always run!
+                # Reads the artifact which was created by the tester!
                 test_output = self._test_output(db_session)
                 raw = reflector.invoke(self.state, microtask, test_passed=False, test_output=test_output)
             except RunExecutionError as error:
@@ -77,6 +77,9 @@ class ReflectorRunner:
             fix_target = raw.pop("_fix_target", "code")
             result = self._build_state_result(raw, microtask, fix_target)
             self._persist_results(db_session, microtask, result)
+            # NOTE: lessons are NOT written here. A reflector diagnosis is unconfirmed — it
+            # could be a misdiagnosis. The code-lesson is written later, in tester_node on the
+            # microtask PASS that proves the fix worked (outcome-validated, ADR 0018).
             return result
 
     @staticmethod

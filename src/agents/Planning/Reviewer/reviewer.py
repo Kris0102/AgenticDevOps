@@ -19,6 +19,7 @@ from agents.Planning.Reviewer.reviewer_support import (
 )
 
 from agents.Planning.Reviewer.prompts.reviewer_prompt import build_investigation_prompt, build_review_prompt
+from db.lessons import LessonStore
 from agents.Planning.Reviewer.prompts.reviewer_prompt import REVIEWER_SYSTEM_PROMPT
 from agents.Planning.Reviewer.review_output import create_review_file_as_output
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
@@ -194,8 +195,19 @@ class Reviewer:
 
         _log.info("reviewer.reviewing", microtasks=len(microtasks))
 
-        # add the objective, planner's result and the reviewer's investigation summary to the final review prompt 
+        # add the objective, planner's result and the reviewer's investigation summary to the final review prompt
         prompt = build_review_prompt(objective_text, review_context, investigation_summary)
+
+        # Advisory: surface the top-k confirmed plan lessons from past runs on THIS repo
+        # (ADR 0018). Semantic top-k, so it stays bounded no matter how many accumulate.
+        repo = state.get("repo")
+        lessons = LessonStore.find_lessons(
+            repo.repo_url if repo else "", objective_text,
+            scope="plan", exclude_run_id=self.run_id,
+        )
+        lessons_block = LessonStore.render_block(lessons)
+        if lessons_block:
+            prompt = f"{lessons_block}\n\n{prompt}"
 
         try:
             raw = self.structured_llm.invoke([HumanMessage(content=prompt)])
@@ -233,6 +245,7 @@ class Reviewer:
             run_id=self.run_id,
             investigation_summary=investigation_summary,
             prior_feedback=list(plan.review_feedback),
+            lessons_block=lessons_block,
         )
         reviewed_plan = plan.model_copy(update={
             "review_feedback": list(plan.review_feedback) + [feedback],

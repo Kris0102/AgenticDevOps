@@ -50,6 +50,12 @@ If there are no shared types, write an empty list.
 Each microtask is ONE logical unit of work scoped to AT MOST 3 files.
 If a task touches more files, split it.
 
+Do NOT create test-writing microtasks (no "add unit tests", "write jest/pytest specs",
+test/spec target files) UNLESS the objective EXPLICITLY asks for tests as a deliverable.
+Verification is the Tester's job — it independently grounds tests on the acceptance_criteria
+below, so coder-authored tests are neither required nor a substitute for those criteria.
+When the objective does ask for tests, a test microtask is fine; otherwise omit it entirely.
+
 For EACH microtask you MUST provide:
 
 1. target_files — exact absolute paths inside the sandbox.

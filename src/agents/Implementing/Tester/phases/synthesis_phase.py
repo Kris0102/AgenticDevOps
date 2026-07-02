@@ -23,9 +23,16 @@ from observability import Category, get_logger
 _log = get_logger(Category.TESTER)
 
 
+# Synth tests are VERIFICATION scaffolding, not a deliverable — write them to a git-ignored
+# dir (seeded in bootstrap + pathspec-excluded at push) so they never reach the run branch.
+# Depth 1 (like the old `tests/`) keeps `require('../x')` / relative imports resolving. ADR 0019.
+SYNTH_TEST_DIR = ".agentic_tests"
+
+
 def _test_file_path(microtask_id: str, project_type: str) -> str:
     safe = microtask_id.replace("-", "_")
-    return f"tests/test_{safe}.test.js" if project_type == "javascript" else f"tests/test_{safe}.py"
+    ext = "test.js" if project_type == "javascript" else "py"
+    return f"{SYNTH_TEST_DIR}/test_{safe}.{ext}"
 
 
 class SynthesisPhase(TestPhase):

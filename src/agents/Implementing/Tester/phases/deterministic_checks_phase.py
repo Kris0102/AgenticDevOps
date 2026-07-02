@@ -83,7 +83,9 @@ class DeterministicChecksPhase(TestPhase):
 
     # ----------------------------------------------------------- python checks
     def _py_suite(self) -> CheckResult:
-        cmd = ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+        # --ignore the Tester's own ephemeral synth dir so a stale synth file from a prior
+        # iteration is never picked up by the repo's suite (Track A). ADR 0019.
+        cmd = ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--ignore=.agentic_tests"]
         result = self.tools.run(cmd, timeout_s=300)
         if int(result.get("exit_code", 1)) == _PYTEST_NO_TESTS:
             return skipped_check("integration_tests", "no existing pytest suite in repo")

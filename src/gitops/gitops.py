@@ -1,4 +1,5 @@
-from typing import List, Optional
+import json
+from typing import Any, Dict, List, Optional
 
 from observability import Category, get_logger
 from sandbox.sandbox_tools import DockerSandboxTools, ExecResult, SandboxError
@@ -18,6 +19,20 @@ class GitOps:
     """
 
     BRANCH_PREFIX = "agent/run-"
+
+    # Pathspec magic excludes applied at stage time (`git add -A -- . :(exclude)…`) so deps,
+    # secret-bearing files, and the Tester's ephemeral synth tests never reach the branch even
+    # when the repo's own .gitignore is missing/incomplete. Backstop to the seeded .gitignore.
+    STAGE_EXCLUDES = [
+        ".",
+        ":(exclude)**/node_modules/**",
+        ":(exclude).env",
+        ":(exclude).env.*",
+        ":(exclude)**/*.pem",
+        ":(exclude)**/*.key",
+        ":(exclude)**/*.p12",
+        ":(exclude).agentic_tests/**",
+    ]
 
     def __init__(self, sandbox_tools: DockerSandboxTools):
         self.sandbox = sandbox_tools
@@ -107,8 +122,10 @@ class GitOps:
         _run(["git", "config", "user.email", author_email])
         _run(["git", "config", "user.name", author_name])
 
-        # Stage everything, then commit (tolerate an empty working tree).
-        _run(["git", "add", "-A"])
+        # Stage changes, but hard-exclude deps/secrets/ephemeral synth tests even if the
+        # repo shipped no (or an incomplete) .gitignore. Deterministic backstop to the
+        # bootstrap-seeded .gitignore — see ADR 0019.
+        _run(["git", "add", "-A", "--"] + self.STAGE_EXCLUDES)
         message = commit_message or f"AgenticDevOps run {run_id}"
         commit = _run(["git", "commit", "-m", message], allow_fail=True)
         if commit.exit_code != 0:
@@ -128,6 +145,60 @@ class GitOps:
         _run(["git", "push", "auth-origin", f"HEAD:refs/heads/{branch}"])
         _log.info("gitops.pushed", branch=branch, repo_dir=repo_dir)
         return results
+
+    def scan_secrets(self, *, sandbox_id: str, repo_dir: str = "repo") -> List[Dict[str, Any]]:
+        """Content-scan the working tree for committed secrets with gitleaks BEFORE a push.
+        Filename-based ignores can't catch a secret hardcoded in a source file — this does.
+        Returns REDACTED findings (rule/file/line only, never the secret value); an empty
+        list means clean. `--exit-code 0` so gitleaks doesn't error on findings (we parse the
+        report); `--redact` keeps secret values out of the report we read. See ADR 0019."""
+        repo_cwd = f"{self.sandbox.workdir}/{repo_dir}"
+        report = "/tmp/gitleaks-report.json"
+        scan = self.sandbox.sandbox_exec(
+            sandbox_id=sandbox_id,
+            cmd=[
+                "gitleaks", "detect", "--source", ".", "--no-git", "--no-banner",
+                "--redact", "--exit-code", "0",
+                "--report-format", "json", "--report-path", report,
+            ],
+            timeout_s=120,
+            cwd=repo_cwd,
+        )
+        if scan.exit_code != 0:
+            # gitleaks missing/broken must NOT silently allow a leak through — treat as a
+            # scan failure the caller can surface/block on.
+            raise SandboxError(f"gitleaks scan failed: {scan.stderr or scan.stdout}")
+
+        cat = self.sandbox.sandbox_exec(
+            sandbox_id=sandbox_id, cmd=["cat", report], timeout_s=30, cwd=repo_cwd,
+        )
+        raw = (cat.stdout or "").strip()
+        if not raw or cat.exit_code != 0:
+            return []
+        try:
+            findings = json.loads(raw)
+        except json.JSONDecodeError:
+            _log.warning("gitops.gitleaks_unparseable", head=raw[:200])
+            return []
+        return [
+            {
+                "rule": f.get("RuleID") or f.get("Description"),
+                "file": f.get("File"),
+                "line": f.get("StartLine"),
+            }
+            for f in (findings or [])
+        ]
+
+    def changed_files(self, *, sandbox_id: str, repo_dir: str = "repo") -> List[str]:
+        """The would-be-pushed fileset preview (porcelain, post-.gitignore) so a human at the
+        deploy gate sees exactly what ships. Best-effort — returns [] on error."""
+        repo_cwd = f"{self.sandbox.workdir}/{repo_dir}"
+        res = self.sandbox.sandbox_exec(
+            sandbox_id=sandbox_id, cmd=["git", "status", "--porcelain"], timeout_s=30, cwd=repo_cwd,
+        )
+        if res.exit_code != 0:
+            return []
+        return [line[3:] for line in (res.stdout or "").splitlines() if line.strip()]
 
     def create_pr(
         self,

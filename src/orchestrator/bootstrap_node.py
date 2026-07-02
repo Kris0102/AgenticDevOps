@@ -46,6 +46,7 @@ class BootStrapper:
         # the pre-clone default (WORKDIR) until GitOps.clone_and_checkout succeeds.
         if sandbox_state.workspace_path == self.WORKDIR:
             workspace_path = self._clone_repository()
+            self._ensure_gitignore(sandbox_id, workspace_path)
             chunks_ingested = self._ingest_baseline(sandbox_id, workspace_path)
 
             result = {
@@ -146,6 +147,38 @@ class BootStrapper:
                 "container_id": result.container_id[:12],
                 "reconnected": result.container_id != result.sandbox_id,
             })
+
+    # Deps (reinstalled by the Tester), caches, build output, secret-bearing files, and the
+    # Tester's ephemeral synth-test dir — none of these belong on the pushed run branch. See
+    # ADR 0019. `.env` stays in the sandbox (runtime) but is never committed.
+    _GITIGNORE_PATTERNS = (
+        "node_modules/", "__pycache__/", "*.pyc", ".venv/", "venv/",
+        "dist/", "build/", ".env", ".env.*", "*.pem", "*.key", "*.p12",
+        "*.keystore", "id_rsa*", ".npmrc", ".agentic_tests/",
+    )
+
+    def _ensure_gitignore(self, sandbox_id: str, workspace_path: str) -> None:
+        """Seed/merge a `.gitignore` in the cloned repo so `git add` never sweeps in deps,
+        caches, secrets, or the Tester's ephemeral synth tests. Idempotent: appends only the
+        lines not already present (exact whole-line match), preserving any existing file.
+        Best-effort — a failure here must not abort bootstrap (push-time pathspec excludes are
+        the backstop)."""
+        # Build a POSIX-sh loop; sandbox_exec runs an argv (no shell), so wrap in `sh -c`.
+        patterns = " ".join(f"'{p}'" for p in self._GITIGNORE_PATTERNS)
+        script = (
+            "set -e; touch .gitignore; "
+            f"for p in {patterns}; do "
+            'grep -qxF "$p" .gitignore || printf "%s\\n" "$p" >> .gitignore; '
+            "done"
+        )
+        res = self.sandbox_tools.sandbox_exec(
+            sandbox_id=sandbox_id, cmd=["sh", "-c", script], timeout_s=30, cwd=workspace_path,
+        )
+        if res.exit_code != 0:
+            _log.warning("bootstrap.gitignore_seed_failed", error=res.stderr or res.stdout,
+                         recovery="push-time pathspec excludes remain the backstop")
+        else:
+            _log.info("bootstrap.gitignore_seeded", workspace_path=workspace_path)
 
     def _clone_repository(self) -> str:
         sandbox_state: Sandbox = self.state.get("sandbox")

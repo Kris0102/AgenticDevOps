@@ -69,6 +69,7 @@ class EventType(str, Enum):
     SANDBOX_CREATED = "sandbox.created"
     RUN_COMPLETED = "run.completed"
     GITOPS_PUSHED = "gitops.pushed"
+    GITOPS_SECRET_BLOCKED = "gitops.secret_blocked"
     RUN_FAILED = "run.failed"
     TOOL_EXECUTED = "tool.executed"
     TOOL_DENIED = "tool.denied"

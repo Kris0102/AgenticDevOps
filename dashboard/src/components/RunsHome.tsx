@@ -21,6 +21,20 @@ function fmtWhen(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function fmtAgo(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (isNaN(t)) return ''
+  const s = Math.round((Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
+
+const LIVE_STATES: RunState[] = ['running', 'paused_hitl', 'stalled']
+
 export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; onOpen: (id: string) => void }) {
   const [runs, setRuns] = useState<RunResponseWithDetails[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -54,6 +68,21 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
     }
   }
 
+  const pulse = useMemo(() => {
+    const by = (st: RunState) => runs.filter((r) => r.run_state === st).length
+    const completed = by('completed')
+    const failed = by('failed')
+    const finished = completed + failed
+    return {
+      total: runs.length,
+      active: runs.filter((r) => LIVE_STATES.includes(r.run_state)).length,
+      completed,
+      failed,
+      // success rate over FINISHED runs only (in-flight runs don't count for/against)
+      success: finished ? Math.round((completed / finished) * 100) : null,
+    }
+  }, [runs])
+
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const match = (r: RunResponseWithDetails) =>
@@ -72,6 +101,16 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
 
   return (
     <section className="runshome">
+      {runs.length > 0 && (
+        <div className="pulse" aria-label="run pulse">
+          <div className="pstat"><span className="pv">{pulse.total}</span><span className="pl">runs</span></div>
+          <div className={`pstat ${pulse.active ? 'accent' : ''}`}><span className="pv">{pulse.active}</span><span className="pl">active</span></div>
+          <div className="pstat ok"><span className="pv">{pulse.completed}</span><span className="pl">completed</span></div>
+          <div className={`pstat ${pulse.failed ? 'bad' : ''}`}><span className="pv">{pulse.failed}</span><span className="pl">failed</span></div>
+          <div className="pstat"><span className="pv">{pulse.success === null ? '—' : `${pulse.success}%`}</span><span className="pl">success rate</span></div>
+        </div>
+      )}
+
       <div className="rh-head">
         <h3>previous runs <span className="rh-count">{runs.length}</span></h3>
         <div className="rh-sort">
@@ -110,7 +149,13 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
       </div>
 
       {error && <div className="error">runs error: {error}</div>}
-      {!error && runs.length === 0 && <div className="loading">no runs yet</div>}
+      {!error && runs.length === 0 && (
+        <div className="rh-empty">
+          <span className="rh-empty-mark" aria-hidden>◇</span>
+          <p>No runs yet. Start one with <strong>＋ New run</strong>, or <strong>import</strong> an exported bundle.</p>
+        </div>
+      )}
+      {!error && runs.length > 0 && visible.length === 0 && <div className="loading">no runs match “{filter}”</div>}
 
       <div className="rh-grid">
         {visible.map((run) => (
@@ -121,13 +166,16 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
           >
             <div className="rb-top">
               <span className="rb-repo">{run.repo_name}</span>
-              <span className="badge">{STATE_LABEL[run.run_state]}</span>
+              <span className="badge">
+                {LIVE_STATES.includes(run.run_state) && run.run_state !== 'stalled' && <span className="livedot" aria-hidden />}
+                {STATE_LABEL[run.run_state]}
+              </span>
             </div>
             {run.task_description && (
               <div className="rb-task" title={run.task_description}>{run.task_description}</div>
             )}
             <div className="rb-meta">
-              <span title="created">{fmtWhen(run.created_at)}</span>
+              <span title={fmtWhen(run.created_at)}>{fmtAgo(run.created_at)}</span>
               {run.base_sha && <span className="rb-sha" title="base sha">@{run.base_sha.slice(0, 7)}</span>}
               {typeof run.pushed_files === 'number' && (
                 <span className="rb-pushed" title="files shipped by the deploy push">⇡ {run.pushed_files} files</span>

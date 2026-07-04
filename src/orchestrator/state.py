@@ -71,6 +71,7 @@ class EventType(str, Enum):
     GITOPS_PUSHED = "gitops.pushed"
     GITOPS_SECRET_BLOCKED = "gitops.secret_blocked"
     RUN_FAILED = "run.failed"
+    RUN_STALLED = "run.stalled"
     TOOL_EXECUTED = "tool.executed"
     TOOL_DENIED = "tool.denied"
     HITL_REQUESTED = "hitl.requested"

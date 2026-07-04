@@ -4,6 +4,9 @@ from typing import AsyncIterator, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
+from openai import APIConnectionError, APITimeoutError
+
+from Exceptions.RetriableError import RetriableError
 
 from api.requests.requests import RunRequest
 from datetime import datetime, timezone
@@ -473,9 +476,28 @@ class Service:
         (LangGraph swallows its internal GraphInterrupt), so catching Exception is safe."""
         try:
             graph.invoke(graph_input, config=self._config(run_id))
+        except (RetriableError, APITimeoutError, APIConnectionError) as exc:
+            # Transient — an LLM API hiccup, not a run defect. Do NOT fail: leave the run
+            # non-terminal so it reads STALLED (no worker driving it) and can be re-driven
+            # from its checkpoint via /continue, re-running the node that timed out. The
+            # RetriableError branch is the explicit signal from the agents; the raw openai
+            # types are a backstop for call sites that don't wrap (tester/reflector).
+            reason = getattr(exc, "reason", str(exc))
+            _log.warning("graph.transient", run_id=run_id, error=reason)
+            self._mark_stalled(run_id, reason)
         except Exception as exc:
             _log.error("graph.uncaught", run_id=run_id, error=str(exc), exc_info=True)
             self._force_failed(run_id, f"Uncaught {type(exc).__name__}: {exc}")
+
+    def _mark_stalled(self, run_id: str, reason: str) -> None:
+        """Record a transient stall WITHOUT touching Run.status — the run stays at whatever
+        node it reached, so `_derive_state` reports STALLED and /continue re-drives it. Only
+        emits an audit event carrying the reason so the dashboard can say why (api timeout
+        vs worker died)."""
+        with db.session_scope() as session:
+            EventLogger.log(session, run_id, Roles.ORCHESTRATOR.value, EventType.RUN_STALLED, {
+                "reason": reason, "kind": "transient",
+            })
 
     def _force_failed(self, run_id: str, reason: str) -> None:
         """Terminal FAILED bookkeeping for a crash no node handled. Reuses
@@ -516,13 +538,28 @@ class Service:
         snapshot = graph.get_state(self._config(run_id))
         status = snapshot.values.get("status") if snapshot.values else None
         pending = self._pending_payload(run_id)
+        state = self._derive_state(status, pending, self.is_active(run_id))
         return RunResponse(
             run_id=run_id,
-            run_state=self._derive_state(status, pending, self.is_active(run_id)),
+            run_state=state,
             status=status.value if isinstance(status, RunStatus) else status,
             hitl_phase=pending.get("phase") if pending else None,
             hitl_approval_id=pending.get("approval_id") if pending else None,
+            # Only for a stalled run: the reason if it was a transient LLM error (worker-died
+            # stalls have no run.stalled event → None → the UI shows the generic message).
+            stalled_reason=self._stalled_reason(run_id) if state == RunState.STALLED else None,
         )
+
+    @staticmethod
+    def _stalled_reason(run_id: str) -> Optional[str]:
+        with db.session_scope() as session:
+            row = (
+                session.query(EventRow)
+                .filter(EventRow.run_id == run_id, EventRow.event_type == EventType.RUN_STALLED.value)
+                .order_by(EventRow.seq.desc())
+                .first()
+            )
+            return (row.payload_json or {}).get("reason") if row else None
 
     @staticmethod
     def _plan_view(state: dict) -> Optional[PlanView]:

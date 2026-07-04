@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
+
+from Exceptions.RetriableError import RetriableError
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
 from agents.Planning.Reviewer.reviewer_support import (
@@ -182,7 +184,7 @@ class Reviewer:
 
             except (APIConnectionError, APITimeoutError) as error:
                 _log.error("reviewer.cluster_unreachable", phase="investigation", error=str(error))
-                raise
+                raise RetriableError(f"reviewer investigation LLM call failed: {error}", phase="reviewer")
             except Exception as error:
                 _log.warning("reviewer.investigation_failed", error=str(error))
                 investigation_summary = f"Investigation failed (continuing to review): {error}"
@@ -217,7 +219,7 @@ class Reviewer:
                 result = ReviewerOutput.model_validate(raw)
         except (APIConnectionError, APITimeoutError) as error:
             _log.error("reviewer.cluster_unreachable", error=str(error))
-            raise
+            raise RetriableError(f"reviewer LLM call failed: {error}", phase="reviewer")
         except ValidationError as error:
             _log.error("reviewer.output_validation_failed", error=str(error))
             raise

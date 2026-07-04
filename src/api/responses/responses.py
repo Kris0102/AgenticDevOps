@@ -50,6 +50,9 @@ class RunResponse(BaseModel):
     # a gate is waiting AND which kind, so it can fetch the right review context.
     hitl_phase: Optional[str] = None
     hitl_approval_id: Optional[str] = None
+    # set only when run_state == stalled AND the stall was a transient LLM error — the
+    # reason to show on the continue bar. None for a worker-died stall (generic message).
+    stalled_reason: Optional[str] = None
 
 class RunResponseWithDetails(RunResponse):
     """A run row for the dashboard's previous-runs list. Everything the run-box needs as

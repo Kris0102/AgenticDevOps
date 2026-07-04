@@ -10,6 +10,8 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from openai import APIConnectionError, APITimeoutError
+
+from Exceptions.RetriableError import RetriableError
 from pydantic import SecretStr
 
 from agents.Implementing.Coder.coder_support import format_react_transcript
@@ -205,7 +207,7 @@ class Coder:
             except (APIConnectionError, APITimeoutError) as exception:
                 _log.error("coder.cluster_unreachable", phase="coding",
                            hint="ensure VPN connected", error=str(exception))
-                raise
+                raise RetriableError(f"coder LLM call failed: {exception}", phase="coder")
 
             transcript = format_react_transcript(agent_result.get("messages", []))
             diff_text = self.coder_tools.get_repo_diff()
@@ -298,7 +300,7 @@ class Coder:
             except (APIConnectionError, APITimeoutError) as exception:
                 _log.error("coder.cluster_unreachable", phase="compile-fix",
                            hint="ensure VPN connected", error=str(exception))
-                raise
+                raise RetriableError(f"coder compile-fix LLM call failed: {exception}", phase="coder")
 
         _log.warning("coder.compile_unresolved", microtask_id=microtask.microtask_id,
                      reason="handing to tester anyway — tester build check is the backstop")

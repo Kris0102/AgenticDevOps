@@ -8,6 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
+
+from Exceptions.RetriableError import RetriableError
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from agents.Planning.Planner.investigation_support import (
@@ -192,7 +194,7 @@ class Planner:
             except (APIConnectionError, APITimeoutError) as exception:
                 _log.error("planner.cluster_unreachable", phase="investigation",
                            hint="ensure VPN connected", error=str(exception))
-                raise
+                raise RetriableError(f"planner investigation LLM call failed: {exception}", phase="planner")
             except Exception as e:
                 _log.warning("planner.investigation_failed",
                              error=str(e), recovery="continuing to synthesis")
@@ -227,7 +229,7 @@ class Planner:
             except (APIConnectionError, APITimeoutError) as exception:
                 _log.error("planner.cluster_unreachable", phase="synthesis",
                            hint="ensure VPN connected", error=str(exception))
-                raise
+                raise RetriableError(f"planner synthesis LLM call failed: {exception}", phase="planner")
             except ValidationError as e:
                 _log.error("planner.synthesis_validation_failed", error=str(e))
                 raise

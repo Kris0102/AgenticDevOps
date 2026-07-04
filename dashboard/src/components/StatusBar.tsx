@@ -31,7 +31,7 @@ export function StatusBar({ run }: { run: RunResponse | null }) {
       <code className="rid">{run.run_id}</code>
       {run.status && <span className="meta">status: {run.status}</span>}
       {run.run_state === 'paused_hitl' && <span className="gate">⏸ gate: {run.hitl_phase}</span>}
-      {run.run_state === 'stalled' && <span className="gate">⚠ worker stopped — continue to resume</span>}
+      {run.run_state === 'stalled' && <span className="gate">⚠ {run.stalled_reason ? 'transient error' : 'worker stopped'} — continue to resume</span>}
       {running && nowDoing && <span className="nowdoing" title="latest live-log event">▸ {nowDoing}</span>}
     </div>
   )

@@ -69,6 +69,18 @@ reflector) so a run is auditable: you can see exactly which past lessons were in
 - (v2) Track whether a retrieved lesson actually helped → reinforce useful ones, drop dead
   weight.
 
+### Known limitation — outcome-validation can confirm a confounded diagnosis
+Observed on run `ba3a937c`: Track A failed for one reason (empty repo suite → jest
+"No tests found" exit 1, a harness gap fixed in ADR 0019), the reflector blamed another
+("jest can't discover `.agentic_tests/`" — demonstrably false, bare jest DOES discover it),
+the coder changed something, and the retry passed for a THIRD reason (the synth file now
+existed, so Track A had tests). The pass "confirmed" the misdiagnosis and stored it as a
+lesson whose guidance (add `.agentic_tests/` to the repo's jest `testMatch`) would actively
+worsen the underlying leak. Takeaway: a green retry proves the failure went away, not that
+the diagnosis was causal. Lessons stay advisory (never a gate) precisely because of this;
+manual pruning of confirmed-wrong lessons is part of hygiene until (v2) usefulness tracking
+exists.
+
 ## Consequences
 - Cross-run learning: repeated mistakes on a repo are surfaced to the agents instead of
   re-discovered. Subsumes TODO #7 (queryable reflections) and extends ADR 0010.

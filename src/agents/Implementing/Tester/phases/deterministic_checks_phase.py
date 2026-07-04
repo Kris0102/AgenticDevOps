@@ -144,10 +144,34 @@ class DeterministicChecksPhase(TestPhase):
 
     # ----------------------------------------------------------- javascript checks
     def _js_suite(self) -> CheckResult:
+        """Run the repo's OWN suite (Track A). Two hard-won caveats (run ba3a937c):
+        1. Bare `jest` DOES discover `.agentic_tests/` (default testMatch matches dot
+           dirs), so a stale Track-B synth file would leak into Track A on retries —
+           exclude it via CLI override when the test script is jest. The override
+           REPLACES jest's default ignore list, so /node_modules/ must be re-included.
+        2. A repo with zero tests makes jest exit 1 ("No tests found") — that is
+           'nothing to verify', not a failure; map it to SKIPPED like the pytest side
+           (exit 5), otherwise every first microtask on a testless repo fails Track A."""
         if not self._npm_has_script("test"):
             return skipped_check("integration_tests", "no real npm test script in package.json")
         cmd = ["npm", "test"]
-        return make_check("integration_tests", cmd, self.tools.run(cmd, timeout_s=300))
+        if self._npm_script_uses("test", "jest"):
+            cmd = ["npm", "test", "--", "--testPathIgnorePatterns", "/node_modules/", ".agentic_tests"]
+        result = self.tools.run(cmd, timeout_s=300)
+        blob = f"{result.get('stdout', '')} {result.get('stderr', '')}"
+        if int(result.get("exit_code", 1)) == 1 and "No tests found" in blob:
+            return skipped_check("integration_tests", "no discoverable tests in repo (jest: No tests found)")
+        return make_check("integration_tests", cmd, result)
+
+    def _npm_script_uses(self, name: str, needle: str) -> bool:
+        """True when package.json scripts.<name> invokes <needle> (e.g. jest) — gates
+        arg-forwarding so a non-jest test runner never receives jest-specific flags."""
+        probe = self.tools.run(
+            ["node", "-e",
+             f"const s=(require('./package.json').scripts||{{}}).{name}||'';"
+             f"process.exit(s.includes('{needle}') ? 0 : 1)"],
+            timeout_s=15)
+        return int(probe.get("exit_code", 1)) == 0
 
     def _js_build(self) -> Optional[CheckResult]:
         if not self._npm_has_script("build"):

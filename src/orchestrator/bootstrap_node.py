@@ -107,6 +107,8 @@ class BootStrapper:
         repo = self.state.get("repo")
         run_id = self.state.get("run_id")
         status = self.state.get("status")
+        objective = self.state.get("objective")
+        task = f"{objective.title}: {objective.description}" if objective else None
 
         with db.session_scope() as session:
             existing = session.get(Run, run_id)
@@ -119,6 +121,7 @@ class BootStrapper:
                     repo_url=repo.repo_url,
                     base_sha=repo.base_sha,
                     status=status.value,
+                    task_description=task,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 ))

@@ -1,7 +1,12 @@
 import { useState } from 'react'
 import { api } from './api'
 import { useRunStatus } from './hooks/useRunStatus'
+import { ArtifactsPanel } from './components/ArtifactsPanel'
+import { LessonsPanel } from './components/LessonsPanel'
+import { PipelineGraph } from './components/PipelineGraph'
 import { RunControls } from './components/RunControls'
+import { RunOverview } from './components/RunOverview'
+import { RunsHome } from './components/RunsHome'
 import { StatusBar } from './components/StatusBar'
 import { LogPanel } from './components/LogPanel'
 import { HitlPanel } from './components/HitlPanel'
@@ -36,9 +41,16 @@ export default function App() {
 
       {error && <div className="error">poll error: {error}</div>}
 
+      {/* Home: all previous runs as sortable boxes. Hidden while a run is open. */}
+      {!runId && <RunsHome activeRunId={runId} onOpen={setRunId} />}
+
       {runId && (
         <>
+          <button className="back" onClick={() => setRunId(null)}>← all runs</button>
+
           <StatusBar run={run} />
+
+          <PipelineGraph runId={runId} run={run} live={!terminal} />
 
           {run?.run_state === 'stalled' && (
             <div className="continue-bar">
@@ -58,10 +70,17 @@ export default function App() {
             />
           )}
 
+          <RunOverview runId={runId} live={!terminal} />
+
           <div className="cols">
-            <LogPanel runId={runId} active={!terminal} />
+            {/* live log is in-memory only — for a finished run it's empty noise, so the
+                durable history takes the full width instead */}
+            {!terminal && <LogPanel runId={runId} active={!terminal} />}
             <EventTimeline runId={runId} stop={terminal} />
           </div>
+
+          <ArtifactsPanel runId={runId} />
+          <LessonsPanel runId={runId} />
         </>
       )}
     </div>

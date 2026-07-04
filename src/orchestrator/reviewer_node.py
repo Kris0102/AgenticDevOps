@@ -68,6 +68,7 @@ class ReviewerRunner:
                 )
                 result = {"status": RunStatus.FAILED}
                 self._persist_results(db_session, result)
+                LessonStore.retract_run(db_session, self.run_id)   # failed run leaves no lessons
                 EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_FAILED, {
                     "reason": "planner-reviewer iteration cap exceeded",
                     "iterations": iteration.planner_reviewer_iteration_current,

@@ -110,6 +110,23 @@ class LessonStore:
         return 1
 
     @staticmethod
+    def retract_run(session, run_id: str) -> int:
+        """Delete every lesson a run stored, called when that run FAILS. A lesson is only
+        trustworthy if the run it came from actually worked out end-to-end: a run that
+        fails may have "confirmed" a lesson at a phase boundary (reviewer approve / tester
+        pass) that later proved confounded — the poison this guards against (ADR 0018 known
+        limitation). A genuinely good lesson is re-learned by the next successful run.
+        session.query(...).delete() only — the caller owns the commit."""
+        deleted = (
+            session.query(Lesson)
+            .filter(Lesson.run_id == run_id)
+            .delete(synchronize_session=False)
+        )
+        if deleted:
+            _log.info("lesson.retracted", run_id=run_id, count=deleted, reason="run failed")
+        return deleted
+
+    @staticmethod
     def record_test_lessons() -> int:
         """No-op by design (ADR 0018). A `fix_target == "test"` diagnosis means the
         SYNTHESIZED test was wrong, not the repo's code — it is specific to a non-deterministic
@@ -169,6 +186,25 @@ class LessonStore:
         except Exception as exc:  # retrieval is advisory — never break the caller
             _log.warning("lesson.retrieval_failed", repo_url=repo_url, scope=scope, error=str(exc))
             return []
+
+    @staticmethod
+    def list_for_repo(repo_url: str, limit: int = 100) -> List[Lesson]:
+        """All lessons for a repo, newest first — the dashboard browse view ("what past
+        runs taught the system"). Plain chronological listing, NOT semantic retrieval
+        (that's find_lessons); detached rows via expunge so they outlive the session."""
+        if not repo_url:
+            return []
+        with db.session_scope() as session:
+            rows = (
+                session.query(Lesson)
+                .filter(Lesson.repo_url == repo_url)
+                .order_by(Lesson.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
 
     @staticmethod
     def render_block(hits: List[Dict[str, Any]]) -> str:

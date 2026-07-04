@@ -4,6 +4,7 @@ from typing import Any, Dict
 from sqlalchemy.orm import Session
 
 from db.event_log import EventLogger
+from db.lessons import LessonStore
 from db.models import Run
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import BlackboardState, EventType, RunStatus
@@ -31,6 +32,13 @@ class RunFailureHandler:
         if run_record:
             run_record.status = RunStatus.FAILED.value
             run_record.updated_at = datetime.now(timezone.utc)
+
+        # Don't let a failed run leave lessons behind — they'd advise future runs off a run
+        # that didn't work out (ADR 0018). Best-effort: never let cleanup break failure-handling.
+        try:
+            LessonStore.retract_run(session, run_id)
+        except Exception:
+            pass
 
         if not state:
               EventLogger.log(session, run_id, actor, EventType.RUN_FAILED, {

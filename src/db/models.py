@@ -21,6 +21,10 @@ class Run(Base):
     repo_url: Mapped[str] = mapped_column(String, nullable=False)
     base_sha: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    # The human task the run was asked to do — the dashboard's "what was this run about".
+    # Nullable: pre-existing runs are lazily backfilled from their checkpoint on first
+    # read (Service._ensure_task).
+    task_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

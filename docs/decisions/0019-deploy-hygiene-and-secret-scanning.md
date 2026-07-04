@@ -31,9 +31,14 @@ hard-blocks a leaking push.
    git-ignored `.agentic_tests/` dir (depth-1 preserved so relative imports resolve), run as
    verification, saved as run artifacts, never committed. The Coder's `__tests__/` is the
    shipped suite; Track A already runs it (`npm test` / `pytest`), so the Tester still
-   executes the Coder's tests — which resolves #37 without duplication. (`pytest` gets
-   `--ignore=.agentic_tests`; the jest `npm test` path relies on synthesis running *after*
-   Track A — a stale synth file only matters on a re-synthesis re-run, accepted as minor.)
+   executes the Coder's tests — which resolves #37 without duplication. Track-separation is
+   enforced on BOTH engines: `pytest` gets `--ignore=.agentic_tests`, and the jest path
+   forwards `--testPathIgnorePatterns /node_modules/ .agentic_tests` (bare `jest` DOES
+   discover dot dirs — observed leaking a stale synth file into Track A on run `ba3a937c`;
+   the original "synthesis runs after Track A" assumption only held for the first
+   iteration). Track B runs its file via `--runTestsByPath` (exact path, immune to the
+   repo's own testMatch). Additionally, a repo with ZERO tests makes jest exit 1
+   ("No tests found") — mapped to SKIPPED like pytest's exit 5, not a Track A failure.
 
 3. **gitleaks hard-blocks a leaking push.** gitleaks is baked into the sandbox image;
    `GitOps.scan_secrets` runs it over the working tree BEFORE the push and returns REDACTED

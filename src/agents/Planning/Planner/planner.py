@@ -150,23 +150,21 @@ class Planner:
             obj_text = "Objective: Analyze code and prepare next steps."
 
         # Detect revision pass: prior plan exists and carries human/reviewer rejection notes.
-        # On a revision the repo is unchanged so re-investigation wastes tool budget.
         prior_plan = state.get("plan")
         is_revision = prior_plan is not None and bool(prior_plan.review_feedback)
         revision_context: Optional[str] = _build_revision_context(prior_plan) if is_revision and prior_plan else None
         if is_revision:
-            _log.info("planner.revision_pass", reason="prior feedback present, skipping investigation")
+            _log.info("planner.revision_pass", reason="prior feedback present — re-investigating to re-ground")
 
-        # 1. Investigation Phase
+        # 1. Investigation Phase — ALWAYS re-investigate on a revision. Skipping it (to save
+        # tool budget) was a false economy: a plan is usually rejected because it MISREAD the
+        # repo, so the planner must re-read the real files rather than revise off its own
+        # hallucinated prior plan. On a revision the investigation is TARGETED at the
+        # reviewer's rejection notes (see build_investigation_prompt).
         investigation_summary = "No investigation performed (no tools provided)."
-        if is_revision:
-            investigation_summary = (
-                "Revision pass — investigation skipped. "
-                "See REVISION PASS block in synthesis prompt for prior plan and rejection notes."
-            )
-        elif self.investigator_agent:
-            _log.info("planner.investigating", tools=len(self.tools))
-            investigation_prompt = build_investigation_prompt(obj_text)
+        if self.investigator_agent:
+            _log.info("planner.investigating", tools=len(self.tools), revision=is_revision)
+            investigation_prompt = build_investigation_prompt(obj_text, revision_context)
 
             try:
                 investigative_state = self.investigator_agent.invoke(

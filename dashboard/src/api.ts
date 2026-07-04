@@ -1,4 +1,10 @@
-// Typed client for the FastAPI control plane. Shapes mirror src/api/responses/responses.py.
+// Typed axios client for the FastAPI control plane.
+// Every interface here mirrors a Pydantic model in src/api/responses/responses.py — keep
+// them in sync so the dashboard is end-to-end type-safe against the backend contract.
+
+import axios, { AxiosError } from 'axios'
+
+// ----------------------------------------------------------------- response models
 
 export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'stalled'
 
@@ -8,6 +14,29 @@ export interface RunResponse {
   status?: string | null
   hitl_phase?: string | null
   hitl_approval_id?: string | null
+}
+
+// A run row for the previous-runs home list (GET /runs). Extra fields are the box's
+// labels + sort keys. Mirrors responses.RunResponseWithDetails.
+export interface RunResponseWithDetails extends RunResponse {
+  repo_url: string
+  repo_name: string
+  base_sha?: string | null
+  task_description?: string | null   // what the run was asked to do
+  pushed_files?: number | null       // files shipped by the deploy push
+  created_at: string   // ISO 8601
+  updated_at: string   // ISO 8601
+}
+
+// One per-repo lesson (ADR 0018). Mirrors responses.LessonView.
+export interface LessonView {
+  lesson_id: string
+  run_id: string
+  scope: string
+  failure_type?: string | null
+  summary: string
+  guidance?: string | null
+  created_at: string
 }
 
 export interface MicrotaskView {
@@ -63,34 +92,90 @@ export interface LogView {
   fields: Record<string, unknown>
 }
 
-async function asJson<T>(r: Response): Promise<T> {
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
-  return r.json() as Promise<T>
+// Durable run-detail views (mirror responses.ArtifactView / ArtifactContent / MicrotaskRow).
+export interface ArtifactView {
+  artifact_id: string
+  kind: string
+  created_at: string
+  size: number
+  preview: string
 }
+
+export interface ArtifactContent extends ArtifactView {
+  content_text: string
+}
+
+export interface MicrotaskRow {
+  microtask_id: string
+  idx: number
+  title: string
+  status: string
+  attempts: number
+  target_files: string[]
+  files_touched: string[]
+}
+
+// ----------------------------------------------------------------- client
+
+// Relative baseURL → served same-origin (or via the Vite dev proxy). The interceptor
+// normalizes axios errors to a plain Error(message) so existing `catch (e) { alert(String(e)) }`
+// call sites keep working, and the FastAPI `detail` string surfaces when present.
+const http = axios.create({
+  baseURL: '',
+  headers: { 'content-type': 'application/json' },
+})
+
+http.interceptors.response.use(
+  (res) => res,
+  (err: AxiosError<{ detail?: string }>) => {
+    const status = err.response?.status
+    const detail = err.response?.data?.detail ?? err.message
+    return Promise.reject(new Error(status ? `${status} ${detail}` : String(detail)))
+  },
+)
 
 export const api = {
   createRun: (body: unknown) =>
-    fetch('/runs', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(asJson<RunResponse>),
+    http.post<RunResponse>('/runs', body).then((r) => r.data),
 
-  getRun: (id: string) => fetch(`/runs/${id}`).then(asJson<RunResponse>),
+  getRun: (id: string) => http.get<RunResponse>(`/runs/${id}`).then((r) => r.data),
 
-  getHitl: (id: string) => fetch(`/runs/${id}/hitl`).then(asJson<HitlReviewContext>),
+  // All previous runs, newest first — powers the home list.
+  getRunsDetails: () => http.get<RunResponseWithDetails[]>('/runs').then((r) => r.data),
+
+  getHitl: (id: string) =>
+    http.get<HitlReviewContext>(`/runs/${id}/hitl`).then((r) => r.data),
 
   getEvents: (id: string, after = 0) =>
-    fetch(`/runs/${id}/events?after=${after}`).then(asJson<EventView[]>),
+    http.get<EventView[]>(`/runs/${id}/events`, { params: { after } }).then((r) => r.data),
 
   resume: (id: string, decision: 'approve' | 'reject', note?: string) =>
-    fetch(`/runs/${id}/resume`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ decision, note: note ?? null }),
-    }).then(asJson<RunResponse>),
+    http.post<RunResponse>(`/runs/${id}/resume`, { decision, note: note ?? null }).then((r) => r.data),
 
   // Re-drive a stalled run (worker died mid-graph) from its checkpoint. Not for HITL gates.
   continueRun: (id: string) =>
-    fetch(`/runs/${id}/continue`, { method: 'POST' }).then(asJson<RunResponse>),
+    http.post<RunResponse>(`/runs/${id}/continue`).then((r) => r.data),
+
+  // Durable run detail: artifact browse list (no bodies), one artifact's body, microtask board.
+  getArtifacts: (id: string) =>
+    http.get<ArtifactView[]>(`/runs/${id}/artifacts`).then((r) => r.data),
+
+  getArtifact: (id: string, artifactId: string) =>
+    http.get<ArtifactContent>(`/runs/${id}/artifacts/${artifactId}`).then((r) => r.data),
+
+  getMicrotasks: (id: string) =>
+    http.get<MicrotaskRow[]>(`/runs/${id}/microtasks`).then((r) => r.data),
+
+  getLessons: (id: string) =>
+    http.get<LessonView[]>(`/runs/${id}/lessons`).then((r) => r.data),
+
+  getLogs: (id: string, after = 0) =>
+    http.get<LogView[]>(`/runs/${id}/logs`, { params: { after } }).then((r) => r.data),
+
+  // Export is a plain download link (Content-Disposition names the file) — see exportUrl.
+  exportUrl: (id: string) => `/runs/${id}/export`,
+
+  // Restore a previously exported bundle (fresh DB / other machine). 409 if the run exists.
+  importRun: (bundle: unknown) =>
+    http.post<RunResponseWithDetails>('/runs/import', bundle).then((r) => r.data),
 }

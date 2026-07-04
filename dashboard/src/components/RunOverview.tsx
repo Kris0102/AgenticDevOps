@@ -1,0 +1,181 @@
+import { useEffect, useMemo, useState } from 'react'
+import { api, type EventView, type MicrotaskRow, type RunResponseWithDetails } from '../api'
+
+// "What happened in this run" at a glance, built ONLY from durable tables (events +
+// microtasks) — so it's just as rich for a run finished last week as for a live one.
+// Consumed by App above the log/history panels.
+
+function fmtDuration(ms: number): string {
+  if (ms <= 0 || !isFinite(ms)) return '—'
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+const DONE = new Set(['COMPLETED', 'DONE'])
+
+// Blackboard status → coarse phase for the Gantt strip.
+function phaseOf(status: string): string {
+  if (status.includes('BOOTSTRAP')) return 'setup'
+  if (status.includes('PLAN')) return 'plan'
+  if (status.includes('CODE')) return 'code'
+  if (status.includes('TEST') || status.includes('REFLECT')) return 'test'
+  if (status.includes('HITL')) return 'gate'
+  if (status.includes('DEPLOY')) return 'deploy'
+  return 'other'
+}
+
+interface PhaseSeg {
+  phase: string
+  ms: number
+  pct: number
+}
+
+// Consecutive run.status_changed events → proportional phase segments (where time went).
+function buildPhases(events: EventView[]): PhaseSeg[] {
+  const changes = events.filter((e) => e.event_type === 'run.status_changed')
+  if (changes.length === 0 || events.length < 2) return []
+  const end = new Date(events[events.length - 1].ts).getTime()
+  const raw: { phase: string; ms: number }[] = []
+  for (let i = 0; i < changes.length; i++) {
+    const from = new Date(changes[i].ts).getTime()
+    const to = i + 1 < changes.length ? new Date(changes[i + 1].ts).getTime() : end
+    const phase = phaseOf(String(changes[i].payload?.to ?? ''))
+    const ms = Math.max(0, to - from)
+    if (ms === 0) continue
+    // merge adjacent same-phase segments so the strip stays readable
+    const last = raw[raw.length - 1]
+    if (last && last.phase === phase) last.ms += ms
+    else raw.push({ phase, ms })
+  }
+  const total = raw.reduce((acc, s) => acc + s.ms, 0)
+  return total > 0 ? raw.map((s) => ({ ...s, pct: (s.ms / total) * 100 })) : []
+}
+
+export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
+  const [events, setEvents] = useState<EventView[]>([])
+  const [tasks, setTasks] = useState<MicrotaskRow[]>([])
+  const [info, setInfo] = useState<RunResponseWithDetails | null>(null)
+
+  // Run labels (task, repo) — picked from the runs list; small, single-user deployment.
+  useEffect(() => {
+    setInfo(null)
+    api.getRunsDetails()
+      .then((rs) => setInfo(rs.find((r) => r.run_id === runId) ?? null))
+      .catch(() => {})
+  }, [runId])
+
+  useEffect(() => {
+    let alive = true
+    let cursor = 0
+    let acc: EventView[] = []
+    const load = async () => {
+      try {
+        // Page through everything new since the last tick (events are the source of truth).
+        for (;;) {
+          const batch = await api.getEvents(runId, cursor)
+          if (!alive || batch.length === 0) break
+          cursor = batch[batch.length - 1].seq
+          acc = [...acc, ...batch]
+          if (batch.length < 200) break
+        }
+        if (alive) setEvents(acc)
+        const mts = await api.getMicrotasks(runId)
+        if (alive) setTasks(mts)
+      } catch {
+        /* transient — next tick retries */
+      }
+    }
+    setEvents([]); setTasks([]); acc = []
+    load()
+    if (!live) return () => { alive = false }
+    const t = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [runId, live])
+
+  const stats = useMemo(() => {
+    const count = (type: string) => events.filter((e) => e.event_type === type).length
+    const first = events[0]?.ts
+    const last = events[events.length - 1]?.ts
+    const duration = first && last ? new Date(last).getTime() - new Date(first).getTime() : NaN
+    const pushed = events.find((e) => e.event_type === 'gitops.pushed')
+    const toolMs = events
+      .filter((e) => e.event_type === 'tool.executed')
+      .reduce((acc, e) => acc + (typeof e.payload?.duration_ms === 'number' ? (e.payload.duration_ms as number) : 0), 0)
+    return {
+      duration: fmtDuration(duration),
+      reviews: count('plan.reviewed'),
+      diagnoses: count('reflection.created'),
+      failures: count('microtask.failed') + count('run.failed'),
+      gates: count('hitl.decided'),
+      tools: count('tool.executed'),
+      toolTime: fmtDuration(toolMs),
+      branch: pushed ? String(pushed.payload?.branch ?? '') : null,
+      blocked: count('gitops.secret_blocked') > 0,
+    }
+  }, [events])
+
+  const phases = useMemo(() => buildPhases(events), [events])
+
+  const done = tasks.filter((t) => DONE.has(t.status)).length
+
+  return (
+    <div className="panel overview">
+      <div className="ov-head">
+        <h3>run overview</h3>
+        <a className="export" href={api.exportUrl(runId)} download title="download this run's full record (events, artifacts, microtasks) as JSON">
+          ⇓ export
+        </a>
+      </div>
+
+      {info?.task_description && <p className="ov-task">{info.task_description}</p>}
+
+      <div className="tiles">
+        <div className="tile"><span className="tv">{tasks.length ? `${done}/${tasks.length}` : '—'}</span><span className="tl">microtasks done</span></div>
+        <div className="tile"><span className="tv">{stats.duration}</span><span className="tl">duration</span></div>
+        <div className="tile"><span className="tv">{stats.reviews}</span><span className="tl">plan reviews</span></div>
+        <div className="tile"><span className="tv">{stats.gates}</span><span className="tl">human decisions</span></div>
+        <div className={`tile ${stats.failures + stats.diagnoses > 0 ? 'warn' : ''}`}>
+          <span className="tv">{stats.failures + stats.diagnoses}</span><span className="tl">failures fixed</span>
+        </div>
+        <div className="tile"><span className="tv">{stats.tools}</span><span className="tl">tool calls</span></div>
+        <div className="tile"><span className="tv">{stats.toolTime}</span><span className="tl">tool time</span></div>
+      </div>
+
+      {phases.length > 0 && (
+        <div className="gantt" title="where the run's time went">
+          {phases.map((p, i) => (
+            <div
+              key={i}
+              className={`gseg ph-${p.phase}`}
+              style={{ width: `${Math.max(p.pct, 1.5)}%` }}
+              title={`${p.phase} — ${fmtDuration(p.ms)}`}
+            >
+              {p.pct > 9 && <span>{p.phase}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {stats.blocked && <div className="error">⛔ push was blocked — secret findings in the working tree</div>}
+      {stats.branch && <div className="pushedto">pushed to <code>{stats.branch}</code></div>}
+
+      {tasks.length > 0 && (
+        <div className="mtboard">
+          {tasks.map((t) => (
+            <div key={t.microtask_id} className={`mtrow ${DONE.has(t.status) ? 'ok' : t.status === 'FAILED' ? 'bad' : ''}`}>
+              <span className="mtidx">{t.idx}</span>
+              <span className="mttitle" title={t.title}>{t.title}</span>
+              <span className="mtfiles" title={(t.files_touched.length ? t.files_touched : t.target_files).join('\n')}>
+                {(t.files_touched.length ? t.files_touched : t.target_files).length} files
+              </span>
+              {t.attempts > 1 && <span className="mtattempts">{t.attempts} attempts</span>}
+              <span className="mstatus">{t.status.toLowerCase()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

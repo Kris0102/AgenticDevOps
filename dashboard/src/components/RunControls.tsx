@@ -30,17 +30,7 @@ export function RunControls({ onRun }: { onRun: (id: string) => void }) {
 
   return (
     <section className="controls">
-      <div className="row open-row">
-        <input
-          placeholder="open existing run_id…"
-          value={existing}
-          onChange={(e) => setExisting(e.target.value)}
-        />
-        <button disabled={!existing.trim()} onClick={() => onRun(existing.trim())}>
-          Open
-        </button>
-      </div>
-
+  
       <details className="newrun">
         <summary>Start a new run</summary>
         <div className="grid">

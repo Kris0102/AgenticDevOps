@@ -28,7 +28,9 @@ class ExecutePhase(TestPhase):
 
     def run(self, ctx: TestContext) -> TestContext:
         if ctx.project_type == "javascript":
-            cmd = ["npx", "jest", ctx.synth_test_file, "--no-coverage"]
+            # --runTestsByPath: treat the arg as an exact file, not a pattern filtered
+            # through the repo's testMatch — a repo config must never hide our synth file.
+            cmd = ["npx", "jest", "--runTestsByPath", ctx.synth_test_file, "--no-coverage"]
         else:
             cmd = ["python", "-m", "pytest", "-q", ctx.synth_test_file]
         _log.info("tester.run_tests.start", run_id=ctx.run_id,

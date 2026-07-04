@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +50,76 @@ class RunResponse(BaseModel):
     # a gate is waiting AND which kind, so it can fetch the right review context.
     hitl_phase: Optional[str] = None
     hitl_approval_id: Optional[str] = None
+
+class RunResponseWithDetails(RunResponse):
+    """A run row for the dashboard's previous-runs list. Everything the run-box needs as
+    labels + sort keys, so the list renders from one `GET /runs` call."""
+    repo_url: str
+    repo_name: str                    # owner/repo derived from repo_url — the box's title
+    base_sha: Optional[str] = None
+    task_description: Optional[str] = None   # what the run was asked to do
+    pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)
+    created_at: datetime
+    updated_at: datetime
+    
+    
+    
+
+
+# --------------------------------------------------------------- run detail views
+# Durable per-run data (events/artifacts/microtasks tables) shaped for the dashboard's
+# run-detail page — this is what makes an OLD run readable after its live log is gone.
+
+class ArtifactView(BaseModel):
+    """One artifacts-table row WITHOUT the (potentially huge) body — the browse list.
+    Fetch the body on demand via GET /runs/{id}/artifacts/{artifact_id}."""
+    artifact_id: str
+    kind: str                      # plan | review | diff | test-<check> | reflection | ...
+    created_at: datetime
+    size: int                      # len(content_text) — lets the UI hint big payloads
+    preview: str                   # first line(s), truncated — list-item subtitle
+
+
+class ArtifactContent(ArtifactView):
+    """Full artifact body — one artifact, fetched when the user opens it."""
+    content_text: str
+
+
+class MicrotaskRow(BaseModel):
+    """One microtasks-table row for the run-detail progress board (durable — works for
+    finished runs, unlike the checkpoint-derived HITL PlanView)."""
+    microtask_id: str
+    idx: int
+    title: str
+    status: str
+    attempts: int
+    target_files: List[str]
+    files_touched: List[str]
+
+
+class LessonView(BaseModel):
+    """One per-repo lesson (ADR 0018) for the dashboard — what past runs on this repo
+    taught the system."""
+    lesson_id: str
+    run_id: str
+    scope: str                     # plan | code
+    failure_type: Optional[str] = None
+    summary: str
+    guidance: Optional[str] = None
+    created_at: datetime
+
+
+class RunExportBundle(BaseModel):
+    """Self-contained snapshot of one run's durable record — download as
+    `agentic_run_<id>_<timestamp>.json`, import on another machine/DB via
+    POST /runs/import. Carries its own identity (run_id inside `run`) so the import
+    always lands on the correct run."""
+    format_version: int = 1
+    exported_at: datetime
+    run: RunResponseWithDetails
+    events: List[EventView]
+    microtasks: List[MicrotaskRow]
+    artifacts: List[ArtifactContent]           # full bodies — the point of an export
 
 
 # --------------------------------------------------------------- HITL review views

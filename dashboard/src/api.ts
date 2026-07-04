@@ -14,6 +14,7 @@ export interface RunResponse {
   status?: string | null
   hitl_phase?: string | null
   hitl_approval_id?: string | null
+  stalled_reason?: string | null   // transient-error reason when run_state === 'stalled'
 }
 
 // A run row for the previous-runs home list (GET /runs). Extra fields are the box's

@@ -5,10 +5,9 @@ import { buildRunRequest } from '../defaultRunRequest'
 // plan/code = per-step review; deploy = one holistic review of the full diff before push
 const GATES = ['plan', 'code', 'test', 'deploy'] as const
 
-// Open an existing run by id, or trigger a new one. New-run sends a full RunRequest
-// (defaults filled by buildRunRequest); the human only supplies repo/task/gates.
-export function RunControls({ onRun }: { onRun: (id: string) => void }) {
-  const [existing, setExisting] = useState('')
+// New-run form. Visibility is owned by the header (App); this is the panel body. Sends a
+// full RunRequest (defaults filled by buildRunRequest); the human supplies repo/task/gates.
+export function RunControls({ onRun, onCancel }: { onRun: (id: string) => void; onCancel: () => void }) {
   const [repoUrl, setRepoUrl] = useState('')
   const [baseSha, setBaseSha] = useState('')
   const [task, setTask] = useState('')
@@ -29,39 +28,38 @@ export function RunControls({ onRun }: { onRun: (id: string) => void }) {
   }
 
   return (
-    <section className="controls">
-  
-      <details className="newrun">
-        <summary>Start a new run</summary>
-        <div className="grid">
-          <input placeholder="repo url" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
-          <input
-            placeholder="base sha (optional)"
-            value={baseSha}
-            onChange={(e) => setBaseSha(e.target.value)}
-          />
-          <textarea
-            placeholder="task description"
-            value={task}
-            onChange={(e) => setTask(e.target.value)}
-          />
-          <div className="gates">
+    <section className="controls newrun-panel">
+      <div className="np-grid">
+        <label className="fld">
+          <span>repository</span>
+          <input placeholder="https://github.com/owner/repo" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
+        </label>
+        <label className="fld">
+          <span>base sha <em>optional</em></span>
+          <input placeholder="leave empty for a new repo" value={baseSha} onChange={(e) => setBaseSha(e.target.value)} />
+        </label>
+        <label className="fld span2">
+          <span>task</span>
+          <textarea placeholder="what should the agents implement?" value={task} onChange={(e) => setTask(e.target.value)} />
+        </label>
+        <div className="fld span2">
+          <span>human review gates</span>
+          <div className="gatechips">
             {GATES.map((g) => (
-              <label key={g}>
-                <input
-                  type="checkbox"
-                  checked={!!gates[g]}
-                  onChange={(e) => setGates({ ...gates, [g]: e.target.checked })}
-                />{' '}
-                {g} gate
+              <label key={g} className={`chip ${gates[g] ? 'on' : ''}`}>
+                <input type="checkbox" checked={!!gates[g]} onChange={(e) => setGates({ ...gates, [g]: e.target.checked })} />
+                {g}
               </label>
             ))}
           </div>
-          <button disabled={busy || !repoUrl.trim() || !task.trim()} onClick={start}>
-            {busy ? 'starting…' : 'Start run'}
-          </button>
         </div>
-      </details>
+      </div>
+      <div className="np-actions">
+        <button className="ghost" onClick={onCancel}>Cancel</button>
+        <button className="primary" disabled={busy || !repoUrl.trim() || !task.trim()} onClick={start}>
+          {busy ? 'starting…' : 'Start run'}
+        </button>
+      </div>
     </section>
   )
 }

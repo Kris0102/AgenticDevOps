@@ -6,6 +6,7 @@ from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
+from Exceptions.RetriableError import RetriableError
 from agents.Implementing.Tester.pipeline import TestPipeline
 from agents.Implementing.Tester.results import CheckResult, CheckStatus
 from agents.Implementing.Tester.tester_tools import TesterTools
@@ -59,6 +60,8 @@ class TesterRunner:
             except RunExecutionError as error:
                 _log.error("tester.run_execution_error", error=str(error))
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, error)
+            except RetriableError:
+                raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
                 # Don't let a tester crash escape graph.invoke (→ ASGI 500 + stuck run).
                 # End the run cleanly as FAILED; the error is logged for debugging.

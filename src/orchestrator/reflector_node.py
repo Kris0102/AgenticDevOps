@@ -5,6 +5,7 @@ from db.db import db
 from db.event_log import EventLogger
 from db.models import Artifact as DbArtifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
+from Exceptions.RetriableError import RetriableError
 from agents.Implementing.Reflector.reflector import Reflector
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
 from observability import Category, get_logger
@@ -68,6 +69,8 @@ class ReflectorRunner:
                 return RunFailureHandler.handle(
                     db_session, self.run_id, self.name, self.state, error
                 )
+            except RetriableError:
+                raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
                 # Convert to a clean FAILED (phase-attributed) instead of unwinding into
                 # graph.invoke. The _drive guard is the net; this gives the better label.

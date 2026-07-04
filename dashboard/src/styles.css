@@ -37,19 +37,38 @@ body {
 
 .app { max-width: 1200px; margin: 0 auto; padding: 16px; }
 
-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
-header h1 { font-size: 20px; margin: 0; }
-header .tagline { color: var(--muted); font-size: 13px; }
+/* ---- top bar ---- */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 4px 2px 14px; margin-bottom: 14px; border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: baseline; gap: 9px; }
+.brand .logo { color: var(--accent); font-size: 15px; transform: translateY(1px); }
+.brand .brand-name { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+.brand .tagline { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
 
-/* ---- controls ---- */
-.controls { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-.row { display: flex; gap: 8px; }
-.open-row input { flex: 1; }
-.newrun { margin-top: 10px; }
-.newrun summary { cursor: pointer; color: var(--accent); }
-.grid { display: grid; gap: 8px; margin-top: 10px; }
-.gates { display: flex; gap: 16px; color: var(--muted); }
-.gates label { cursor: pointer; }
+button.primary { background: var(--accent); color: #0d1117; font-weight: 600; }
+button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+button.ghost:hover { border-color: var(--muted); }
+.newrun-toggle.is-open { background: var(--panel); color: var(--fg); border: 1px solid var(--border); }
+
+/* ---- new-run panel ---- */
+.newrun-panel { animation: slideDown 0.18s ease; }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } }
+.np-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.fld { display: flex; flex-direction: column; gap: 5px; }
+.fld.span2 { grid-column: 1 / -1; }
+.fld > span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.fld > span em { font-style: normal; text-transform: none; opacity: 0.7; }
+.gatechips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+  font-size: 13px; color: var(--muted); transition: all 0.15s;
+}
+.chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+.chip.on { color: var(--accent); border-color: var(--accent); background: #1f6feb1a; }
+.np-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 input, textarea, button { font: inherit; }
 input, textarea {
@@ -83,10 +102,32 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   color: var(--fg);
 }
 .continue-bar span { color: var(--muted); font-size: 13px; }
+.continue-bar code { font-family: var(--mono); color: var(--yellow); }
 button.continue { background: var(--yellow); color: #0d1117; white-space: nowrap; }
 
 /* ---- runs home ---- */
 .runshome { margin-bottom: 12px; }
+
+/* run pulse strip */
+.pulse { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 16px; }
+.pstat {
+  background: linear-gradient(180deg, var(--panel) 0%, #10151c 100%);
+  border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.pstat .pv { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
+.pstat .pl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.pstat.accent .pv { color: var(--accent); }
+.pstat.ok .pv { color: var(--green); }
+.pstat.bad .pv { color: var(--red); }
+@media (max-width: 720px) { .pulse { grid-template-columns: repeat(2, 1fr); } }
+
+.rh-empty { text-align: center; padding: 44px 16px; color: var(--muted); }
+.rh-empty-mark { display: block; font-size: 34px; color: var(--border); margin-bottom: 8px; }
+.rh-empty strong { color: var(--fg); font-weight: 600; }
+
+/* running indicator on a run box badge */
+.livedot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.4s infinite; }
 .rh-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .rh-head h3 { margin: 0; font-size: 14px; }
 .rh-count { color: var(--muted); font-weight: 400; margin-left: 6px; }
@@ -102,13 +143,14 @@ button.continue { background: var(--yellow); color: #0d1117; white-space: nowrap
 .runbox {
   display: flex; flex-direction: column; gap: 8px; text-align: left; cursor: pointer;
   background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--border);
-  border-radius: 8px; padding: 10px 12px; color: var(--fg); font: inherit;
+  border-radius: 8px; padding: 11px 13px; color: var(--fg); font: inherit;
+  transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
 }
-.runbox:hover { border-color: var(--accent); }
+.runbox:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 6px 18px #0007; }
 .runbox.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .rb-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rb-repo { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.runbox .badge { text-transform: uppercase; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: var(--border); white-space: nowrap; }
+.runbox .badge { display: inline-flex; align-items: center; gap: 5px; text-transform: uppercase; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--border); white-space: nowrap; }
 .rb-task { color: var(--muted); font-size: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .rb-meta { display: flex; gap: 10px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
 .rb-sha { font-family: var(--mono); }

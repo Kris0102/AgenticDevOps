@@ -15,6 +15,7 @@ import { EventTimeline } from './components/EventTimeline'
 export default function App() {
   const [runId, setRunId] = useState<string | null>(null)
   const [continuing, setContinuing] = useState(false)
+  const [showNew, setShowNew] = useState(false)
   const { run, error } = useRunStatus(runId)
   const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
 
@@ -30,14 +31,24 @@ export default function App() {
     }
   }
 
+  const openRun = (id: string) => { setShowNew(false); setRunId(id) }
+
   return (
     <div className="app">
-      <header>
-        <h1>AgenticDevOps</h1>
-        <span className="tagline">control dashboard</span>
+      <header className="topbar">
+        <div className="brand">
+          <span className="logo" aria-hidden>◆</span>
+          <span className="brand-name">AgenticDevOps</span>
+          <span className="tagline">control plane</span>
+        </div>
+        {!runId && (
+          <button className={`primary newrun-toggle ${showNew ? 'is-open' : ''}`} onClick={() => setShowNew((v) => !v)}>
+            {showNew ? 'Close' : '＋ New run'}
+          </button>
+        )}
       </header>
 
-      <RunControls onRun={setRunId} />
+      {!runId && showNew && <RunControls onRun={openRun} onCancel={() => setShowNew(false)} />}
 
       {error && <div className="error">poll error: {error}</div>}
 
@@ -54,7 +65,11 @@ export default function App() {
 
           {run?.run_state === 'stalled' && (
             <div className="continue-bar">
-              <span>This run stopped mid-graph (its worker died). Resume from the last checkpoint.</span>
+              <span>
+                {run.stalled_reason
+                  ? <>Stalled on a transient error — <code>{run.stalled_reason}</code>. Continue to retry from the last checkpoint.</>
+                  : <>This run stopped mid-graph (its worker died). Resume from the last checkpoint.</>}
+              </span>
               <button className="continue" disabled={continuing} onClick={onContinue}>
                 {continuing ? 'continuing…' : 'Continue run'}
               </button>

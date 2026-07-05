@@ -12,6 +12,7 @@ from typing import Optional
 
 from db.db import db
 from db.models import AppSettings as AppSettingsRow
+from db.secrets import decrypt, encrypt
 from observability import Category, get_logger
 from orchestrator.state import (
     AppSettings,
@@ -47,39 +48,57 @@ def _env_seed() -> AppSettings:
                            max_retries=int(os.getenv("LLM_RETRIES", "3"))),
         knobs=Knobs(),          # field defaults already mirror the old env defaults
         defaults=RunDefaults(),
+        github_token=os.getenv("GITHUB_TOKEN") or None,
     )
+
+
+def _encrypt_secrets(s: AppSettings) -> AppSettings:
+    """Secrets → `enc:` Fernet tokens for the stored JSON (idempotent)."""
+    return s.model_copy(update={
+        "providers": [p.model_copy(update={"api_key": encrypt(p.api_key)}) for p in s.providers],
+        "github_token": encrypt(s.github_token),
+    })
+
+
+def _decrypt_secrets(s: AppSettings) -> AppSettings:
+    """Stored `enc:` tokens → raw secrets (legacy plaintext passes through)."""
+    return s.model_copy(update={
+        "providers": [p.model_copy(update={"api_key": decrypt(p.api_key)}) for p in s.providers],
+        "github_token": decrypt(s.github_token),
+    })
 
 
 class SettingsStore:
     @staticmethod
     def get() -> AppSettings:
-        """Full settings WITH secrets — backend-internal (factory, resolution). Seeds the
-        row from env on first read."""
+        """Full settings WITH raw secrets — backend-internal only (factory, gitops,
+        resolution). Seeds the row from env on first read; decrypts stored secrets."""
         with db.session_scope() as session:
             row = session.get(AppSettingsRow, 1)
             if row is None:
                 seed = _env_seed()
-                session.add(AppSettingsRow(id=1, config=seed.model_dump(mode="json")))
+                session.add(AppSettingsRow(id=1, config=_encrypt_secrets(seed).model_dump(mode="json")))
                 _log.info("settings.seeded_from_env", providers=len(seed.providers))
                 return seed
-            return AppSettings.model_validate(row.config)
+            return _decrypt_secrets(AppSettings.model_validate(row.config))
 
     @staticmethod
     def get_public() -> AppSettings:
-        """Settings for the UI — every provider api_key masked (never return raw keys)."""
+        """Settings for the UI — every secret (provider api_key, github_token) masked."""
         s = SettingsStore.get()
         return s.model_copy(update={
             "providers": [
                 p.model_copy(update={"api_key": _MASK if p.api_key else None})
                 for p in s.providers
-            ]
+            ],
+            "github_token": _MASK if s.github_token else None,
         })
 
     @staticmethod
     def update(new: AppSettings) -> AppSettings:
-        """Persist a full settings object. Any provider whose api_key comes back as the mask
-        (UI didn't retype it) keeps its stored key — so editing other fields never wipes a
-        key. Returns the masked view."""
+        """Persist a full settings object. Any secret that comes back as the mask (UI
+        didn't retype it) keeps its stored value — editing other fields never wipes a
+        key. Secrets are encrypted at rest. Returns the masked view."""
         current = SettingsStore.get()
         stored_keys = {p.id: p.api_key for p in current.providers}
         merged_providers = [
@@ -87,14 +106,24 @@ class SettingsStore:
             else p.model_copy(update={"api_key": stored_keys.get(p.id)})
             for p in new.providers
         ]
-        merged = new.model_copy(update={"providers": merged_providers})
+        token = new.github_token if (new.github_token and new.github_token != _MASK) else (
+            current.github_token if new.github_token == _MASK else new.github_token
+        )
+        merged = new.model_copy(update={"providers": merged_providers, "github_token": token})
+        payload = _encrypt_secrets(merged).model_dump(mode="json")
         with db.session_scope() as session:
             row = session.get(AppSettingsRow, 1)
             if row is None:
-                session.add(AppSettingsRow(id=1, config=merged.model_dump(mode="json")))
+                session.add(AppSettingsRow(id=1, config=payload))
             else:
-                row.config = merged.model_dump(mode="json")
+                row.config = payload
         return SettingsStore.get_public()
+
+    @staticmethod
+    def github_token() -> str:
+        """The raw GitHub token for gitops (clone/push). Settings first, env fallback,
+        '' = anonymous. Never log this."""
+        return SettingsStore.get().github_token or os.getenv("GITHUB_TOKEN", "")
 
     @staticmethod
     def provider(settings: AppSettings, provider_id: str) -> Optional[ProviderProfile]:

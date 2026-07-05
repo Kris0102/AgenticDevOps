@@ -38,6 +38,7 @@ from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
 from observability.log_bus import log_bus
 from orchestrator.bootstrap_node import BootStrapper
+from sandbox.sandbox_tools import DockerSandboxTools
 from orchestrator.checkpointer import setup_checkpointer
 from orchestrator.hitl import HitlResume, Phase
 from orchestrator.orchestrator import graph
@@ -202,6 +203,28 @@ class Service:
         """Current lifecycle snapshot for the run — the dashboard's poll target."""
         return self._response(run_id)
 
+    def give_up(self, run_id: str, note: Optional[str] = None) -> RunResponse:
+        """Human verdict on a STALLED run: mark it FAILED ('Mark as failed' button).
+        Crashes leave runs stalled-but-continuable by design (ADR 0021); this is the
+        deliberate close-the-case action when the human judges the run hopeless. Goes
+        through RunFailureHandler so status/events/lesson-retraction match every other
+        failure path, then honors teardown_on_terminal (the run is terminal now)."""
+        reason = f"marked failed by user{f': {note}' if note else ''}"
+        try:
+            snapshot = graph.get_state(self._config(run_id))
+            state: BlackboardState = snapshot.values or {}  # type: ignore[assignment]
+        except Exception:
+            state = {}  # type: ignore[assignment]
+        with db.session_scope() as session:
+            RunFailureHandler.handle(
+                session, run_id, "human", state,
+                RunExecutionError(phase="human", reason=reason),
+            )
+        _log.info("run.given_up", run_id=run_id, note=note or "")
+        log_bus.mark_done(run_id)
+        self._teardown_sandbox(run_id)
+        return self._response(run_id)
+
     def review_context(self, run_id: str) -> Optional[HitlReviewContext]:
         """Everything the human reviews at the paused gate: the plan + microtasks for
         a `plan` gate, the raw diff for a `code` gate. None if the run isn't paused.
@@ -272,10 +295,13 @@ class Service:
             return [self._run_details(session, run, pushed.get(run.run_id)) for run in runs]
 
     def _run_details(self, session, run: Run, pushed_files: Optional[int]) -> RunResponseWithDetails:
+        state = self._list_state(run.status, self.is_active(run.run_id))
         return RunResponseWithDetails(
             run_id=run.run_id,
-            run_state=self._list_state(run.status, self.is_active(run.run_id)),
+            run_state=state,
             status=run.status,
+            failure_reason=self._last_event_reason(run.run_id, EventType.RUN_FAILED.value)
+            if state == RunState.FAILED else None,
             repo_url=run.repo_url,
             repo_name=self._repo_name(run.repo_url),
             base_sha=run.base_sha,
@@ -360,6 +386,36 @@ class Service:
         from orchestrator.state import LLMConfig
         result = health_check(provider, LLMConfig(provider_id=provider_id, model=model))
         return {"ok": result.ok, "latency_ms": result.latency_ms, "reason": result.reason, "kind": result.kind}
+
+    def test_github(self) -> dict:
+        """Validate the stored GitHub token (settings 'Test connection'): GET /user with
+        the real token. No token = anonymous mode — fine for public repos, called out as
+        such rather than failing. Never logs or returns the token itself."""
+        import time
+
+        import requests
+
+        token = SettingsStore.github_token()
+        if not token:
+            return {"ok": False, "kind": "no_token",
+                    "reason": "no token set — public repos only; private clone/push will fail"}
+        try:
+            t0 = time.monotonic()
+            resp = requests.get(
+                "https://api.github.com/user",
+                headers={"Authorization": f"Bearer {token}",
+                         "Accept": "application/vnd.github+json"},
+                timeout=5,
+            )
+            latency = int((time.monotonic() - t0) * 1000)
+        except requests.RequestException as exc:
+            return {"ok": False, "kind": "unreachable", "reason": str(exc)}
+        if resp.status_code == 200:
+            login = resp.json().get("login", "?")
+            return {"ok": True, "latency_ms": latency, "reason": f"authenticated as {login}"}
+        if resp.status_code in (401, 403):
+            return {"ok": False, "kind": "auth", "reason": f"GitHub rejected the token (HTTP {resp.status_code})"}
+        return {"ok": False, "kind": "unexpected", "reason": f"HTTP {resp.status_code}"}
 
     def export_run(self, run_id: str) -> Optional[RunExportBundle]:
         """Everything durable about one run in one self-describing JSON bundle (run row +
@@ -508,6 +564,7 @@ class Service:
         return ArtifactView(
             artifact_id=row.artifact_id,
             kind=row.kind,
+            microtask_id=row.microtask_id,
             created_at=row.created_at,
             size=len(text),
             preview=first_line[:120],
@@ -539,8 +596,15 @@ class Service:
             _log.warning("graph.transient", run_id=run_id, error=reason)
             self._mark_stalled(run_id, reason)
         except Exception as exc:
+            # Uncaught crash — a bug, not a domain failure. Do NOT force-fail: the
+            # checkpoint is intact and one fixed bug away from finishing, so leave the
+            # run non-terminal (reads STALLED, sandbox alive) and continuable via
+            # /continue. Previously this wrote Run.status=FAILED while the checkpoint
+            # stayed non-terminal — the runs LIST said FAILED, the run DETAIL said
+            # STALLED. Domain failures (iteration caps, bad microtasks) still go
+            # terminal through the nodes' own RunFailureHandler paths.
             _log.error("graph.uncaught", run_id=run_id, error=str(exc), exc_info=True)
-            self._force_failed(run_id, f"Uncaught {type(exc).__name__}: {exc}")
+            self._mark_stalled(run_id, f"Uncaught {type(exc).__name__}: {exc}")
 
     def _mark_stalled(self, run_id: str, reason: str) -> None:
         """Record a transient stall WITHOUT touching Run.status — the run stays at whatever
@@ -551,22 +615,6 @@ class Service:
             EventLogger.log(session, run_id, Roles.ORCHESTRATOR.value, EventType.RUN_STALLED, {
                 "reason": reason, "kind": "transient",
             })
-
-    def _force_failed(self, run_id: str, reason: str) -> None:
-        """Terminal FAILED bookkeeping for a crash no node handled. Reuses
-        RunFailureHandler so the runs-table status + RUN_FAILED events match every other
-        failure path. Pulls the last checkpointed state for the `from` status; tolerates
-        that read failing too (best-effort — the point is to reach a terminal status)."""
-        try:
-            snapshot = graph.get_state(self._config(run_id))
-            state: BlackboardState = snapshot.values if snapshot else {}  # type: ignore[assignment]
-        except Exception:
-            state = {}  # type: ignore[assignment]  # handle() does state.get(...) — must not be None
-        with db.session_scope() as session:
-            RunFailureHandler.handle(
-                session, run_id, Roles.ORCHESTRATOR.value, state,
-                RunExecutionError(phase="graph", reason=reason),
-            )
 
     def _bootstrap(self, run_id: str, state) -> dict:
         try:
@@ -592,23 +640,37 @@ class Service:
         status = snapshot.values.get("status") if snapshot.values else None
         pending = self._pending_payload(run_id)
         state = self._derive_state(status, pending, self.is_active(run_id))
+        if state == RunState.STALLED and self._db_status(run_id) == RunStatus.FAILED.value:
+            # human closed the case (give_up): checkpoint stays non-terminal, but the
+            # runs-table verdict is FAILED — the row wins over the orphaned checkpoint.
+            state = RunState.FAILED
         return RunResponse(
             run_id=run_id,
             run_state=state,
             status=status.value if isinstance(status, RunStatus) else status,
             hitl_phase=pending.get("phase") if pending else None,
             hitl_approval_id=pending.get("approval_id") if pending else None,
-            # Only for a stalled run: the reason if it was a transient LLM error (worker-died
+            # Only for a stalled run: the reason if the stall carried one (worker-died
             # stalls have no run.stalled event → None → the UI shows the generic message).
-            stalled_reason=self._stalled_reason(run_id) if state == RunState.STALLED else None,
+            stalled_reason=self._last_event_reason(run_id, EventType.RUN_STALLED.value) if state == RunState.STALLED else None,
+            # Only for a failed run: the run.failed reason — the dashboard's error banner.
+            failure_reason=self._last_event_reason(run_id, EventType.RUN_FAILED.value) if state == RunState.FAILED else None,
         )
 
     @staticmethod
-    def _stalled_reason(run_id: str) -> Optional[str]:
+    def _db_status(run_id: str) -> Optional[str]:
+        with db.session_scope() as session:
+            run = session.get(Run, run_id)
+            return run.status if run else None
+
+    @staticmethod
+    def _last_event_reason(run_id: str, event_type: str) -> Optional[str]:
+        """`reason` payload of the run's most recent event of the given type (run.stalled /
+        run.failed) — powers the stalled-bar and the failure banner."""
         with db.session_scope() as session:
             row = (
                 session.query(EventRow)
-                .filter(EventRow.run_id == run_id, EventRow.event_type == EventType.RUN_STALLED.value)
+                .filter(EventRow.run_id == run_id, EventRow.event_type == event_type)
                 .order_by(EventRow.seq.desc())
                 .first()
             )
@@ -719,6 +781,24 @@ class Service:
                     EventType.RUN_COMPLETED.value, {"status": RunStatus.DONE.value},
                 )
         log_bus.mark_done(run_id)
+        # Optional cleanup, GUARDED on a truly terminal status: a stalled run (crash /
+        # transient error → status still mid-pipeline) keeps its container so /continue
+        # can pick the work back up. Settings-driven (defaults.teardown_on_terminal).
+        if status in (RunStatus.DONE, RunStatus.FAILED):
+            self._teardown_sandbox(run_id)
+
+    def _teardown_sandbox(self, run_id: str) -> None:
+        """Destroy the run's Docker sandbox if settings ask for it. Best-effort — a
+        teardown failure must never mask the run's actual outcome."""
+        try:
+            if not SettingsStore.get().defaults.teardown_on_terminal:
+                return
+            DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace").sandbox_destroy(
+                sandbox_id=f"sbox_{run_id}"
+            )
+            _log.info("sandbox.teardown_on_terminal", run_id=run_id)
+        except Exception as exc:
+            _log.warning("sandbox.teardown_failed", run_id=run_id, error=str(exc))
 
     @staticmethod
     def _derive_state(status, pending: Optional[dict], is_active: bool) -> RunState:

@@ -182,6 +182,7 @@ class CoderRunner:
                 artifact_id=diff_artifact_ref,
                 run_id=self.run_id,
                 kind="diff",
+                microtask_id=updated.microtask_id,
                 content_text=diff_text,
                 created_at=now,
             ))

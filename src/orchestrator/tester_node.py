@@ -210,6 +210,7 @@ class TesterRunner:
             artifact_id=artifact_ref,
             run_id=self.run_id,
             kind=f"test-{check.label}",
+            microtask_id=microtask_id,
             content_text=(
                 f"Command: {' '.join(check.command)}\n"
                 f"Status: {check.status}\n"

@@ -11,11 +11,12 @@ export function LessonsPanel({ runId }: { runId: string }) {
     api.getLessons(runId).then(setLessons).catch(() => {})
   }, [runId])
 
-  if (lessons.length === 0) return null
-
   return (
     <div className="panel lessons">
       <h3>repo lessons <span className="rh-count">{lessons.length}</span></h3>
+      {lessons.length === 0 && (
+        <p className="empty-hint">no confirmed lessons for this repo yet — they're written when a reviewer approves a revised plan or a failed microtask finally passes</p>
+      )}
       <div className="llist">
         {lessons.map((l) => (
           <div key={l.lesson_id} className={`lrow scope-${l.scope}`}>

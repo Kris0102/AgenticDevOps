@@ -1,5 +1,5 @@
 import uuid
-from typing import List
+from typing import List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
@@ -68,6 +68,12 @@ def test_provider(provider_id: str) -> dict:
     return service.test_provider(provider_id)
 
 
+@app.post("/settings/github/test")
+def test_github() -> dict:
+    """Validate the stored GitHub token against api.github.com ('Test connection')."""
+    return service.test_github()
+
+
 @app.get("/runs/{run_id}", response_model=RunResponse)
 def get_run(run_id: str) -> RunResponse:
     """Poll target: current lifecycle state + pending HITL payload (if any)."""  # We will run this method to check whether the run is paused at a HTIL gate!
@@ -111,6 +117,17 @@ def continue_run(run_id: str, background: BackgroundTasks) -> RunResponse:
     service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
     background.add_task(service.continue_run, run_id)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
+
+
+@app.post("/runs/{run_id}/fail", response_model=RunResponse)
+def fail_run(run_id: str, body: Optional[dict] = None) -> RunResponse:
+    """Human verdict on a STALLED run: mark it FAILED ('Mark as failed'). Only valid on a
+    stalled run — running/paused/terminal runs are rejected. Optional {note} lands in the
+    run.failed reason."""
+    current = service.status(run_id)
+    if current.run_state != RunState.STALLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"run is {current.run_state.value}, not stalled")
+    return service.give_up(run_id, (body or {}).get("note"))
 
 
 @app.get("/runs/{run_id}/events", response_model=List[EventView])

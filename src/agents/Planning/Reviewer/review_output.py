@@ -145,7 +145,12 @@ def create_review_file_as_output(
             f.write("REVIEW DECISION\n")
             f.write("-" * 40 + "\n")
             f.write(f"Decision: {result.decision.value}\n")
-            f.write(f"Notes: {result.notes}\n\n")
+            f.write(f"Notes: {result.notes}\n")
+            if getattr(result, "blockers", None):
+                f.write("Blockers (fed to planner):\n")
+                for b in result.blockers:
+                    f.write(f"  - {b}\n")
+            f.write("\n")
 
             if prior_feedback:
                 f.write(f"{sep}\n")

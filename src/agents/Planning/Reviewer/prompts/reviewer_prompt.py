@@ -55,8 +55,18 @@ Return only valid JSON:
 
 {{
   'decision': 'approve' | 'reject',
-  'notes': 'detailed explanation'
+  'notes': 'one-sentence verdict summary',
+  'blockers': ['a specific plan defect and how to fix it', '...']
 }}
+
+Rules for `blockers` (the planner acts on these — they must be actionable):
+- Populate ONLY when rejecting; use [] when approving.
+- Each item names a SPECIFIC defect in the plan and its concrete fix — point at the
+  exact field, microtask id, data contract, or acceptance criterion. Give the corrected
+  value where you can (e.g. "data_contracts: temperature is number not string").
+- Findings ONLY. You have ALREADY investigated — never write your process or intentions
+  ('let me verify…', 'I need to check the codebase…'). That is not a blocker.
+- If you cannot name a concrete, specific defect, APPROVE. Do not reject vaguely.
 """
 
 

@@ -14,10 +14,12 @@ import { HitlPanel } from './components/HitlPanel'
 import { EventTimeline } from './components/EventTimeline'
 
 type View = 'home' | 'newrun' | 'settings'
+type Tab = 'activity' | 'artifacts' | 'lessons'
 
 export default function App() {
   const [runId, setRunId] = useState<string | null>(null)
   const [view, setView] = useState<View>('home')
+  const [tab, setTab] = useState<Tab>('activity')
   const [continuing, setContinuing] = useState(false)
   const { run, error } = useRunStatus(runId)
   const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
@@ -34,7 +36,19 @@ export default function App() {
     }
   }
 
-  const openRun = (id: string) => { setView('home'); setRunId(id) }
+  // Human closes the case on a stalled run — the deliberate counterpart to Continue.
+  const onGiveUp = async () => {
+    if (!runId) return
+    if (!window.confirm('Mark this run as failed? It can no longer be continued.')) return
+    const note = window.prompt('Optional note (why is it hopeless?)') ?? undefined
+    try {
+      await api.failRun(runId, note || undefined)   // poll flips to the failed banner
+    } catch (e) {
+      alert(String(e))
+    }
+  }
+
+  const openRun = (id: string) => { setView('home'); setTab('activity'); setRunId(id) }
 
   // Full-page routes (no run open): New run / Settings.
   if (!runId && view === 'settings') return <div className="app"><SettingsPage onClose={() => setView('home')} /></div>
@@ -69,16 +83,32 @@ export default function App() {
 
           <PipelineGraph runId={runId} run={run} live={!terminal} />
 
+          {run?.run_state === 'failed' && (
+            <div className="failbanner">
+              <span className="fb-badge">run failed</span>
+              <span className="fb-reason">{run.failure_reason ?? 'no failure reason recorded'}</span>
+            </div>
+          )}
+
           {run?.run_state === 'stalled' && (
             <div className="continue-bar">
-              <span>
-                {run.stalled_reason
-                  ? <>Stalled on a transient error — <code>{run.stalled_reason}</code>. Continue to retry from the last checkpoint.</>
-                  : <>This run stopped mid-graph (its worker died). Resume from the last checkpoint.</>}
-              </span>
-              <button className="continue" disabled={continuing} onClick={onContinue}>
-                {continuing ? 'continuing…' : 'Continue run'}
-              </button>
+              <div className="cb-head">
+                <span className="cb-badge">run stalled</span>
+                <span className="cb-hint">
+                  {run.stalled_reason
+                    ? 'stopped on the error below — recoverable from the last checkpoint'
+                    : 'stopped mid-graph (its worker died) — recoverable from the last checkpoint'}
+                </span>
+              </div>
+              {run.stalled_reason && <div className="cb-reason">{run.stalled_reason}</div>}
+              <div className="cb-actions">
+                <button className="continue" disabled={continuing} onClick={onContinue}>
+                  {continuing ? 'continuing…' : 'Continue run'}
+                </button>
+                <button className="giveup" disabled={continuing} onClick={onGiveUp} title="close the case — the run becomes terminal FAILED and can no longer be continued">
+                  Mark as failed
+                </button>
+              </div>
             </div>
           )}
 
@@ -93,15 +123,28 @@ export default function App() {
 
           <RunOverview runId={runId} live={!terminal} />
 
-          <div className="cols">
-            {/* live log is in-memory only — for a finished run it's empty noise, so the
-                durable history takes the full width instead */}
-            {!terminal && <LogPanel runId={runId} active={!terminal} />}
-            <EventTimeline runId={runId} stop={terminal} />
-          </div>
+          {/* ONE content area below the overview — tabs instead of four stacked panels
+              each with its own scrollbar. Live feeds keep an internal scroll (they must
+              stick to bottom without moving the page); everything else page-scrolls. */}
+          <nav className="tabbar" role="tablist">
+            {(['activity', 'artifacts', 'lessons'] as Tab[]).map((t) => (
+              <button key={t} role="tab" aria-selected={tab === t}
+                className={`tabbtn ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
+                {t}
+              </button>
+            ))}
+          </nav>
 
-          <ArtifactsPanel runId={runId} />
-          <LessonsPanel runId={runId} />
+          {tab === 'activity' && (
+            <div className="cols">
+              {/* live log is in-memory only — for a finished run it's empty noise, so the
+                  durable history takes the full width instead */}
+              {!terminal && <LogPanel runId={runId} active={!terminal} />}
+              <EventTimeline runId={runId} stop={terminal} />
+            </div>
+          )}
+          {tab === 'artifacts' && <ArtifactsPanel runId={runId} />}
+          {tab === 'lessons' && <LessonsPanel runId={runId} />}
         </>
       )}
     </div>

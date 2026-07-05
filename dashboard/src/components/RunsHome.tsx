@@ -174,6 +174,9 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
             {run.task_description && (
               <div className="rb-task" title={run.task_description}>{run.task_description}</div>
             )}
+            {run.run_state === 'failed' && run.failure_reason && (
+              <div className="rb-fail" title={run.failure_reason}>✗ {run.failure_reason}</div>
+            )}
             <div className="rb-meta">
               <span title={fmtWhen(run.created_at)}>{fmtAgo(run.created_at)}</span>
               {run.base_sha && <span className="rb-sha" title="base sha">@{run.base_sha.slice(0, 7)}</span>}

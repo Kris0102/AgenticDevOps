@@ -5,6 +5,7 @@ from typing import Any, Dict
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
+from db.settings_store import SettingsStore
 from gitops.gitops import GitOps
 from observability import Category, get_logger
 from Exceptions.RunExecutionError import RunExecutionError
@@ -197,12 +198,12 @@ class BootStrapper:
                 sandbox_id=sandbox_id,
                 repo_url=repo.repo_url,
                 base_sha=repo.base_sha,
-                token=os.getenv("GITHUB_TOKEN", ""),
+                token=SettingsStore.github_token(),
                 repo_dir=repo_dir,
             )
             _log.info("bootstrap.clone_complete", workspace_path=workspace_path)
             return workspace_path
         except SandboxError as e:
             _log.error("bootstrap.clone_failed", error=str(e),
-                       hint="for private repos ensure GITHUB_TOKEN is set with repo access")
+                       hint="for private repos set the GitHub token in Settings")
             raise RunExecutionError(phase="bootstrap.clone", reason=str(e))

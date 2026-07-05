@@ -231,8 +231,9 @@ truth and per-run overrides win. Edit them in the dashboard Settings page, not `
 | `CODER_MAX_COMPILE_RETRIES` | Warm in-loop compile-fix attempts when the target files don't compile (default 2). Coder needs `node` in its allowlist for the JS `node --check`; Python `py_compile` runs via `python` |
 | `REFLECTOR_MAX_TEST_RESYNTH` | Bound on the reflector→tester test re-synthesis loop when the reflector judges the synthesized TEST (not the code) wrong (default 2). After the cap it forces the code path; reset when the coder runs (GH #33) |
 | `CODER_TIMEOUT_SECONDS` | LLM request timeout for the Coder (default 120 — code gen is long) |
-| `TEAR_DOWN_SANDBOX_AFTER_RUN` | Destroy container after run (set `false` during dev) |
-| `GITHUB_TOKEN` | Required for private repos — injected into clone URL, never logged |
+| `TEAR_DOWN_SANDBOX_AFTER_RUN` | Legacy dev flag (planner node). The real control is the UI setting `defaults.teardown_on_terminal` — destroys the sandbox in `Service._finalize` only when the run is truly terminal (DONE/FAILED, never STALLED). ADR 0021 |
+| `GITHUB_TOKEN` | Seed/fallback only (ADR 0021) — the token now lives in Settings (`AppSettings.github_token`, masked in UI, Fernet-encrypted at rest), read via `SettingsStore.github_token()` by clone + push. Never logged |
+| `SETTINGS_ENCRYPTION_KEY` | Optional Fernet key for secrets-at-rest (`db/secrets.py`). Unset → auto-generated `.settings_key` file (gitignored). Protects DB dumps/snapshots, not a compromised machine |
 | `EMBEDDING_MODEL` | sentence-transformers model for the Context Engine (default `all-MiniLM-L6-v2`, 384-dim). Changing it requires matching `EMBEDDING_DIM` + a new `code_chunks` migration |
 | `LOG_LEVEL` | Global structlog threshold (default `INFO`) |
 | `LOG_LEVEL_<CATEGORY>` | Per-category override, e.g. `LOG_LEVEL_TOOL=DEBUG`, `LOG_LEVEL_SEMANTIC=DEBUG` (categories in `observability/categories.py`) |
@@ -249,7 +250,10 @@ OpenAI-shaped endpoint), `ChatAnthropic` for `anthropic` (Claude). Settings live
 DB › env seed), stored on the blackboard (`state["config"]`); **agents take `config` as a
 mandatory arg — the fallback (`… or resolve_run_config()`) lives in the node**. `POST /runs`
 **preflights** the provider (`providers.health_check`) and refuses to start on a dead/mis-keyed
-one. API keys are masked on read + excluded from snapshots (not encrypted, v1).
+one. Secrets (provider API keys + GitHub token) are masked on read AND Fernet-encrypted at
+rest (`db/secrets.py`, key = `SETTINGS_ENCRYPTION_KEY` env or auto-generated `.settings_key`
+file) — see ADR 0021. Uncaught graph crashes mark runs STALLED (continuable), never FAILED;
+failed runs expose `failure_reason` (latest `run.failed` event) on the API responses.
 
 ## DB schema (all tables)
 | Table | Purpose |

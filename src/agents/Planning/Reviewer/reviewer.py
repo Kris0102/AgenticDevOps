@@ -46,10 +46,26 @@ _log = get_logger(Category.REVIEWER)
 
 
 class ReviewerOutput(BaseModel):
-    """The structured output expected from the Reviewer LLM."""
+    """The structured output expected from the Reviewer LLM.
+
+    `blockers` is the actionable channel: concrete plan defects (each "what's wrong +
+    how to fix"), populated ONLY on reject. `notes` is a one-line verdict summary. We
+    forward blockers to the planner rather than the free-text notes because the model
+    tended to leak its investigation reasoning ("let me verify the codebase…") into a
+    single notes blob — non-actionable text the planner can't address (GH #43).
+    """
 
     decision: FeedbackDecision
-    notes: str
+    notes: str = ""
+    blockers: List[str] = Field(default_factory=list)
+
+    def to_feedback_notes(self) -> str:
+        """What the planner should act on: the concrete blockers as a checklist, falling
+        back to the summary when none were given (approve, or a model that skipped the
+        structured list)."""
+        if self.blockers:
+            return "\n".join(f"- {b}" for b in self.blockers)
+        return self.notes
 
 
 def _build_objective_text(state: BlackboardState) -> str:
@@ -65,23 +81,17 @@ def _build_objective_text(state: BlackboardState) -> str:
 
 
 def _build_review_context(plan: Plan, microtasks: List[Microtask]) -> str:
+    # Dump the plan with review_feedback trimmed to the LATEST verdict only: the reviewer
+    # re-investigates the current plan from scratch every pass, so it just needs to check
+    # against its most recent note ("was this addressed?"), not the whole stacked history.
+    # Dumping all of it made the reviewer fixate on and re-assert the entire backlog with
+    # "(UNRESOLVED)" tags each round (GH #43). Mirrors the planner-side trim.
+    plan_view = plan.model_copy(update={"review_feedback": plan.review_feedback[-1:]})
     payload = {
-        "plan": plan.model_dump(mode="json"),
+        "plan": plan_view.model_dump(mode="json"),
         "microtasks": [task.model_dump(mode="json") for task in microtasks],
     }
     return json.dumps(payload, indent=2, ensure_ascii=True)
-
-
-def _build_revision_context(plan: Plan) -> str:
-    lines = [
-        f"Prior plan summary: {plan.summary}",
-        f"Prior architecture notes: {plan.architecture_notes}",
-        "",
-        "Prior review feedback:",
-    ]
-    for feedback in plan.review_feedback:
-        lines.append(f"  [{feedback.source}] {feedback.decision.value}: {feedback.notes}")
-    return "\n".join(lines)
 
 
 class Reviewer:
@@ -137,7 +147,6 @@ class Reviewer:
         # build context for review prompt
         objective_text = _build_objective_text(state)
         review_context = _build_review_context(plan, microtasks)
-        revision_context = _build_revision_context(plan)
 
         investigation_summary = "No independent investigation performed (no tools provided)."
         if self.investigator_agent:
@@ -225,7 +234,7 @@ class Reviewer:
         feedback = ReviewFeedback(
             decision=result.decision,
             source=FeedbackSource.REVIEWER,
-            notes=result.notes,
+            notes=result.to_feedback_notes(),
             ts=datetime.now(timezone.utc).isoformat(),
         )
         review_file_path = create_review_file_as_output(

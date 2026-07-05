@@ -45,16 +45,26 @@ _log = get_logger(Category.PLANNER)
 
 
 def _build_revision_context(plan: Plan) -> str:
-    """Format prior plan + all rejection notes for the revision prompt block."""
+    """Format the prior plan + the CURRENT review for the revision prompt block.
+
+    Only the LATEST review verdict is rendered — not the whole reject history. Each
+    review is a complete, fresh re-assessment of the current plan, so it supersedes
+    every earlier one; the latest note already lists exactly what is still wrong.
+    Feeding all of them stacked (1,2,3,…) drowned the planner in duplicate, partly-
+    stale "(UNRESOLVED)" notes and slowed convergence to a crawl (GH #43). The full
+    history still lives on the blackboard for the audit trail — only the prompt
+    rendering is trimmed.
+    """
     lines = [
         f"Prior plan summary: {plan.summary}",
         f"Prior architecture notes: {plan.architecture_notes}",
         "",
         "Rejection notes (address every one):",
     ]
-    for fb in plan.review_feedback:
-        label = "Human reviewer" if fb.source == FeedbackSource.HUMAN else "Automated reviewer"
-        lines.append(f"  [{label}] {fb.notes}")
+    latest = plan.review_feedback[-1] if plan.review_feedback else None
+    if latest:
+        label = "Human reviewer" if latest.source == FeedbackSource.HUMAN else "Automated reviewer"
+        lines.append(f"  [{label}] {latest.notes}")
     return "\n".join(lines)
 
 

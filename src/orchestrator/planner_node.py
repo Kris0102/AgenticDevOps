@@ -87,6 +87,16 @@ class PlannerRunner:
         plan = result.get("plan")
         new_status = result.get("status", RunStatus.NEEDS_REVIEW)
 
+        # A fresh plan REPLACES the board: drop rows from a superseded draft (reviewer
+        # rejected → planner re-planned with new microtask ids) so the dashboard doesn't
+        # show both generations interleaved. Ids that survived the re-plan are merged below.
+        if microtasks:
+            new_ids = [mt.microtask_id for mt in microtasks]
+            (db_session.query(MicrotaskRecord)
+                .filter(MicrotaskRecord.run_id == self.run_id,
+                        MicrotaskRecord.microtask_id.notin_(new_ids))
+                .delete(synchronize_session=False))
+
         # Write / upsert each microtask
         for mt in microtasks:
             db_session.merge(MicrotaskRecord(
@@ -114,10 +124,13 @@ class PlannerRunner:
             run_record.status = new_status.value
             run_record.updated_at = now
 
-        # Store plan summary as artifact
+        # Store plan summary as artifact — versioned by the planner↔reviewer iteration so a
+        # re-drafted plan doesn't overwrite the rejected one (both stay browsable).
+        iteration = self.state.get("iteration")
+        version = (iteration.planner_reviewer_iteration_current if iteration else 0) + 1
         if plan:
             db_session.merge(Artifact(
-                artifact_id=f"art_{self.run_id}_plan_v1",
+                artifact_id=f"art_{self.run_id}_plan_v{version}",
                 run_id=self.run_id,
                 kind="plan",
                 content_text=plan.summary,
@@ -127,6 +140,6 @@ class PlannerRunner:
         # Emit plan.drafted event
         EventLogger.log(db_session, self.run_id, self.name, EventType.PLAN_DRAFTED, {
             "microtasks_count": len(microtasks),
-            "plan_version": 1,
+            "plan_version": version,
             "plan_summary": plan.summary[:300] if plan else "",
         })

@@ -50,9 +50,13 @@ class RunResponse(BaseModel):
     # a gate is waiting AND which kind, so it can fetch the right review context.
     hitl_phase: Optional[str] = None
     hitl_approval_id: Optional[str] = None
-    # set only when run_state == stalled AND the stall was a transient LLM error — the
-    # reason to show on the continue bar. None for a worker-died stall (generic message).
+    # set only when run_state == stalled AND the stall carried a reason (transient LLM
+    # error or an uncaught crash) — shown on the continue bar. None for a worker-died
+    # stall (generic message).
     stalled_reason: Optional[str] = None
+    # set only when run_state == failed — the run.failed reason, so the dashboard can
+    # say WHY instead of just showing a red badge.
+    failure_reason: Optional[str] = None
 
 class RunResponseWithDetails(RunResponse):
     """A run row for the dashboard's previous-runs list. Everything the run-box needs as
@@ -80,6 +84,7 @@ class ArtifactView(BaseModel):
     Fetch the body on demand via GET /runs/{id}/artifacts/{artifact_id}."""
     artifact_id: str
     kind: str                      # plan | review | diff | test-<check> | reflection | ...
+    microtask_id: Optional[str] = None  # producing microtask (diff/test/reflection); None = run-level
     created_at: datetime
     size: int                      # len(content_text) — lets the UI hint big payloads
     preview: str                   # first line(s), truncated — list-item subtitle

@@ -25,8 +25,65 @@ export interface RunResponseWithDetails extends RunResponse {
   base_sha?: string | null
   task_description?: string | null   // what the run was asked to do
   pushed_files?: number | null       // files shipped by the deploy push
+  llm_provider?: string | null       // provider/model this run used
+  llm_model?: string | null
   created_at: string   // ISO 8601
   updated_at: string   // ISO 8601
+}
+
+// ----------------------------------------------------------------- settings hub
+export type ProviderType = 'openai_compatible' | 'anthropic'
+
+export interface ProviderProfile {
+  id: string
+  label: string
+  type: ProviderType
+  base_url?: string | null
+  api_key?: string | null            // masked ('••••••••') on read; leave as-is to keep stored key
+  models: string[]
+}
+
+export interface LLMConfig {
+  provider_id: string
+  model: string
+  temperature: number
+  max_retries: number
+}
+
+export interface Knobs {
+  planner_max_tool_steps: number; planner_timeout_seconds: number; planner_max_synthesis_attempts: number
+  reviewer_max_tool_steps: number; reviewer_timeout_seconds: number
+  coder_max_tool_steps: number; coder_timeout_seconds: number; coder_max_empty_diff_retries: number; coder_max_compile_retries: number
+  tester_max_tool_steps: number; tester_timeout_seconds: number
+  reflector_max_tool_steps: number; reflector_timeout_seconds: number; reflector_max_test_resynth: number
+}
+
+export interface RunDefaults {
+  max_total_iterations: number
+  max_microtask_attempts: number
+  hitl_checkpoints: string[]
+}
+
+export interface AppSettings {
+  providers: ProviderProfile[]
+  selected: LLMConfig
+  knobs: Knobs
+  defaults: RunDefaults
+}
+
+export interface SchemaField {
+  key: string
+  label: string
+  description: string
+  type: string
+  group: 'basic' | 'expert'
+}
+
+export interface ProviderTestResult {
+  ok: boolean
+  latency_ms?: number
+  reason?: string | null
+  kind?: string | null
 }
 
 // One per-repo lesson (ADR 0018). Mirrors responses.LessonView.
@@ -179,4 +236,11 @@ export const api = {
   // Restore a previously exported bundle (fresh DB / other machine). 409 if the run exists.
   importRun: (bundle: unknown) =>
     http.post<RunResponseWithDetails>('/runs/import', bundle).then((r) => r.data),
+
+  // Settings hub (keys masked on read).
+  getSettings: () => http.get<AppSettings>('/settings').then((r) => r.data),
+  putSettings: (s: AppSettings) => http.put<AppSettings>('/settings', s).then((r) => r.data),
+  getSettingsSchema: () => http.get<SchemaField[]>('/settings/schema').then((r) => r.data),
+  testProvider: (providerId: string) =>
+    http.post<ProviderTestResult>(`/settings/providers/${providerId}/test`).then((r) => r.data),
 }

@@ -177,6 +177,7 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
             <div className="rb-meta">
               <span title={fmtWhen(run.created_at)}>{fmtAgo(run.created_at)}</span>
               {run.base_sha && <span className="rb-sha" title="base sha">@{run.base_sha.slice(0, 7)}</span>}
+              {run.llm_model && <span className="rb-model" title={`model: ${run.llm_model}`}>⌁ {run.llm_model.split('/').pop()}</span>}
               {typeof run.pushed_files === 'number' && (
                 <span className="rb-pushed" title="files shipped by the deploy push">⇡ {run.pushed_files} files</span>
               )}

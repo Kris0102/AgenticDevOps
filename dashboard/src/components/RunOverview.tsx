@@ -130,6 +130,7 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
       </div>
 
       {info?.task_description && <p className="ov-task">{info.task_description}</p>}
+      {info?.llm_model && <p className="ov-model">model: <code>{info.llm_model}</code>{info.llm_provider ? ` · ${info.llm_provider}` : ''}</p>}
 
       <div className="tiles">
         <div className="tile"><span className="tv">{tasks.length ? `${done}/${tasks.length}` : '—'}</span><span className="tl">microtasks done</span></div>

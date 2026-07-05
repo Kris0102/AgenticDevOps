@@ -10,6 +10,7 @@ from Exceptions.RetriableError import RetriableError
 from agents.Implementing.Tester.pipeline import TestPipeline
 from agents.Implementing.Tester.results import CheckResult, CheckStatus
 from agents.Implementing.Tester.tester_tools import TesterTools
+from db.settings_store import resolve_run_config
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import (
@@ -55,7 +56,8 @@ class TesterRunner:
             try:
                 gateway = self._init_gateway(db_session)
                 tester_tools = TesterTools(gateway=gateway)
-                pipeline = TestPipeline(run_id=self.run_id, tester_tools=tester_tools)
+                config= self.state.get("config") or resolve_run_config()
+                pipeline = TestPipeline(run_id=self.run_id, tester_tools=tester_tools, config=config)
                 result = pipeline.run(self.state, microtask, final_validation=final_validation)
             except RunExecutionError as error:
                 _log.error("tester.run_execution_error", error=str(error))

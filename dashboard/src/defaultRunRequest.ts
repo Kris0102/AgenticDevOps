@@ -2,11 +2,16 @@
 // with the same defaults the CLI used (src/main.py _build_fresh_state). Keeps the
 // "new run" form simple while satisfying the backend's required models.
 
+import type { LLMConfig } from './api'
+
 export interface NewRunOpts {
   repoUrl: string
   baseSha?: string
   task: string
-  hitlCheckpoints: string[] // subset of 'plan' | 'code' | 'test'
+  hitlCheckpoints: string[] // subset of 'plan' | 'code' | 'test' | 'deploy'
+  llm?: LLMConfig | null                 // per-run model override (settings hub)
+  maxTotalIterations?: number
+  maxMicrotaskAttempts?: number
 }
 
 export function buildRunRequest(opts: NewRunOpts) {
@@ -26,11 +31,12 @@ export function buildRunRequest(opts: NewRunOpts) {
       workspace_branch: 'agentic-devops-workspace',
       pr_url: null,
     },
+    llm: opts.llm ?? null,
     constraints: {
       time_budget_minutes: 60,
       cost_budget_usd: 10.0,
-      max_total_iterations: 5,
-      max_microtask_attempts: 3,
+      max_total_iterations: opts.maxTotalIterations ?? 5,
+      max_microtask_attempts: opts.maxMicrotaskAttempts ?? 3,
       allowed_languages: ['python', 'javascript'],
       forbidden_paths: ['src/secrets/'],
       allowed_network: 'none',

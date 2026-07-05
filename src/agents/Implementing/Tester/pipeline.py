@@ -10,7 +10,7 @@ routing — TesterRunner derives the PASS/FAIL verdict from the emitted checks.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -33,7 +33,10 @@ from agents.Implementing.Tester.prompt.tester_prompt import (
 )
 from agents.Implementing.Tester.tester_tools import TesterTools
 from observability import Category, get_logger
-from orchestrator.state import BlackboardState, Microtask
+from langchain_core.language_models.chat_models import BaseChatModel
+
+from orchestrator.state import BlackboardState, Microtask, RunConfig
+from providers import build_chat_llm
 from tool_gateway.Roles import Roles
 
 load_dotenv()
@@ -53,11 +56,12 @@ def _max_tool_steps() -> int:
 class TestPipeline:
     """Builds the phase list once, runs it per microtask."""
 
-    def __init__(self, run_id: str, tester_tools: TesterTools):
+    def __init__(self, run_id: str, tester_tools: TesterTools, config: RunConfig):
         self.run_id = run_id
         self.tools = tester_tools
         self.name = Roles.TESTER.value
-        recursion_limit = _max_tool_steps() * 2 + 5
+        self.config = config
+        recursion_limit = self.config.knobs.tester_max_tool_steps * 2 + 5
 
         llm = self._build_llm()
         python_agent = create_agent(llm, tools=self.tools.build_tools(), system_prompt=TESTER_SYSTEM_PROMPT_PYTHON)
@@ -94,17 +98,6 @@ class TestPipeline:
         _log.info("tester.pipeline.end", run_id=self.run_id, summary=ctx.summary)
         return ctx.to_result()
 
-    def _build_llm(self) -> ChatOpenAI:
-        api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("Missing API key. Set CLUSTER_API_KEY or OPENAI_API_KEY.")
-        return ChatOpenAI(
-            model=os.getenv("LLM_MODEL", "google/gemma-4-31B-it"),
-            api_key=SecretStr(api_key),
-            base_url="http://131.159.60.153:3000/inference",
-            temperature=0.0,
-            top_p=0.1,
-            max_completion_tokens=4096,
-            max_retries=int(os.getenv("LLM_RETRIES", "3")),
-            timeout=int(os.getenv("TESTER_TIMEOUT_SECONDS", "120")),
-        )
+    def _build_llm(self) -> BaseChatModel:
+        return build_chat_llm(self.config.provider, self.config.llm,
+                              timeout_seconds=self.config.knobs.tester_timeout_seconds)

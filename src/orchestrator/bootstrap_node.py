@@ -109,6 +109,7 @@ class BootStrapper:
         status = self.state.get("status")
         objective = self.state.get("objective")
         task = f"{objective.title}: {objective.description}" if objective else None
+        config = self.state.get("config")   # settings hub — record the provider/model used
 
         with db.session_scope() as session:
             existing = session.get(Run, run_id)
@@ -122,6 +123,8 @@ class BootStrapper:
                     base_sha=repo.base_sha,
                     status=status.value,
                     task_description=task,
+                    llm_provider=config.provider.id if config else None,
+                    llm_model=config.llm.model if config else None,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 ))

@@ -5,6 +5,7 @@ import os
 from langchain_core.tools import BaseTool
 
 from db.db import db
+from db.settings_store import resolve_run_config
 from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
@@ -69,7 +70,8 @@ class PlannerRunner:
             return []
 
     def _run_planner(self, tools: list[BaseTool]) -> Dict[str, Any]:
-        planner = Planner(run_id=self.run_id, tools=tools)
+        config = self.state.get("config") or resolve_run_config()
+        planner = Planner(run_id=self.run_id, tools=tools, config=config)
         return planner.invoke(self.state)
 
     def _teardown_sandbox(self) -> None:

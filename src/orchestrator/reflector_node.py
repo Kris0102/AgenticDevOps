@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from db.db import db
+from db.settings_store import resolve_run_config
 from db.event_log import EventLogger
 from db.models import Artifact as DbArtifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
@@ -58,7 +59,7 @@ class ReflectorRunner:
             try:
                 gateway = self._init_gateway(db_session)
                 reflector_tools = ReflectorTools(gateway=gateway)
-                reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools)
+                reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools, config=self.state.get("config") or resolve_run_config())
                 # Always a failure here — the Reflector only runs after a tester FAIL.
                 # TODO Change thisn behaviour to always run!
                 # Reads the artifact which was created by the tester!
@@ -90,8 +91,11 @@ class ReflectorRunner:
             # microtask PASS that proves the fix worked (outcome-validated, ADR 0018).
             return result
 
-    @staticmethod
-    def _max_test_resynth() -> int:
+    def _max_test_resynth(self) -> int:
+        # Settings hub: from the run's resolved knobs; env fallback for pre-config runs.
+        config = self.state.get("config")
+        if config is not None:
+            return max(0, config.knobs.reflector_max_test_resynth)
         try:
             return max(0, int(os.getenv("REFLECTOR_MAX_TEST_RESYNTH", "2")))
         except ValueError:

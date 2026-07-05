@@ -62,6 +62,8 @@ class RunResponseWithDetails(RunResponse):
     base_sha: Optional[str] = None
     task_description: Optional[str] = None   # what the run was asked to do
     pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)
+    llm_provider: Optional[str] = None        # settings hub — provider/model this run used
+    llm_model: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     

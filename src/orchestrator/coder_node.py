@@ -5,6 +5,7 @@ from db.db import db
 from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
+from db.settings_store import resolve_run_config
 from orchestrator.state import (
     BlackboardState,
     EventType,
@@ -47,8 +48,9 @@ class CoderRunner:
                 gateway = self._init_gateway(db_session)
                 coder_tools = CoderTools(gateway=gateway)
                 file_contents = self._gather_file_context(gateway, microtask)
-
-                coder = Coder(run_id=self.run_id, coder_tools=coder_tools)
+                
+                config = self.state.get("config") or resolve_run_config()    
+                coder = Coder(run_id=self.run_id, coder_tools=coder_tools, config=config)
                 result = coder.invoke(self.state, microtask, file_contents)
             except RunExecutionError as e:
                 _log.error("coder.run_execution_error", error=str(e))

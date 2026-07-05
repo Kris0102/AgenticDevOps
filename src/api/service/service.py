@@ -32,6 +32,8 @@ from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.models import Artifact as ArtifactRow, MicrotaskRecord, Run
 from db.models import Event as EventRow
+from db.settings_store import SettingsStore, resolve_run_config
+from providers import health_check
 from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
 from observability.log_bus import log_bus
@@ -40,7 +42,14 @@ from orchestrator.checkpointer import setup_checkpointer
 from orchestrator.hitl import HitlResume, Phase
 from orchestrator.orchestrator import graph
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.state import BlackboardState, EventType, RunStatus, create_initial_blackboard_state
+from orchestrator.state import (
+    AppSettings,
+    BlackboardState,
+    EventType,
+    RunConfig,
+    RunStatus,
+    create_initial_blackboard_state,
+)
 from tool_gateway.Roles import Roles
 
 # How often the live-log SSE drains the in-memory bus. Localhost + in-memory, so this
@@ -59,6 +68,14 @@ class HitlNotPausedError(RuntimeError):
 
 class RunAlreadyExistsError(RuntimeError):
     """import_run() targeted a run_id that is already in this database."""
+
+
+class ProviderUnreachableError(RuntimeError):
+    """LLM preflight failed — the run must not start. `kind` = auth | unreachable | timeout."""
+    def __init__(self, kind: str, reason: str):
+        self.kind = kind
+        self.reason = reason
+        super().__init__(f"[{kind}] {reason}")
 
 
 class Service:
@@ -93,12 +110,25 @@ class Service:
     def is_active(self, run_id: str) -> bool:
         return run_id in self._active
 
+    def resolve_and_preflight(self, request: RunRequest) -> RunConfig:
+        """Resolve the run's effective config (per-run override › global › env) and PROBE the
+        provider before anything starts. Raises ProviderUnreachableError on a dead/mis-keyed
+        provider so the route can reject with the reason — no run is created. Fail fast."""
+        config = resolve_run_config(override=request.llm)
+        result = health_check(config.provider, config.llm)
+        if not result.ok:
+            raise ProviderUnreachableError(result.kind or "unreachable", result.reason or "provider unreachable")
+        _log.info("run.preflight_ok", provider=config.provider.id, model=config.llm.model,
+                  latency_ms=result.latency_ms)
+        return config
+
     # --------------------------------------------------------------- public API
 
-    def run(self, request: RunRequest, run_id: str) -> RunResponse:
+    def run(self, request: RunRequest, run_id: str, config: Optional[RunConfig] = None) -> RunResponse:
         """Start a fresh run: bootstrap the environment, then drive the graph to the
         first HITL pause or to completion. `run_id` is minted by the caller so the
-        HTTP layer can return it before this (background) work finishes."""
+        HTTP layer can return it before this (background) work finishes. `config` is the
+        effective RunConfig resolved+preflighted by the route; falls back to global if absent."""
         bind_run(run_id)
         try:
             _log.info("run.start", repo_url=request.repo.repo_url, base_sha=request.repo.base_sha)
@@ -110,6 +140,7 @@ class Service:
                 constraints=request.constraints,
                 policy=request.policy,
                 hitl=request.hitl,
+                config=config or resolve_run_config(override=request.llm),
                 status=RunStatus.NEEDS_BOOTSTRAP,
             )
             bootstrap = self._bootstrap(run_id, state)
@@ -250,6 +281,8 @@ class Service:
             base_sha=run.base_sha,
             task_description=self._ensure_task(session, run),
             pushed_files=pushed_files,
+            llm_provider=run.llm_provider,
+            llm_model=run.llm_model,
             created_at=run.created_at,
             updated_at=run.updated_at,
         )
@@ -307,6 +340,26 @@ class Service:
             )
             for l in LessonStore.list_for_repo(repo_url)
         ]
+
+    # ----------------------------------------------------------------- settings
+    def get_settings(self) -> AppSettings:
+        """UI settings with keys masked."""
+        return SettingsStore.get_public()
+
+    def update_settings(self, new: AppSettings) -> AppSettings:
+        """Persist settings; a provider key left as the mask keeps its stored value."""
+        return SettingsStore.update(new)
+
+    def test_provider(self, provider_id: str) -> dict:
+        """Health-probe a stored provider (settings 'Test connection'). Uses the real key."""
+        settings = SettingsStore.get()
+        provider = SettingsStore.provider(settings, provider_id)
+        if provider is None:
+            return {"ok": False, "reason": f"provider '{provider_id}' not found", "kind": "config"}
+        model = provider.models[0] if provider.models else settings.selected.model
+        from orchestrator.state import LLMConfig
+        result = health_check(provider, LLMConfig(provider_id=provider_id, model=model))
+        return {"ok": result.ok, "latency_ms": result.latency_ms, "reason": result.reason, "kind": result.kind}
 
     def export_run(self, run_id: str) -> Optional[RunExportBundle]:
         """Everything durable about one run in one self-describing JSON bundle (run row +

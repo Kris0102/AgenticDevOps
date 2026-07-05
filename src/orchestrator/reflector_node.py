@@ -6,7 +6,7 @@ from db.settings_store import resolve_run_config
 from db.event_log import EventLogger
 from db.models import Artifact as DbArtifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
-from Exceptions.RetriableError import RetriableError
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from agents.Implementing.Reflector.reflector import Reflector
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
 from observability import Category, get_logger
@@ -73,6 +73,11 @@ class ReflectorRunner:
             except RetriableError:
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
+                # Backstop: a transient LLM failure (429 / timeout / 5xx) that escaped the
+                # reflector must STALL, not FAIL (ADR 0023).
+                if is_transient_llm_error(error):
+                    _log.error("reflector.cluster_unreachable", error=str(error))
+                    raise RetriableError(f"reflector LLM call failed: {error}", phase="reflector")
                 # Convert to a clean FAILED (phase-attributed) instead of unwinding into
                 # graph.invoke. The _drive guard is the net; this gives the better label.
                 _log.error("reflector.unexpected_error", error=str(error))

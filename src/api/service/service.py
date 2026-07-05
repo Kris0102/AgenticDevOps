@@ -4,9 +4,8 @@ from typing import AsyncIterator, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
-from openai import APIConnectionError, APITimeoutError
 
-from Exceptions.RetriableError import RetriableError
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 
 from api.requests.requests import RunRequest
 from datetime import datetime, timezone
@@ -586,16 +585,19 @@ class Service:
         (LangGraph swallows its internal GraphInterrupt), so catching Exception is safe."""
         try:
             graph.invoke(graph_input, config=self._config(run_id))
-        except (RetriableError, APITimeoutError, APIConnectionError) as exc:
-            # Transient — an LLM API hiccup, not a run defect. Do NOT fail: leave the run
-            # non-terminal so it reads STALLED (no worker driving it) and can be re-driven
-            # from its checkpoint via /continue, re-running the node that timed out. The
-            # RetriableError branch is the explicit signal from the agents; the raw openai
-            # types are a backstop for call sites that don't wrap (tester/reflector).
-            reason = getattr(exc, "reason", str(exc))
-            _log.warning("graph.transient", run_id=run_id, error=reason)
-            self._mark_stalled(run_id, reason)
+        except RetriableError as exc:
+            # Explicit transient signal from an agent — an LLM API hiccup (timeout / 429
+            # "overloaded" / 5xx), not a run defect. Do NOT fail: leave the run non-terminal
+            # so it reads STALLED and can be re-driven via /continue, re-running the node.
+            _log.warning("graph.transient", run_id=run_id, error=exc.reason)
+            self._mark_stalled(run_id, exc.reason)
         except Exception as exc:
+            # A raw transient that escaped the agents (defensive — the nodes classify these
+            # now, but a call site outside an agent could still leak one) → also STALL.
+            if is_transient_llm_error(exc):
+                _log.warning("graph.transient", run_id=run_id, error=str(exc))
+                self._mark_stalled(run_id, f"Transient LLM error: {exc}")
+                return
             # Uncaught crash — a bug, not a domain failure. Do NOT force-fail: the
             # checkpoint is intact and one fixed bug away from finishing, so leave the
             # run non-terminal (reads STALLED, sandbox alive) and continuable via

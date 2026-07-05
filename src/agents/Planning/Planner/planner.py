@@ -9,7 +9,10 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
 
-from Exceptions.RetriableError import RetriableError
+from langgraph.errors import GraphRecursionError
+
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
+from Exceptions.RunExecutionError import RunExecutionError
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from agents.Planning.Planner.investigation_support import (
@@ -191,16 +194,32 @@ class Planner:
                           messages=len(messages), tool_rounds=tool_calls)
                 _log.debug("planner.investigation_summary", summary=investigation_summary)
 
-            except (APIConnectionError, APITimeoutError) as exception:
-                _log.error("planner.cluster_unreachable", phase="investigation",
-                           hint="ensure VPN connected", error=str(exception))
-                raise RetriableError(f"planner investigation LLM call failed: {exception}", phase="planner")
-            except Exception as e:
-                _log.warning("planner.investigation_failed",
-                             error=str(e), recovery="continuing to synthesis")
+            except GraphRecursionError:
+                # SOFT failure: the investigation exhausted its tool-step budget (langgraph
+                # drops the partial messages, so nothing to salvage). The model WAS working,
+                # just slowly — plan from the objective; the reviewer + coder ground downstream.
+                # Mirrors the coder's recursion recovery. Raise the planner tool-step budget if
+                # this recurs. (ADR 0023 — recursion degrades, a real error fails.)
+                _log.warning("planner.investigation_recursion_limit",
+                             recovery="planning from the objective",
+                             limit=_investigation_recursion_limit(self.max_tool_steps))
                 investigation_summary = (
-                    f"Investigation failed (continuing to synthesis): {e}"
+                    "Investigation incomplete (tool-step budget exhausted); planning from the "
+                    "objective. Raise the planner tool-step budget if this recurs."
                 )
+            except Exception as e:
+                # Transient (timeout / connection / 429 "overloaded" / 5xx) → STALL: /continue
+                # re-runs the investigation once the cluster frees (ADR 0023).
+                if is_transient_llm_error(e):
+                    _log.error("planner.cluster_unreachable", phase="investigation", error=str(e))
+                    raise RetriableError(f"planner investigation LLM call failed: {e}", phase="planner")
+                # A GENUINE, unexpected investigation error (not transient, not a budget cap) →
+                # FAIL cleanly. Synthesizing a plan off a broken investigation just wastes the
+                # planner↔reviewer budget on a doomed plan; the coder likewise raises on a hard
+                # error rather than limping. RunExecutionError → planner_node → clean FAILED.
+                _log.error("planner.investigation_error", error=str(e))
+                raise RunExecutionError(phase="planner.investigation",
+                                        reason=f"Investigation failed: {e}")
            
 
         # 2. Synthesis Phase (Structured Output) — retried with feedback if quality gate rejects
@@ -226,14 +245,13 @@ class Planner:
                     plan=Plan(**draft.plan.model_dump(), review_feedback=[]),
                     microtasks=draft.microtasks,
                 )
-            except (APIConnectionError, APITimeoutError) as exception:
-                _log.error("planner.cluster_unreachable", phase="synthesis",
-                           hint="ensure VPN connected", error=str(exception))
-                raise RetriableError(f"planner synthesis LLM call failed: {exception}", phase="planner")
             except ValidationError as e:
                 _log.error("planner.synthesis_validation_failed", error=str(e))
                 raise
             except Exception as e:
+                if is_transient_llm_error(e):
+                    _log.error("planner.cluster_unreachable", phase="synthesis", error=str(e))
+                    raise RetriableError(f"planner synthesis LLM call failed: {e}", phase="planner")
                 _log.error("planner.synthesis_error", error=str(e))
                 raise
 

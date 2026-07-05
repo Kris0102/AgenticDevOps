@@ -10,7 +10,10 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APITimeoutError
 
-from Exceptions.RetriableError import RetriableError
+from langgraph.errors import GraphRecursionError
+
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
+from Exceptions.RunExecutionError import RunExecutionError
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
 from agents.Planning.Reviewer.reviewer_support import (
@@ -179,12 +182,27 @@ class Reviewer:
                 )
                 _log.debug("reviewer.investigation_summary", summary=investigation_summary)
 
-            except (APIConnectionError, APITimeoutError) as error:
-                _log.error("reviewer.cluster_unreachable", phase="investigation", error=str(error))
-                raise RetriableError(f"reviewer investigation LLM call failed: {error}", phase="reviewer")
+            except GraphRecursionError:
+                # SOFT failure: investigation exhausted its tool-step budget. Review from the
+                # plan itself; the objective + plan are still there. Mirrors the coder/planner
+                # recursion recovery. Raise the reviewer tool-step budget if it recurs (ADR 0023).
+                _log.warning("reviewer.investigation_recursion_limit",
+                             recovery="reviewing from the plan")
+                investigation_summary = (
+                    "Investigation incomplete (tool-step budget exhausted); reviewing from the "
+                    "plan. Raise the reviewer tool-step budget if this recurs."
+                )
             except Exception as error:
-                _log.warning("reviewer.investigation_failed", error=str(error))
-                investigation_summary = f"Investigation failed (continuing to review): {error}"
+                # Transient (429 "overloaded" / timeout / 5xx) → STALL: /continue re-investigates
+                # once the cluster frees (ADR 0023).
+                if is_transient_llm_error(error):
+                    _log.error("reviewer.cluster_unreachable", phase="investigation", error=str(error))
+                    raise RetriableError(f"reviewer investigation LLM call failed: {error}", phase="reviewer")
+                # A GENUINE, unexpected investigation error → FAIL cleanly rather than review off
+                # a broken investigation. RunExecutionError → reviewer_node → clean FAILED.
+                _log.error("reviewer.investigation_error", error=str(error))
+                raise RunExecutionError(phase="reviewer.investigation",
+                                        reason=f"Investigation failed: {error}")
 
         _log.debug(
             "reviewer.invoke.context_read",
@@ -214,13 +232,13 @@ class Reviewer:
                 result = raw
             else:
                 result = ReviewerOutput.model_validate(raw)
-        except (APIConnectionError, APITimeoutError) as error:
-            _log.error("reviewer.cluster_unreachable", error=str(error))
-            raise RetriableError(f"reviewer LLM call failed: {error}", phase="reviewer")
         except ValidationError as error:
             _log.error("reviewer.output_validation_failed", error=str(error))
             raise
         except Exception as error:
+            if is_transient_llm_error(error):
+                _log.error("reviewer.cluster_unreachable", error=str(error))
+                raise RetriableError(f"reviewer LLM call failed: {error}", phase="reviewer")
             _log.error("reviewer.review_failed", error=str(error))
             raise
 

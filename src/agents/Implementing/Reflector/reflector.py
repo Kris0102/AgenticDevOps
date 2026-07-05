@@ -16,6 +16,7 @@ from agents.Implementing.Reflector.prompt.reflector_prompt import (
 )
 from agents.Implementing.Reflector.reflector_output import create_reflection_file_as_output
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from db.lessons import LessonStore
 from observability import Category, get_logger
 from orchestrator.state import BlackboardState, Microtask, Reflection, RunConfig, RunStatus
@@ -274,6 +275,11 @@ class Reflector:
             )
             return summary
         except Exception as exc:
+            # Transient (429 "overloaded" / timeout / 5xx) → STALL, don't diagnose off a
+            # failed investigation (ADR 0023). /continue re-runs the reflector on recovery.
+            if is_transient_llm_error(exc):
+                _log.error("reflector.cluster_unreachable", phase="investigation", error=str(exc))
+                raise RetriableError(f"reflector investigation LLM call failed: {exc}", phase="reflector")
             _log.warning("reflector.investigation_failed", error=str(exc))
             return f"Investigation failed: {exc}"
 
@@ -332,7 +338,12 @@ class Reflector:
                     reason="tests failed but LLM returned approve — forcing improve",
                 )
                 output = output.model_copy(update={"decision": "improve"})
-        except (ValidationError, Exception) as exc:
+        except Exception as exc:
+            # Transient (429 / timeout / 5xx) → STALL rather than emit a fallback diagnosis
+            # that sends the coder to fix nothing (ADR 0023).
+            if is_transient_llm_error(exc):
+                _log.error("reflector.cluster_unreachable", phase="assessment", error=str(exc))
+                raise RetriableError(f"reflector assessment LLM call failed: {exc}", phase="reflector")
             _log.warning("reflector.assessment_failed", error=str(exc))
             output = ReflectionOutput(
                 decision="improve",

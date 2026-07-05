@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from openai import APIConnectionError, APITimeoutError
 
-from Exceptions.RetriableError import RetriableError
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from pydantic import SecretStr
 
 from agents.Implementing.Coder.coder_output import create_code_file_log
@@ -194,10 +194,11 @@ class Coder:
                 )
                 agent_result = {"messages": []}
                 recursion_exceeded = True
-            except (APIConnectionError, APITimeoutError) as exception:
-                _log.error("coder.cluster_unreachable", phase="coding",
-                           hint="ensure VPN connected", error=str(exception))
-                raise RetriableError(f"coder LLM call failed: {exception}", phase="coder")
+            except Exception as exception:
+                if is_transient_llm_error(exception):
+                    _log.error("coder.cluster_unreachable", phase="coding", error=str(exception))
+                    raise RetriableError(f"coder LLM call failed: {exception}", phase="coder")
+                raise
 
             transcript = format_react_transcript(agent_result.get("messages", []))
             diff_text = self.coder_tools.get_repo_diff()
@@ -287,10 +288,11 @@ class Coder:
             except GraphRecursionError:
                 _log.warning("coder.compile_fix_recursion_limit",
                              microtask_id=microtask.microtask_id, attempt=attempt)
-            except (APIConnectionError, APITimeoutError) as exception:
-                _log.error("coder.cluster_unreachable", phase="compile-fix",
-                           hint="ensure VPN connected", error=str(exception))
-                raise RetriableError(f"coder compile-fix LLM call failed: {exception}", phase="coder")
+            except Exception as exception:
+                if is_transient_llm_error(exception):
+                    _log.error("coder.cluster_unreachable", phase="compile-fix", error=str(exception))
+                    raise RetriableError(f"coder compile-fix LLM call failed: {exception}", phase="coder")
+                raise
 
         _log.warning("coder.compile_unresolved", microtask_id=microtask.microtask_id,
                      reason="handing to tester anyway — tester build check is the backstop")

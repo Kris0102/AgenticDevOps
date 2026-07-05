@@ -6,7 +6,7 @@ from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
-from Exceptions.RetriableError import RetriableError
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from agents.Implementing.Tester.pipeline import TestPipeline
 from agents.Implementing.Tester.results import CheckResult, CheckStatus
 from agents.Implementing.Tester.tester_tools import TesterTools
@@ -65,6 +65,12 @@ class TesterRunner:
             except RetriableError:
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
+                # Backstop: a transient LLM failure (429 "overloaded" / timeout / 5xx) that
+                # escaped the tester's phases must STALL, not FAIL — the tester has no internal
+                # RetriableError handling, so classify it here (ADR 0023).
+                if is_transient_llm_error(error):
+                    _log.error("tester.cluster_unreachable", error=str(error))
+                    raise RetriableError(f"tester LLM call failed: {error}", phase="tester")
                 # Don't let a tester crash escape graph.invoke (→ ASGI 500 + stuck run).
                 # End the run cleanly as FAILED; the error is logged for debugging.
                 _log.error("tester.unexpected_error", error=str(error))

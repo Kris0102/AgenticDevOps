@@ -91,9 +91,21 @@ For EACH microtask you MUST provide:
    deterministic I/O (pure functions, parsers, formatters, calculations); the Tester turns
    each into a direct assertion. Omit examples (empty list) for side-effecting or
    hard-to-exemplify behaviour (logging, file writes, network) — `text` alone is fine then.
+   CRITICAL (applies to ANY domain — parsing, math, dates, validation, formatting, string
+   matching, …) — you MUST supply an example for any case whose expected output is a PRECISE
+   COMPUTED VALUE: a boundary/threshold case, an exact error or message string, a computed
+   number (distance, rounded value, count, total), or an edge input. The Tester CANNOT
+   reliably compute these itself — it will mentally miscalculate or guess a message and then
+   reject correct code — so it must copy YOUR value verbatim. Whenever a criterion turns on
+   an exact value at a boundary ("rounds 2.5 to 3", "rejects input past the limit with error
+   E", "returns 0 for an empty list"), give the exact triggering input and the exact expected
+   output/message. Never leave a threshold / error / edge behaviour without a concrete example.
    GOOD: {{"text": "add(a, b) returns the sum", "examples": [{{"given": {{"a": 2, "b": 3}}, "expect": 5}}]}}
+   GOOD: {{"text": "parseAmount rejects a malformed value with an exact error", "examples": [{{"given": {{"raw": "12.3.4"}}, "expect": {{"throws": "Invalid amount: 12.3.4"}}}}]}}
+   GOOD: {{"text": "roundHalfUp rounds a .5 boundary upward", "examples": [{{"given": {{"n": 2.5}}, "expect": 3}}]}}
    GOOD: {{"text": "GET /api/results returns HTTP 200 with a JSON array of Result objects", "examples": []}}
    BAD:  {{"text": "server/index.js exists", "examples": []}}
+   BAD:  {{"text": "throws the right error near the threshold", "examples": []}}  (a precise boundary → MUST give the input + exact expected output)
 
 5. context_files — existing files the Coder should READ (not edit) to match this repo's
    conventions: a sibling file showing established patterns, a shared types/schema file,

@@ -7,8 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from agents.Implementing.Reflector.prompt.reflector_prompt import (
     REFLECTOR_SYSTEM_PROMPT,

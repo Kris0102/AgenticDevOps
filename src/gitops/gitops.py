@@ -20,18 +20,25 @@ class GitOps:
 
     BRANCH_PREFIX = "agent/run-"
 
-    # Pathspec magic excludes applied at stage time (`git add -A -- . :(exclude)…`) so deps,
-    # secret-bearing files, and the Tester's ephemeral synth tests never reach the branch even
-    # when the repo's own .gitignore is missing/incomplete. Backstop to the seeded .gitignore.
+    # Paths force-unstaged after `git add -A -- .` so deps, secret-bearing files, and the
+    # Tester's ephemeral synth tests never reach the branch even when the repo's own
+    # .gitignore is missing/incomplete. Backstop to the seeded .gitignore.
+    #
+    # NOTE this is a two-step (add, then `git reset -q -- <these>`) rather than
+    # `git add` `:(exclude)` pathspec magic: with any exclude pathspec present, git add
+    # refuses (exit 1, "paths are ignored by one of your .gitignore files") as soon as an
+    # ignored directory like .agentic_tests/ exists in the tree — which it always does
+    # after the Tester ran. Plain `add -A` skips ignored paths silently; the reset then
+    # drops anything a gitignore-less repo let through. `:(glob)` makes `**` match zero
+    # or more leading directories (top-level node_modules/ included).
     STAGE_EXCLUDES = [
-        ".",
-        ":(exclude)**/node_modules/**",
-        ":(exclude).env",
-        ":(exclude).env.*",
-        ":(exclude)**/*.pem",
-        ":(exclude)**/*.key",
-        ":(exclude)**/*.p12",
-        ":(exclude).agentic_tests/**",
+        ":(glob)**/node_modules/**",
+        ".env",
+        ".env.*",
+        ":(glob)**/*.pem",
+        ":(glob)**/*.key",
+        ":(glob)**/*.p12",
+        ".agentic_tests",
     ]
 
     def __init__(self, sandbox_tools: DockerSandboxTools):
@@ -122,10 +129,12 @@ class GitOps:
         _run(["git", "config", "user.email", author_email])
         _run(["git", "config", "user.name", author_name])
 
-        # Stage changes, but hard-exclude deps/secrets/ephemeral synth tests even if the
+        # Stage changes, then hard-unstage deps/secrets/ephemeral synth tests even if the
         # repo shipped no (or an incomplete) .gitignore. Deterministic backstop to the
-        # bootstrap-seeded .gitignore — see ADR 0019.
-        _run(["git", "add", "-A", "--"] + self.STAGE_EXCLUDES)
+        # bootstrap-seeded .gitignore — see ADR 0019 + STAGE_EXCLUDES note (why not
+        # `:(exclude)` pathspecs). The reset exits 0 when nothing matches.
+        _run(["git", "add", "-A", "--", "."])
+        _run(["git", "reset", "-q", "--"] + self.STAGE_EXCLUDES)
         message = commit_message or f"AgenticDevOps run {run_id}"
         commit = _run(["git", "commit", "-m", message], allow_fail=True)
         if commit.exit_code != 0:

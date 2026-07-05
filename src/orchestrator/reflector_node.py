@@ -227,6 +227,7 @@ class ReflectorRunner:
                 artifact_id=artifact_ref,
                 run_id=self.run_id,
                 kind="reflection",
+                microtask_id=microtask.microtask_id,
                 content_text=(
                     f"Microtask:         {microtask.microtask_id}\n"
                     f"Decision:          improve\n"

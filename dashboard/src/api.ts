@@ -14,7 +14,8 @@ export interface RunResponse {
   status?: string | null
   hitl_phase?: string | null
   hitl_approval_id?: string | null
-  stalled_reason?: string | null   // transient-error reason when run_state === 'stalled'
+  stalled_reason?: string | null   // transient-error / crash reason when run_state === 'stalled'
+  failure_reason?: string | null   // run.failed reason when run_state === 'failed'
 }
 
 // A run row for the previous-runs home list (GET /runs). Extra fields are the box's
@@ -62,6 +63,7 @@ export interface RunDefaults {
   max_total_iterations: number
   max_microtask_attempts: number
   hitl_checkpoints: string[]
+  teardown_on_terminal: boolean
 }
 
 export interface AppSettings {
@@ -69,6 +71,7 @@ export interface AppSettings {
   selected: LLMConfig
   knobs: Knobs
   defaults: RunDefaults
+  github_token?: string | null   // masked on read; leave masked to keep stored token
 }
 
 export interface SchemaField {
@@ -154,6 +157,7 @@ export interface LogView {
 export interface ArtifactView {
   artifact_id: string
   kind: string
+  microtask_id?: string | null   // producing microtask (diff/test/reflection); null = run-level
   created_at: string
   size: number
   preview: string
@@ -214,6 +218,10 @@ export const api = {
   continueRun: (id: string) =>
     http.post<RunResponse>(`/runs/${id}/continue`).then((r) => r.data),
 
+  // Human verdict on a stalled run: close the case as FAILED ('Mark as failed').
+  failRun: (id: string, note?: string) =>
+    http.post<RunResponse>(`/runs/${id}/fail`, { note: note || null }).then((r) => r.data),
+
   // Durable run detail: artifact browse list (no bodies), one artifact's body, microtask board.
   getArtifacts: (id: string) =>
     http.get<ArtifactView[]>(`/runs/${id}/artifacts`).then((r) => r.data),
@@ -243,4 +251,6 @@ export const api = {
   getSettingsSchema: () => http.get<SchemaField[]>('/settings/schema').then((r) => r.data),
   testProvider: (providerId: string) =>
     http.post<ProviderTestResult>(`/settings/providers/${providerId}/test`).then((r) => r.data),
+  testGithub: () =>
+    http.post<ProviderTestResult>('/settings/github/test').then((r) => r.data),
 }

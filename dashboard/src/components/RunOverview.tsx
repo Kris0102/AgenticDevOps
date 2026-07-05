@@ -105,6 +105,7 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
       .reduce((acc, e) => acc + (typeof e.payload?.duration_ms === 'number' ? (e.payload.duration_ms as number) : 0), 0)
     return {
       duration: fmtDuration(duration),
+      planDrafts: count('plan.drafted'),
       reviews: count('plan.reviewed'),
       diagnoses: count('reflection.created'),
       failures: count('microtask.failed') + count('run.failed'),
@@ -119,6 +120,10 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
   const phases = useMemo(() => buildPhases(events), [events])
 
   const done = tasks.filter((t) => DONE.has(t.status)).length
+  // The microtask being worked RIGHT NOW (coder/tester/reflector loop) — most
+  // recently-updated non-terminal task; the board is idx-ordered so pick IN_PROGRESS first.
+  const current = live ? tasks.find((t) => t.status === 'IN_PROGRESS') ?? null : null
+  const planDrafts = stats.planDrafts
 
   return (
     <div className="panel overview">
@@ -135,7 +140,7 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
       <div className="tiles">
         <div className="tile"><span className="tv">{tasks.length ? `${done}/${tasks.length}` : '—'}</span><span className="tl">microtasks done</span></div>
         <div className="tile"><span className="tv">{stats.duration}</span><span className="tl">duration</span></div>
-        <div className="tile"><span className="tv">{stats.reviews}</span><span className="tl">plan reviews</span></div>
+        <div className="tile"><span className="tv">{planDrafts || stats.reviews}</span><span className="tl">plan attempts</span></div>
         <div className="tile"><span className="tv">{stats.gates}</span><span className="tl">human decisions</span></div>
         <div className={`tile ${stats.failures + stats.diagnoses > 0 ? 'warn' : ''}`}>
           <span className="tv">{stats.failures + stats.diagnoses}</span><span className="tl">failures fixed</span>
@@ -162,16 +167,31 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
       {stats.blocked && <div className="error">⛔ push was blocked — secret findings in the working tree</div>}
       {stats.branch && <div className="pushedto">pushed to <code>{stats.branch}</code></div>}
 
+      {current && (
+        <div className="nowworking">
+          <span className="nw-pulse" aria-hidden>●</span>
+          <span className="nw-label">working on</span>
+          <span className="nw-idx">#{current.idx}</span>
+          <span className="nw-title" title={current.title}>{current.title}</span>
+          <span className="nw-attempt">attempt {Math.max(current.attempts, 1)}</span>
+        </div>
+      )}
+
       {tasks.length > 0 && (
         <div className="mtboard">
           {tasks.map((t) => (
-            <div key={t.microtask_id} className={`mtrow ${DONE.has(t.status) ? 'ok' : t.status === 'FAILED' ? 'bad' : ''}`}>
+            <div
+              key={t.microtask_id}
+              className={`mtrow ${DONE.has(t.status) ? 'ok' : t.status === 'FAILED' ? 'bad' : ''} ${current?.microtask_id === t.microtask_id ? 'now' : ''}`}
+            >
               <span className="mtidx">{t.idx}</span>
               <span className="mttitle" title={t.title}>{t.title}</span>
               <span className="mtfiles" title={(t.files_touched.length ? t.files_touched : t.target_files).join('\n')}>
                 {(t.files_touched.length ? t.files_touched : t.target_files).length} files
               </span>
-              {t.attempts > 1 && <span className="mtattempts">{t.attempts} attempts</span>}
+              <span className={`mtattempts ${t.attempts > 1 ? 'multi' : ''}`}>
+                {t.attempts > 0 ? `${t.attempts} attempt${t.attempts > 1 ? 's' : ''}` : '—'}
+              </span>
               <span className="mstatus">{t.status.toLowerCase()}</span>
             </div>
           ))}

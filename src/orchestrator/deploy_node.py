@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 from db.db import db
 from db.event_log import EventLogger
+from db.settings_store import SettingsStore
 from Exceptions.RunExecutionError import RunExecutionError
 from gitops.gitops import GitOps
 from observability import Category, get_logger
@@ -38,7 +39,7 @@ class DeployRunner:
             return {}
 
         branch = GitOps.branch_name(self.run_id)
-        token = os.getenv("GITHUB_TOKEN", "")
+        token = SettingsStore.github_token()
 
         with db.session_scope() as db_session:
             # Secret content-scan is a HARD gate BEFORE the push — even a human-approved

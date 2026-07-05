@@ -100,6 +100,14 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         </div>
       )
     }
+    if (f.type === 'bool') {
+      return (
+        <label className={`chip ${val ? 'on' : ''}`}>
+          <input type="checkbox" checked={!!val} onChange={(e) => set(f.key, e.target.checked)} />
+          {val ? 'enabled' : 'disabled'}
+        </label>
+      )
+    }
     return (
       <input
         type="number" step={f.type === 'float' ? '0.1' : '1'} value={val ?? ''}
@@ -187,6 +195,43 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
           )
         })}
         <button className="ghost addprov" onClick={addProvider}>+ add provider</button>
+      </div>
+
+      {/* GitHub */}
+      <div className="sp-section">
+        <div className="sp-section-head">
+          <h3>GitHub</h3>
+          <p>Token used to clone private repos and push the run branch. Without one, only public repos work.</p>
+        </div>
+        <div className="provcard type-github">
+          <div className="np-grid">
+            <label className="fld"><span>personal access token <em>repo scope</em></span>
+              <div className="keyfield">
+                <input type={reveal['__gh'] ? 'text' : 'password'} placeholder="leave masked to keep"
+                  value={s.github_token ?? ''} onChange={(e) => set('github_token', e.target.value)} />
+                <button type="button" className="reveal" title={reveal['__gh'] ? 'hide' : 'show'}
+                  onClick={() => setReveal((r) => ({ ...r, __gh: !r['__gh'] }))}>{reveal['__gh'] ? '🙈' : '👁'}</button>
+              </div>
+            </label>
+          </div>
+          <div className="provactions-gh">
+            <button className="ghost sm" onClick={async () => {
+              setTests((t) => ({ ...t, __gh: { ok: false, reason: 'testing…' } }))
+              try { const res = await api.testGithub(); setTests((t) => ({ ...t, __gh: res })) }
+              catch (e) { setTests((t) => ({ ...t, __gh: { ok: false, reason: String(e) } })) }
+            }}>Test connection</button>
+            {dirty && <span className="gh-hint">save first — the test uses the stored token</span>}
+          </div>
+          {tests['__gh'] && (
+            <div className={`provtest ${tests['__gh'].reason === 'testing…' ? 'pending' : tests['__gh'].ok ? 'ok' : 'bad'}`}>
+              {tests['__gh'].reason === 'testing…'
+                ? <><span className="dot" /> testing…</>
+                : tests['__gh'].ok
+                  ? <>✓ {tests['__gh'].reason} · {tests['__gh'].latency_ms}ms</>
+                  : <>✗ {tests['__gh'].kind ? `${tests['__gh'].kind}: ` : ''}{tests['__gh'].reason}</>}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Default model — the primary control */}

@@ -63,6 +63,9 @@ class Artifact(Base):
     artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
     run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String, nullable=False)
+    # Which microtask produced it (diff / test-* / reflection); NULL for run-level
+    # artifacts (plan, review). Lets the dashboard show each artifact in context.
+    microtask_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     content_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sha256: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

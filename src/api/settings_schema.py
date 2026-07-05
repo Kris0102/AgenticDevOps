@@ -52,4 +52,6 @@ SETTINGS_SCHEMA = [
      "description": "How many times one microtask may be retried (coder↔tester↔reflector) before the run is FAILED."},
     {"key": "defaults.hitl_checkpoints", "label": "Default review gates", "type": "gates", "group": "expert",
      "description": "Which phases pause for human approval by default (plan / code / deploy). Overridable per run."},
+    {"key": "defaults.teardown_on_terminal", "label": "Tear down sandbox when run ends", "type": "bool", "group": "expert",
+     "description": "Destroy the run's Docker container once the run is terminal (completed or failed). A STALLED run always keeps its container so it can be continued."},
 ]

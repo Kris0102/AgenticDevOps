@@ -180,6 +180,9 @@ class RunDefaults(BaseModel):
     max_total_iterations: int = 6
     max_microtask_attempts: int = 3
     hitl_checkpoints: List[Phase] = Field(default_factory=list)
+    # Destroy the run's Docker sandbox once it reaches a TERMINAL state (completed/failed).
+    # Never fires for a stalled run — its container must survive for /continue.
+    teardown_on_terminal: bool = False
 
 
 class AppSettings(BaseModel):
@@ -189,6 +192,9 @@ class AppSettings(BaseModel):
     selected: LLMConfig
     knobs: Knobs = Field(default_factory=Knobs)
     defaults: RunDefaults = Field(default_factory=RunDefaults)
+    # GitHub token for private-repo clone + branch push (gitops). Masked to the UI,
+    # encrypted at rest like provider keys; None = anonymous (public repos only).
+    github_token: Optional[str] = None
 
 class Constraints(BaseModel):
     time_budget_minutes: Optional[int] = None

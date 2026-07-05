@@ -70,3 +70,4 @@ skills*.json
 scripts/snapshots/
 demo*
 .agentic_tests/
+.settings_key

@@ -40,11 +40,15 @@ class ReflectionOutput(BaseModel):
     fix_target: Literal["code", "test"] = Field(
         default="code",
         description=(
-            "Only meaningful when decision='improve'. 'code' = the IMPLEMENTATION is wrong "
-            "(default) → Coder retries. 'test' = the implementation is correct but the "
-            "SYNTHESIZED TEST is wrong (asserts a wrong expected value, bad assertion, "
-            "broken setup) → the test is regenerated. Choose 'test' ONLY when you are "
-            "confident the code satisfies the acceptance criteria and the test itself is at fault."
+            "Only meaningful when decision='improve'. Judge against the ACCEPTANCE CRITERIA, "
+            "not against what the test asserts. 'code' (default) = the IMPLEMENTATION violates "
+            "the criteria → Coder retries. 'test' = the code satisfies the criteria but the "
+            "SYNTHESIZED TEST is wrong — it asserts a value contradicting a criterion's "
+            "given→expect example, or a value the Tester computed itself for an input the "
+            "criteria give no example for (a hand-computed distance / rounded number / exact "
+            "error string), or has a broken assertion/setup → the test is regenerated. A "
+            "self-computed expected value the Planner never supplied is the classic wrong-test "
+            "signal. Prefer 'code' when genuinely unsure."
         ),
     )
     failure_type: str = Field(
@@ -170,10 +174,15 @@ class Reflector:
         )
         lessons_block = LessonStore.render_block(lessons)
 
+        # The synthesized test the verdict may have failed on — so the code-vs-test call
+        # can judge the actual assertion, not just the failure output. Empty on a
+        # Track-A-only failure (the repo's own suite, which we don't regenerate).
+        synth_test_source = self._read_synth_test(microtask.microtask_id)
+
         # Phase 2: structured assessment
         output = self._assess(
             microtask, test_output, diff, investigation_summary, test_passed, rejection_note,
-            lessons_block,
+            lessons_block, synth_test_source,
         )
         approved = output.decision == "approve"
 
@@ -272,6 +281,25 @@ class Reflector:
     # Phase 2 — structured assessment                                      #
     # ------------------------------------------------------------------ #
 
+    def _read_synth_test(self, microtask_id: str) -> str:
+        """Best-effort read of the microtask's synthesized test file from the sandbox so the
+        diagnosis can inspect the failing assertion. Path scheme mirrors the Tester's
+        SynthesisPhase (`.agentic_tests/test_<id>.{test.js|py}`); we glob the extension since
+        the reflector doesn't carry the project type. Any failure → "" (Track-A-only failure
+        or no synth file); never let this crash the diagnosis."""
+        safe = microtask_id.replace("-", "_")
+        try:
+            listing = self.reflector_tools.execute_in_sandbox(
+                f"ls .agentic_tests/test_{safe}.* 2>/dev/null"
+            )
+            path = next((ln.strip() for ln in listing.splitlines() if ln.strip()), "")
+            if not path:
+                return ""
+            return self.reflector_tools.read_sandbox_file(path) or ""
+        except Exception as exc:
+            _log.debug("reflector.synth_test_read_failed", microtask_id=microtask_id, error=str(exc))
+            return ""
+
     def _assess(
         self,
         microtask: Microtask,
@@ -281,6 +309,7 @@ class Reflector:
         test_passed: bool,
         rejection_note: Optional[str],
         lessons_block: str = "",
+        synth_test_source: str = "",
     ) -> ReflectionOutput:
         prompt = build_diagnosis_prompt(
             microtask=microtask,
@@ -289,6 +318,7 @@ class Reflector:
             investigation_summary=investigation_summary,
             test_passed=test_passed,
             rejection_note=rejection_note,
+            synth_test_source=synth_test_source,
         )
         if lessons_block:
             prompt = f"{lessons_block}\n\n{prompt}"

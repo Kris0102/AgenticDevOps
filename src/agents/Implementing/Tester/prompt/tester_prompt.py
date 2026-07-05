@@ -114,15 +114,20 @@ def build_test_writing_prompt_python(
     for criterion in microtask.acceptance_criteria:
         microtask_lines.append(f"  - {criterion.render()}")
     microtask_lines.append(
-        "ASSERTION RULES (critical — wrong expected values fail correct code):\n"
+        "ASSERTION RULES (critical — wrong expected values fail correct code and waste the "
+        "whole loop; these are HARD rules, not suggestions):\n"
         "  • If a criterion lists concrete examples (given → expect), assert EXACTLY those "
         "input→output pairs, copying the expected values verbatim. Never recompute, round, "
         "or 'improve' them.\n"
-        "  • For behaviour WITHOUT a concrete example (an input the criteria don't show), assert "
-        "only properties you can be CERTAIN of — correct keys/shape, that an error is raised, a "
-        "type. Do NOT assert a specific number you computed yourself: a wrong guess rejects "
-        "correct code and wastes the whole loop. When unsure of an exact value, assert structure, "
-        "not the value."
+        "  • For any behaviour the criteria give NO concrete example for, assert STRUCTURE "
+        "ONLY — that an error is thrown (its type/that it throws), the returned shape/keys, or "
+        "a value's type. You MUST NOT assert a specific value, number, distance, count, or exact "
+        "message string that you worked out yourself.\n"
+        "  • NEVER invent a boundary input and compute its expected output yourself (e.g. do not "
+        "hand-compute a Levenshtein distance to pick a 'distance-3' input, then assert the exact "
+        "resulting message). If the Planner gave no example for a boundary/edge case, either skip "
+        "the exact value and assert only that it errors / its shape, or omit that case — a "
+        "self-computed expectation that is off by one rejects correct code."
     )
     microtask_lines.append(
         f"Target source files (read these to understand what to import and test): "
@@ -198,15 +203,20 @@ def build_test_writing_prompt_js(
     for criterion in microtask.acceptance_criteria:
         microtask_lines.append(f"  - {criterion.render()}")
     microtask_lines.append(
-        "ASSERTION RULES (critical — wrong expected values fail correct code):\n"
+        "ASSERTION RULES (critical — wrong expected values fail correct code and waste the "
+        "whole loop; these are HARD rules, not suggestions):\n"
         "  • If a criterion lists concrete examples (given → expect), assert EXACTLY those "
         "input→output pairs, copying the expected values verbatim. Never recompute, round, "
         "or 'improve' them.\n"
-        "  • For behaviour WITHOUT a concrete example (an input the criteria don't show), assert "
-        "only properties you can be CERTAIN of — correct keys/shape, that an error is raised, a "
-        "type. Do NOT assert a specific number you computed yourself: a wrong guess rejects "
-        "correct code and wastes the whole loop. When unsure of an exact value, assert structure, "
-        "not the value."
+        "  • For any behaviour the criteria give NO concrete example for, assert STRUCTURE "
+        "ONLY — that an error is thrown (its type/that it throws), the returned shape/keys, or "
+        "a value's type. You MUST NOT assert a specific value, number, distance, count, or exact "
+        "message string that you worked out yourself.\n"
+        "  • NEVER invent a boundary input and compute its expected output yourself (e.g. do not "
+        "hand-compute a Levenshtein distance to pick a 'distance-3' input, then assert the exact "
+        "resulting message). If the Planner gave no example for a boundary/edge case, either skip "
+        "the exact value and assert only that it errors / its shape, or omit that case — a "
+        "self-computed expectation that is off by one rejects correct code."
     )
     microtask_lines.append(
         f"Target source files (read these to understand what to require/import and test): "

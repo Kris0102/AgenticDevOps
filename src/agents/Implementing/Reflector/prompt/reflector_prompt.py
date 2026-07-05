@@ -110,6 +110,7 @@ def build_diagnosis_prompt(
     investigation_summary: str,
     test_passed: bool,
     rejection_note: Optional[str] = None,
+    synth_test_source: str = "",
 ) -> str:
     sections: List[str] = []
 
@@ -128,6 +129,17 @@ def build_diagnosis_prompt(
         f"Target files: {', '.join(microtask.target_files) or '(none declared)'}"
     )
 
+    # The spec the code+test must satisfy — the GROUND TRUTH for the code-vs-test call.
+    # `render()` inlines any concrete IOExamples (given → expect); an assertion whose
+    # expected value contradicts these examples (or was invented where the criteria give
+    # none) points at a wrong TEST, not wrong code.
+    if microtask.acceptance_criteria:
+        criteria = "\n".join(f"  - {ac.render()}" for ac in microtask.acceptance_criteria)
+        sections.append(
+            "ACCEPTANCE CRITERIA (ground truth — the code is correct iff it satisfies THESE, "
+            "not whatever a test happens to assert):\n" + criteria
+        )
+
     if diff:
         trimmed = diff[:2000] + (" [truncated]" if len(diff) > 2000 else "")
         sections.append(f"CODE CHANGES:\n{trimmed}")
@@ -135,6 +147,14 @@ def build_diagnosis_prompt(
     if test_output:
         trimmed = test_output[:2000] + (" [truncated]" if len(test_output) > 2000 else "")
         sections.append(f"TEST OUTPUT:\n{trimmed}")
+
+    # The synthesized test itself — so the reflector can judge the failing ASSERTION, not
+    # just the failure output. Absent for a Track-A-only failure (repo's own suite).
+    if synth_test_source:
+        trimmed = synth_test_source[:2500] + (" [truncated]" if len(synth_test_source) > 2500 else "")
+        sections.append(
+            "SYNTHESIZED TEST UNDER SUSPICION (system-generated; may itself be wrong):\n" + trimmed
+        )
 
     sections.append(f"INVESTIGATION / ASSESSMENT FINDINGS:\n{investigation_summary}")
 
@@ -154,12 +174,21 @@ def build_diagnosis_prompt(
     else:
         sections.append(
             "Based on the above, produce a structured failure diagnosis.\n\n"
-            "First decide WHO is at fault:\n"
-            "  • The IMPLEMENTATION is wrong → fix_target = \"code\" (default).\n"
-            "  • The implementation is CORRECT but the synthesized TEST is wrong — it asserts a\n"
-            "    wrong expected value, has a broken assertion, or bad setup → fix_target = \"test\".\n"
-            "    Choose \"test\" ONLY when you are confident the code satisfies the acceptance\n"
-            "    criteria (check the criteria's concrete examples) and the test itself is at fault.\n\n"
+            "First decide WHO is at fault — compare the failing assertion against the ACCEPTANCE\n"
+            "CRITERIA above (the ground truth), NOT against what the test happens to expect:\n"
+            "  • fix_target = \"code\" (default) — the IMPLEMENTATION violates the acceptance\n"
+            "    criteria. The test's expectation is consistent with the criteria; the code is wrong.\n"
+            "  • fix_target = \"test\" — the code satisfies the criteria but the SYNTHESIZED TEST is\n"
+            "    wrong. Strong signals the TEST is at fault:\n"
+            "      - it asserts a concrete value/number/message that CONTRADICTS a criterion's\n"
+            "        given→expect example, OR\n"
+            "      - it asserts a specific value the Tester computed ITSELF for an input the\n"
+            "        criteria give NO example for (e.g. a hand-computed distance / rounded number /\n"
+            "        exact error string), and the code's behaviour actually matches the spec, OR\n"
+            "      - broken assertion / bad setup / wrong import in the test.\n"
+            "    A self-computed expected value the Planner never supplied is the classic wrong-test\n"
+            "    signal — do not send the Coder to break spec-correct code to satisfy it.\n"
+            "  Prefer \"code\" when genuinely unsure; the test-resynthesis budget is small.\n\n"
             "Respond ONLY with valid JSON (no markdown fences, no extra keys):\n"
             "{\n"
             '  "decision": "improve",\n'

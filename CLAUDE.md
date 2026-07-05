@@ -210,6 +210,12 @@ Scripts use `docker exec` into `deploy-postgres-1` — no local Postgres client 
 Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 
 ## Environment variables (`.env` in project root)
+**Settings hub (ADR 0020):** the LLM vars below (`CLUSTER_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`,
+`LLM_RETRIES`) and every `*_MAX_TOOL_STEPS` / `*_TIMEOUT_SECONDS` / `CODER_MAX_*` /
+`PLANNER_MAX_SYNTHESIS_ATTEMPTS` / `REFLECTOR_MAX_TEST_RESYNTH` knob are now **seeds/fallbacks
+only** — they populate `app_settings` on first boot; after that the UI (DB) is the source of
+truth and per-run overrides win. Edit them in the dashboard Settings page, not `.env`.
+
 | Variable | Purpose |
 |---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` / `POSTGRES_PORT` | Single source of truth for DB creds — docker-compose inits the DB from them; app (`db.py`) + Alembic build the connection URL from them (`Database.sqlalchemy_url()`). Also used by DB scripts |
@@ -233,8 +239,17 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 | `LOG_JSON` | `true` → one JSON object per line (prod); `false` → pretty console (default) |
 | `LOG_COLORS` | `auto` (color when stdout is a TTY, default) \| `true` \| `false`. `NO_COLOR` env also disables |
 
-## LLM provider
-Currently using `ChatOpenAI` with a custom cluster endpoint (`http://131.159.60.153:3000/inference`) running `google/gemma-4-31B-it`. All agents should eventually use `providers/base.py` abstraction (not yet implemented).
+## LLM provider (settings hub — ADR 0020)
+Provider/model/knobs are UI-managed (DB source of truth; `.env` = seed/fallback only). The
+single construction site is `providers/llm.py::build_chat_llm(provider, llm, timeout)` which
+dispatches by provider type — `ChatOpenAI` for `openai_compatible` (the cluster / any
+OpenAI-shaped endpoint), `ChatAnthropic` for `anthropic` (Claude). Settings live in the
+`app_settings` row via `db/settings_store.py` (`SettingsStore.get/get_public/update`,
+`resolve_run_config`). A run resolves ONE `RunConfig` at creation (per-run override › global
+DB › env seed), stored on the blackboard (`state["config"]`); **agents take `config` as a
+mandatory arg — the fallback (`… or resolve_run_config()`) lives in the node**. `POST /runs`
+**preflights** the provider (`providers.health_check`) and refuses to start on a dead/mis-keyed
+one. API keys are masked on read + excluded from snapshots (not encrypted, v1).
 
 ## DB schema (all tables)
 | Table | Purpose |
@@ -269,7 +284,7 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012. **Deploy hygiene (ADR 0019):** bootstrap seeds a `.gitignore`; `push_branch` stages with pathspec excludes (deps/secrets/`.agentic_tests/` never shipped); `scan_secrets` runs **gitleaks** over the tree before the push and **hard-blocks** on any finding (emits `gitops.secret_blocked`, run→FAILED); Tester synth tests are ephemeral (`.agentic_tests/`, git-ignored) |
 | Control API + dashboard backend | Done — FastAPI (`src/api/`, ADR 0013). Trigger runs + HITL approve/reject over HTTP (`POST /runs/{id}/resume` → `Command(resume=...)`); one `graph.invoke()` per gate (no re-bootstrap on resume — mid-graph pause, sandbox alive). HITL review context (`GET /runs/{id}/hitl`): plan + microtasks for a `plan` gate, raw green/red diff for a `code` gate. Notify by poll (`GET /runs/{id}` → `run_state`/`hitl_phase`). Live logs: structlog → in-memory `RunLogBus` → SSE (`/logs/stream`); durable history: `events` table poll (`/events?after=<seq>`). Runs in `BackgroundTasks` (move to a worker before prod). CLI (`main.py`) being deleted — don't mirror it |
-| Provider abstraction | Not started |
+| Provider abstraction + settings hub | Done (ADR 0020) — `providers/llm.py` factory (OpenAI-compat + Anthropic), UI-managed `app_settings` (providers/model/knobs), per-run override, preflight healthcheck. Closes provider-coupling TODO #6 |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
 | `reflections` DB table | Not started (reflections live in the checkpointed blackboard; subsumed by the `lessons` table for cross-run reuse) |
 | Per-repo lessons memory | Done (ADR 0018) — `lessons` table + `db/lessons.py`. **Write** (outcome-validated): `record_plan_lessons` on reviewer APPROVE, `record_code_lessons` on tester PASS (gated `fix_target=="code"` + `should_store_in_semantic_memory`); `record_test_lessons` is a deliberate no-op. **Read**: `find_lessons` (pgvector cosine top-k, repo+scope filtered, current run excluded) + `render_block` → advisory prompt block in reviewer/coder/reflector, also dumped to each agent's debug output file. Open: per-repo prune/cap hygiene; retrieval-usefulness reinforcement |

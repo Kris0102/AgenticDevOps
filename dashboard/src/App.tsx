@@ -4,7 +4,8 @@ import { useRunStatus } from './hooks/useRunStatus'
 import { ArtifactsPanel } from './components/ArtifactsPanel'
 import { LessonsPanel } from './components/LessonsPanel'
 import { PipelineGraph } from './components/PipelineGraph'
-import { RunControls } from './components/RunControls'
+import { NewRunPage } from './components/NewRunPage'
+import { SettingsPage } from './components/SettingsPage'
 import { RunOverview } from './components/RunOverview'
 import { RunsHome } from './components/RunsHome'
 import { StatusBar } from './components/StatusBar'
@@ -12,10 +13,12 @@ import { LogPanel } from './components/LogPanel'
 import { HitlPanel } from './components/HitlPanel'
 import { EventTimeline } from './components/EventTimeline'
 
+type View = 'home' | 'newrun' | 'settings'
+
 export default function App() {
   const [runId, setRunId] = useState<string | null>(null)
+  const [view, setView] = useState<View>('home')
   const [continuing, setContinuing] = useState(false)
-  const [showNew, setShowNew] = useState(false)
   const { run, error } = useRunStatus(runId)
   const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
 
@@ -31,7 +34,11 @@ export default function App() {
     }
   }
 
-  const openRun = (id: string) => { setShowNew(false); setRunId(id) }
+  const openRun = (id: string) => { setView('home'); setRunId(id) }
+
+  // Full-page routes (no run open): New run / Settings.
+  if (!runId && view === 'settings') return <div className="app"><SettingsPage onClose={() => setView('home')} /></div>
+  if (!runId && view === 'newrun') return <div className="app"><NewRunPage onRun={openRun} onCancel={() => setView('home')} /></div>
 
   return (
     <div className="app">
@@ -42,13 +49,12 @@ export default function App() {
           <span className="tagline">control plane</span>
         </div>
         {!runId && (
-          <button className={`primary newrun-toggle ${showNew ? 'is-open' : ''}`} onClick={() => setShowNew((v) => !v)}>
-            {showNew ? 'Close' : '＋ New run'}
-          </button>
+          <div className="topbar-actions">
+            <button className="ghost gear" onClick={() => setView('settings')} title="Settings" aria-label="Settings">⚙</button>
+            <button className="primary" onClick={() => setView('newrun')}>＋ New run</button>
+          </div>
         )}
       </header>
-
-      {!runId && showNew && <RunControls onRun={openRun} onCancel={() => setShowNew(false)} />}
 
       {error && <div className="error">poll error: {error}</div>}
 

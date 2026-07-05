@@ -19,7 +19,8 @@ from agents.Implementing.Reflector.reflector_output import create_reflection_fil
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
 from db.lessons import LessonStore
 from observability import Category, get_logger
-from orchestrator.state import BlackboardState, Microtask, Reflection, RunStatus
+from orchestrator.state import BlackboardState, Microtask, Reflection, RunConfig, RunStatus
+from providers import build_chat_llm
 from tool_gateway.Roles import Roles
 
 load_dotenv()
@@ -114,27 +115,16 @@ class Reflector:
     so the node can apply the correct HITL gate (TEST on approve, REFLECT on improve).
     """
 
-    def __init__(self, run_id: str, reflector_tools: ReflectorTools):
+    def __init__(self, run_id: str, reflector_tools: ReflectorTools, config: RunConfig):
         self.run_id = run_id
         self.reflector_tools = reflector_tools
         self.gateway = reflector_tools.gateway
         self.name = Roles.REFLECTOR.value
-        self.max_tool_steps = _max_tool_steps()
+        self.config = config   # mandatory — the node supplies the fallback
+        self.max_tool_steps = self.config.knobs.reflector_max_tool_steps
 
-        api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("Missing API key. Set CLUSTER_API_KEY or OPENAI_API_KEY.")
-
-        self.llm = ChatOpenAI(
-            model=os.getenv("LLM_MODEL", "google/gemma-4-31B-it"),
-            api_key=SecretStr(api_key),
-            base_url="http://131.159.60.153:3000/inference",
-            temperature=0.0,
-            top_p=0.1,
-            max_completion_tokens=4096,
-            max_retries=int(os.getenv("LLM_RETRIES", "3")),
-            timeout=int(os.getenv("REFLECTOR_TIMEOUT_SECONDS", "120")),
-        )
+        self.llm = build_chat_llm(self.config.provider, self.config.llm,
+                                  timeout_seconds=self.config.knobs.reflector_timeout_seconds)
         self.structured_llm = self.llm.with_structured_output(ReflectionOutput, method="json_mode")
         self.investigator = create_agent(
             self.llm,

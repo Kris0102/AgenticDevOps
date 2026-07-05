@@ -10,6 +10,7 @@ from db.lessons import LessonStore
 from db.models import Artifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.RetriableError import RetriableError
+from db.settings_store import resolve_run_config
 from orchestrator.run_failure import RunFailureHandler
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from context_engine.engine import ContextEngine
@@ -85,7 +86,8 @@ class ReviewerRunner:
 
             try:
                 tools = self._init_tools(db_session)
-                result = Reviewer(run_id=self.run_id, tools=tools).invoke(self.state)
+                config = self.state.get("config") or resolve_run_config()
+                result = Reviewer(run_id=self.run_id, tools=tools, config=config).invoke(self.state)
             except RetriableError:
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:

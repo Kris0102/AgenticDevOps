@@ -117,6 +117,79 @@ class Objective(BaseModel):
     definition_of_done: List[str]
     non_goals: List[str]
 
+
+# --------------------------------------------------------------- LLM / run config
+# Settings hub (ADR: UI-managed providers/knobs). A run resolves ONE RunConfig at creation
+# (per-run override › global DB settings › env seed) and carries it on the blackboard, so
+# agents read model/knobs from state instead of os.getenv. See providers/llm.py.
+
+class ProviderType(str, Enum):
+    OPENAI_COMPATIBLE = "openai_compatible"   # the cluster, any OpenAI-shaped endpoint
+    ANTHROPIC = "anthropic"                     # Claude
+
+
+class ProviderProfile(BaseModel):
+    """A named LLM provider — its endpoint + key + suggested models. Keys are masked when
+    served to the UI (SettingsStore.get_public); the raw value is used only by the factory."""
+    id: str
+    label: str
+    type: ProviderType = ProviderType.OPENAI_COMPATIBLE
+    base_url: Optional[str] = None             # required for openai_compatible; ignored for anthropic
+    api_key: Optional[str] = None
+    models: List[str] = Field(default_factory=list)
+
+
+class LLMConfig(BaseModel):
+    """The selected model + generation knobs for a run. `provider_id` points at a
+    ProviderProfile that supplies base_url/api_key."""
+    provider_id: str
+    model: str
+    temperature: float = 0.0
+    max_retries: int = 3
+
+
+class Knobs(BaseModel):
+    """Every agent tuning value — formerly scattered os.getenv reads. Defaults mirror the
+    old env defaults so behaviour is unchanged when nothing is set."""
+    planner_max_tool_steps: int = 15
+    planner_timeout_seconds: int = 60
+    planner_max_synthesis_attempts: int = 3
+    reviewer_max_tool_steps: int = 15
+    reviewer_timeout_seconds: int = 60
+    coder_max_tool_steps: int = 16
+    coder_timeout_seconds: int = 120
+    coder_max_empty_diff_retries: int = 2
+    coder_max_compile_retries: int = 2
+    tester_max_tool_steps: int = 6
+    tester_timeout_seconds: int = 120
+    reflector_max_tool_steps: int = 8
+    reflector_timeout_seconds: int = 120
+    reflector_max_test_resynth: int = 2
+
+
+class RunConfig(BaseModel):
+    """The effective, resolved config a run executes under — llm (+ its provider) and knobs.
+    Built once at run creation and stored on the blackboard (`state["config"]`)."""
+    llm: LLMConfig
+    provider: ProviderProfile        # resolved from llm.provider_id — carries base_url/key
+    knobs: Knobs = Field(default_factory=Knobs)
+
+
+class RunDefaults(BaseModel):
+    """Global defaults the per-run page pre-fills (all overridable per run)."""
+    max_total_iterations: int = 6
+    max_microtask_attempts: int = 3
+    hitl_checkpoints: List[Phase] = Field(default_factory=list)
+
+
+class AppSettings(BaseModel):
+    """The whole UI-managed settings blob (one DB row). `selected` names the default
+    provider+model; `providers` carry endpoints/keys; `knobs`/`defaults` seed new runs."""
+    providers: List[ProviderProfile] = Field(default_factory=list)
+    selected: LLMConfig
+    knobs: Knobs = Field(default_factory=Knobs)
+    defaults: RunDefaults = Field(default_factory=RunDefaults)
+
 class Constraints(BaseModel):
     time_budget_minutes: Optional[int] = None
     cost_budget_usd: Optional[float] = None
@@ -346,7 +419,10 @@ class BlackboardState(TypedDict):
     objective: Objective
     constraints: Constraints
     policy: Policy
-    
+    # Resolved LLM provider/model + tuning knobs for this run (settings hub). Agents read
+    # from here, not os.getenv. Optional so pre-config runs / tests still construct.
+    config: Optional[RunConfig]
+
     status: RunStatus
     phase: Optional[str]
     iteration: Iteration
@@ -396,6 +472,7 @@ def create_initial_blackboard_state(
     constraints: Constraints,
     policy: Policy,
     hitl: HITL,
+    config: Optional[RunConfig] = None,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
@@ -415,6 +492,7 @@ def create_initial_blackboard_state(
         objective=objective,
         constraints=constraints,
         policy=policy,
+        config=config,
         status=status,
         phase="bootstrap",
         iteration=Iteration(

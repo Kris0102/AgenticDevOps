@@ -13,11 +13,11 @@ from Exceptions.RetriableError import RetriableError
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from agents.Planning.Planner.investigation_support import (
-    _default_max_tool_steps,
     _investigation_recursion_limit,
     _last_ai_text,
     _log_investigation_steps,
 )
+from providers import build_chat_llm
 from agents.Planning.Planner.plan_output import create_plan_file_as_output
 from agents.Planning.Planner.prompts.investigator import (
     INVESTIGATOR_SYSTEM_PROMPT,
@@ -33,6 +33,7 @@ from orchestrator.state import (
     FeedbackSource,
     Microtask,
     Plan,
+    RunConfig,
     RunStatus,
 )
 from tool_gateway.Roles import Roles
@@ -90,7 +91,8 @@ class PlannerOutput(BaseModel):
 
 
 class Planner:
-    def __init__(self, run_id: str, tools: Optional[Sequence[BaseTool]] = None):
+    def __init__(self, run_id: str, config: RunConfig, tools: Optional[Sequence[BaseTool]] = None,
+                ):
         """
         Initializes the Planner Agent.
         In this MAS architecture, environment actions (like semantic search, file reads)
@@ -98,29 +100,17 @@ class Planner:
         """
         self.run_id = run_id
         self.tools = list(tools or [])
-        self.max_tool_steps = _default_max_tool_steps()
-        self.max_synthesis_attempts = int(os.getenv("PLANNER_MAX_SYNTHESIS_ATTEMPTS", "3"))
+        # make run config mandatory. Fallback only in the nodes!
+        self.config = config 
+        knobs = self.config.knobs
+        self.max_tool_steps = knobs.planner_max_tool_steps
+        self.max_synthesis_attempts = knobs.planner_max_synthesis_attempts
         self.name = Roles.PLANNER.value
-        self.timeout_seconds = (int(os.getenv("PLANNER_TIMEOUT_SECONDS", "60")))
-
-        # LLM Initialization
-        api_key = os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "Missing API key. Set CLUSTER_API_KEY (preferred) or OPENAI_API_KEY before running."
-            )
+        self.timeout_seconds = knobs.planner_timeout_seconds
 
         try:
-            self.llm = ChatOpenAI(
-                model=os.getenv("LLM_MODEL", "google/gemma-4-31B-it"),
-                api_key=SecretStr(api_key),
-                base_url="http://131.159.60.153:3000/inference",
-                temperature=0.0,
-                top_p=0.1,
-                max_completion_tokens=8192,
-                max_retries= int(os.getenv("LLM_RETRIES", "3")),
-                timeout=self.timeout_seconds,
-            )
+            self.llm = build_chat_llm(self.config.provider, self.config.llm,
+                                      timeout_seconds=self.timeout_seconds)
 
             # Enforce structured output at the end of the pipeline
             self.structured_llm = self.llm.with_structured_output(PlannerDraft, method="json_mode")

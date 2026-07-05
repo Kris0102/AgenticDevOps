@@ -18,8 +18,10 @@ from api.responses.responses import (
     RunResponseWithDetails,
     RunState,
 )
-from api.service.service import RunAlreadyExistsError, Service
+from api.service.service import ProviderUnreachableError, RunAlreadyExistsError, Service
 from orchestrator.hitl import HitlDecision, HitlResume
+from orchestrator.state import AppSettings
+from api.settings_schema import SETTINGS_SCHEMA
 
 app = FastAPI(title="AgenticDevOps Control API")
 service = Service()
@@ -27,12 +29,43 @@ service = Service()
 
 @app.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=RunResponse)
 def create_run(request: RunRequest, background: BackgroundTasks) -> RunResponse:
-    """Start a run. Returns immediately with the run_id; the graph executes in the
-    background (bootstrap + planning can take minutes). Poll GET /runs/{id} for state."""
+    """Start a run. **Preflights the LLM provider first** — a dead/mis-keyed provider is
+    rejected here and NO run is created. On success returns immediately with the run_id;
+    the graph executes in the background. Poll GET /runs/{id} for state."""
+    try:
+        config = service.resolve_and_preflight(request)
+    except ProviderUnreachableError as e:
+        code = status.HTTP_401_UNAUTHORIZED if e.kind == "auth" else status.HTTP_503_SERVICE_UNAVAILABLE
+        raise HTTPException(code, f"LLM provider not usable ({e.kind}): {e.reason}")
     run_id = str(uuid.uuid4())
     service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
-    background.add_task(service.run, request, run_id)
+    background.add_task(service.run, request, run_id, config)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
+
+
+@app.get("/settings", response_model=AppSettings)
+def get_settings() -> AppSettings:
+    """Global settings (API keys masked)."""
+    return service.get_settings()
+
+
+@app.put("/settings", response_model=AppSettings)
+def put_settings(new: AppSettings) -> AppSettings:
+    """Save global settings. A provider key left as the mask keeps its stored value."""
+    return service.update_settings(new)
+
+
+@app.get("/settings/schema")
+def get_settings_schema() -> list:
+    """Per-field metadata (label/description/group) that drives the settings form + info
+    tooltips — docs live here, next to nothing else."""
+    return SETTINGS_SCHEMA
+
+
+@app.post("/settings/providers/{provider_id}/test")
+def test_provider(provider_id: str) -> dict:
+    """Health-probe a stored provider ('Test connection' button)."""
+    return service.test_provider(provider_id)
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse)

@@ -4,21 +4,30 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
-from api.requests.requests import RunRequest
+from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunRequest
 from api.responses.responses import (
     ArtifactContent,
     ArtifactView,
+    BranchListResponse,
     EventView,
     HitlReviewContext,
     LessonView,
     LogView,
     MicrotaskRow,
+    RepoView,
     RunExportBundle,
     RunResponse,
     RunResponseWithDetails,
     RunState,
 )
-from api.service.service import ProviderUnreachableError, RunAlreadyExistsError, Service
+from api.service.service import (
+    ProviderUnreachableError,
+    RepoValidationFailedError,
+    RunAlreadyExistsError,
+    Service,
+)
+from db.repo_store import DuplicateRepoError, RepoNotFoundError
+from gitops.github_api import BranchListError, RepoValidationKind, RepoValidationResult
 from orchestrator.hitl import HitlDecision, HitlResume
 from orchestrator.state import AppSettings
 from api.settings_schema import SETTINGS_SCHEMA
@@ -26,12 +35,35 @@ from api.settings_schema import SETTINGS_SCHEMA
 app = FastAPI(title="AgenticDevOps Control API")
 service = Service()
 
+# Repo-validation kind → HTTP status (mirrors the ProviderUnreachableError mapping).
+_REPO_KIND_STATUS = {
+    RepoValidationKind.NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    RepoValidationKind.NO_ACCESS: status.HTTP_401_UNAUTHORIZED,
+    RepoValidationKind.UNREACHABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    RepoValidationKind.UNEXPECTED: status.HTTP_503_SERVICE_UNAVAILABLE,
+}
+
+
+def _repo_validation_http(e: RepoValidationFailedError) -> HTTPException:
+    code = _REPO_KIND_STATUS.get(e.kind, status.HTTP_503_SERVICE_UNAVAILABLE)
+    return HTTPException(code, f"repo not usable ({e.kind.value}): {e.reason}")
+
 
 @app.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=RunResponse)
 def create_run(request: RunRequest, background: BackgroundTasks) -> RunResponse:
-    """Start a run. **Preflights the LLM provider first** — a dead/mis-keyed provider is
-    rejected here and NO run is created. On success returns immediately with the run_id;
-    the graph executes in the background. Poll GET /runs/{id} for state."""
+    """Start a run. **Preflights the repo AND the LLM provider first** — an invalid/
+    inaccessible repo or a dead/mis-keyed provider is rejected here and NO run is
+    created. On success returns immediately with the run_id; the graph executes in
+    the background. Poll GET /runs/{id} for state."""
+    try:
+        resolved = service.resolve_repo(request)
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo_id not found in the registry")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    except RepoValidationFailedError as e:
+        raise _repo_validation_http(e)
+    request = request.model_copy(update={"repo": resolved})
     try:
         config = service.resolve_and_preflight(request)
     except ProviderUnreachableError as e:
@@ -72,6 +104,72 @@ def test_provider(provider_id: str) -> dict:
 def test_github() -> dict:
     """Validate the stored GitHub token against api.github.com ('Test connection')."""
     return service.test_github()
+
+
+# ------------------------------------------------------------------- repo registry
+# GH #41 — repos are added/managed here, then picked (not typed) on the new-run form.
+
+@app.get("/repos", response_model=List[RepoView])
+def list_repos() -> List[RepoView]:
+    """All registered repos, tokens masked."""
+    return service.list_repos()
+
+
+@app.post("/repos", status_code=status.HTTP_201_CREATED, response_model=RepoView)
+def create_repo(request: RepoCreateRequest) -> RepoView:
+    """Register a repo: URL canonicalized, then validated against GitHub with the
+    provided (else global) token — only a passing repo is stored."""
+    try:
+        return service.add_repo(request)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    except DuplicateRepoError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"repo already registered: {e}")
+    except RepoValidationFailedError as e:
+        raise _repo_validation_http(e)
+
+
+@app.put("/repos/{repo_id}", response_model=RepoView)
+def update_repo(repo_id: str, request: RepoUpdateRequest) -> RepoView:
+    """Edit a registered repo. A token left as the mask keeps its stored value; a
+    re-typed token is re-validated immediately."""
+    try:
+        return service.update_repo(repo_id, request)
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo not found")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+
+
+@app.delete("/repos/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_repo(repo_id: str) -> Response:
+    """Remove a repo from the registry. Past runs keep their repo_url snapshot."""
+    try:
+        service.delete_repo(repo_id)
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/repos/{repo_id}/validate", response_model=RepoValidationResult)
+def validate_repo(repo_id: str) -> RepoValidationResult:
+    """Re-validate a repo ('Test connection' button) — updates the stored status dot."""
+    try:
+        return service.validate_repo(repo_id)
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo not found")
+
+
+@app.get("/repos/{repo_id}/branches", response_model=BranchListResponse)
+def repo_branches(repo_id: str) -> BranchListResponse:
+    """Live GitHub branch list for the base-branch picker — never cached."""
+    try:
+        return BranchListResponse(branches=service.repo_branches(repo_id))
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo not found")
+    except BranchListError as e:
+        code = _REPO_KIND_STATUS.get(e.kind, status.HTTP_503_SERVICE_UNAVAILABLE)
+        raise HTTPException(code, f"branch list failed ({e.kind.value}): {e.reason}")
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse)

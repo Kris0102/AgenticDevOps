@@ -4,6 +4,27 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
+from gitops.github_api import RepoValidationResult
+
+
+class RepoView(BaseModel):
+    """One registered repo (GH #41). `token` is the mask when a per-repo token is
+    stored, else None — raw tokens never cross the API."""
+    repo_id: str
+    repo_url: str
+    label: str
+    token: Optional[str] = None
+    default_branch: Optional[str] = None
+    push_branch_override: Optional[str] = None
+    last_validated_at: Optional[datetime] = None
+    last_validation_result: Optional[RepoValidationResult] = None
+    created_at: Optional[datetime] = None
+
+
+class BranchListResponse(BaseModel):
+    """Live GitHub branch list for a registered repo — never cached in the DB."""
+    branches: List[str]
+
 
 class EventView(BaseModel):
     """One durable domain event — a row from the `events` table. Powers the persistent

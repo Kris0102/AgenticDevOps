@@ -7,7 +7,7 @@ from langgraph.types import Command
 
 from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 
-from api.requests.requests import RunRequest
+from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunRequest
 from datetime import datetime, timezone
 
 from api.responses.responses import (
@@ -21,6 +21,7 @@ from api.responses.responses import (
     MicrotaskRow,
     MicrotaskView,
     PlanView,
+    RepoView,
     RunExportBundle,
     RunResponse,
     RunResponseWithDetails,
@@ -31,7 +32,9 @@ from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.models import Artifact as ArtifactRow, MicrotaskRecord, Run
 from db.models import Event as EventRow
+from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
+from gitops.github_api import GitHubRepoClient, RepoValidationKind, RepoValidationResult
 from providers import health_check
 from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
@@ -48,6 +51,7 @@ from orchestrator.state import (
     EventType,
     RunConfig,
     RunStatus,
+    Repo,
     create_initial_blackboard_state,
 )
 from tool_gateway.Roles import Roles
@@ -78,6 +82,15 @@ class ProviderUnreachableError(RuntimeError):
         super().__init__(f"[{kind}] {reason}")
 
 
+class RepoValidationFailedError(RuntimeError):
+    """Repo validation failed (add / run preflight) — carries the GitHub-derived kind
+    so the route maps it to an HTTP status like the LLM preflight does."""
+    def __init__(self, kind: RepoValidationKind, reason: str):
+        self.kind = kind
+        self.reason = reason
+        super().__init__(f"[{kind.value}] {reason}")
+
+
 class Service:
     """Headless run engine behind the HTTP control API. Mirrors RunLauncher (main.py)
     minus the interactive CLI: a single `graph.invoke()` drives the graph to the next
@@ -101,6 +114,7 @@ class Service:
         # set is empty after a restart, so every previously-running run reads as STALLED and
         # becomes continuable. Single-worker assumption (see class note + ADR 0019).
         self._active: set[str] = set()
+        self._github = GitHubRepoClient()
 
     def mark_active(self, run_id: str) -> None:
         """Register a run as being driven NOW. Called synchronously from the route handler
@@ -131,11 +145,18 @@ class Service:
         effective RunConfig resolved+preflighted by the route; falls back to global if absent."""
         bind_run(run_id)
         try:
-            _log.info("run.start", repo_url=request.repo.repo_url, base_sha=request.repo.base_sha)
+            # The route resolved `repo_id`/legacy input into a concrete Repo via
+            # resolve_repo() before dispatching here — a bare repo_id must never
+            # reach the blackboard.
+            repo = request.repo
+            if repo is None:
+                raise RunExecutionError(phase="run.start",
+                                        reason="RunRequest.repo not resolved — route must call resolve_repo() first")
+            _log.info("run.start", repo_url=repo.repo_url, base_sha=repo.base_sha)
             state = create_initial_blackboard_state(
                 run_id=run_id,
                 trigger=request.trigger,
-                repo=request.repo,
+                repo=repo,
                 objective=request.objective,
                 constraints=request.constraints,
                 policy=request.policy,
@@ -415,6 +436,112 @@ class Service:
         if resp.status_code in (401, 403):
             return {"ok": False, "kind": "auth", "reason": f"GitHub rejected the token (HTTP {resp.status_code})"}
         return {"ok": False, "kind": "unexpected", "reason": f"HTTP {resp.status_code}"}
+
+    # ----------------------------------------------------------------- repo registry
+    # GH #41 — repos are first-class: validated on add, re-validated as a run preflight.
+    # Raw per-repo tokens never cross this layer (masked views; resolve_token at gitops).
+
+    @staticmethod
+    def _repo_view(entry: RepoEntry) -> RepoView:
+        return RepoView.model_validate(entry.model_dump())
+
+    def list_repos(self) -> List[RepoView]:
+        return [self._repo_view(e) for e in RepoStore.list()]
+
+    def add_repo(self, req: RepoCreateRequest) -> RepoView:
+        """Normalize → validate against GitHub → create only when validation passes.
+        The provided token (else the global one) must actually see the repo."""
+        canonical = normalize_repo_url(req.repo_url)          # ValueError → 422
+        token = req.token or SettingsStore.github_token()
+        result = self._github.validate_repo(canonical, token)
+        if not result.ok:
+            raise RepoValidationFailedError(result.kind, result.reason)
+        self._reject_default_branch_push(req.push_branch_override, result.default_branch)
+        entry = RepoStore.create(repo_url=canonical, label=req.label, token=req.token,
+                                 push_branch_override=req.push_branch_override,
+                                 validation=result)
+        return self._repo_view(entry)
+
+    def update_repo(self, repo_id: str, req: RepoUpdateRequest) -> RepoView:
+        """Mask-preserving edit; a re-typed token is re-validated immediately so a bad
+        renewal surfaces on save, not on the next run."""
+        current = RepoStore.get(repo_id)                      # RepoNotFoundError → 404
+        self._reject_default_branch_push(req.push_branch_override, current.default_branch)
+        entry = RepoStore.update(repo_id, label=req.label, token=req.token,
+                                 push_branch_override=req.push_branch_override)
+        token_changed = req.token is not None and req.token != MASK
+        if token_changed:
+            self.validate_repo(repo_id)
+            entry = RepoStore.get(repo_id)
+        return self._repo_view(entry)
+
+    def delete_repo(self, repo_id: str) -> None:
+        RepoStore.delete(repo_id)
+
+    def validate_repo(self, repo_id: str) -> RepoValidationResult:
+        """'Test connection' for a repo entry — validates with the resolved token and
+        persists the snapshot (status dot + refreshed default_branch)."""
+        entry = RepoStore.get(repo_id)
+        result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(repo_id))
+        RepoStore.record_validation(repo_id, result)
+        return result
+
+    def repo_branches(self, repo_id: str) -> List[str]:
+        """Live GitHub branch names for the picker — raises BranchListError with a
+        validation-style kind on failure. Never cached in the DB."""
+        entry = RepoStore.get(repo_id)
+        return self._github.list_branches(entry.repo_url, RepoStore.resolve_token(repo_id))
+
+    @staticmethod
+    def _reject_default_branch_push(override: Optional[str], default_branch: Optional[str]) -> None:
+        """Fail early at add/update — the deploy-time GitOps guard is the backstop."""
+        if override and default_branch and override == default_branch:
+            raise ValueError(
+                f"push_branch_override '{override}' is the repo's default branch — "
+                "agents propose on a separate branch, never land directly"
+            )
+
+    def resolve_repo(self, request: RunRequest) -> "Repo":
+        """Run-preflight (mirror of resolve_and_preflight): turn the request's repo
+        reference into a validated blackboard Repo, or raise so NO run is created.
+
+        repo_id path: registry row + per-repo token, re-validated now (the snapshot is
+        recorded either way so the repo list shows the red dot). Legacy raw-repo path:
+        URL normalized, registry entry attached by canonical URL when one exists (so
+        its token applies), then validated the same way."""
+        if request.repo_id:
+            entry = RepoStore.get(request.repo_id)            # RepoNotFoundError → 404
+            result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(entry.repo_id))
+            RepoStore.record_validation(entry.repo_id, result)
+            if not result.ok:
+                raise RepoValidationFailedError(result.kind, result.reason)
+            return Repo(
+                repo_url=entry.repo_url,
+                repo_id=entry.repo_id,
+                default_branch=result.default_branch or entry.default_branch,
+                base_ref=request.base_ref,
+                base_sha=request.base_sha,
+                workspace_branch="agentic-devops-workspace",
+            )
+
+        legacy = request.repo
+        if legacy is None:
+            # unreachable behind the RunRequest exactly-one-of validator; narrows the
+            # Optional for the type checker and guards direct Service callers
+            raise ValueError("provide exactly one of 'repo' or 'repo_id'")
+        canonical = normalize_repo_url(legacy.repo_url)       # ValueError → 422
+        entry = RepoStore.find_by_url(canonical)
+        repo_id = entry.repo_id if entry else None
+        result = self._github.validate_repo(canonical, RepoStore.resolve_token(repo_id))
+        if repo_id:
+            RepoStore.record_validation(repo_id, result)
+        if not result.ok:
+            raise RepoValidationFailedError(result.kind, result.reason)
+        return legacy.model_copy(update={
+            "repo_url": canonical,
+            "repo_id": repo_id,
+            "default_branch": result.default_branch or legacy.default_branch,
+        })
 
     def export_run(self, run_id: str) -> Optional[RunExportBundle]:
         """Everything durable about one run in one self-describing JSON bundle (run row +

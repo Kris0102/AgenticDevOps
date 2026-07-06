@@ -89,6 +89,46 @@ export interface ProviderTestResult {
   kind?: string | null
 }
 
+// ----------------------------------------------------------------- repo registry (GH #41)
+export type RepoValidationKind =
+  | 'ok_public' | 'ok_private' | 'not_found' | 'no_access' | 'unreachable' | 'unexpected'
+
+// Mirrors gitops.github_api.RepoValidationResult.
+export interface RepoValidationResult {
+  ok: boolean
+  kind: RepoValidationKind
+  reason: string
+  default_branch?: string | null
+  latency_ms?: number | null
+}
+
+// One registered repo. `token` is the mask ('••••••••') when a per-repo token is stored.
+// Mirrors responses.RepoView.
+export interface RepoView {
+  repo_id: string
+  repo_url: string
+  label: string
+  token?: string | null
+  default_branch?: string | null
+  push_branch_override?: string | null
+  last_validated_at?: string | null
+  last_validation_result?: RepoValidationResult | null
+  created_at?: string | null
+}
+
+export interface RepoCreateRequest {
+  repo_url: string
+  label?: string | null
+  token?: string | null
+  push_branch_override?: string | null
+}
+
+export interface RepoUpdateRequest {
+  label?: string | null
+  token?: string | null                // mask = keep stored, '' = clear
+  push_branch_override?: string | null // '' = clear, omitted = keep
+}
+
 // One per-repo lesson (ADR 0018). Mirrors responses.LessonView.
 export interface LessonView {
   lesson_id: string
@@ -253,4 +293,23 @@ export const api = {
     http.post<ProviderTestResult>(`/settings/providers/${providerId}/test`).then((r) => r.data),
   testGithub: () =>
     http.post<ProviderTestResult>('/settings/github/test').then((r) => r.data),
+
+  // Repo registry (GH #41). Tokens are masked on read; POST validates against GitHub
+  // before storing (4xx = not created).
+  listRepos: () =>
+    http.get<RepoView[]>('/repos').then((r) => {
+      // A misconfigured dev proxy answers with the SPA's index.html (HTTP 200) —
+      // surface that as an error instead of crashing the page on a string.
+      if (!Array.isArray(r.data)) throw new Error('unexpected /repos response — API not reachable (dev proxy?)')
+      return r.data
+    }),
+  createRepo: (body: RepoCreateRequest) =>
+    http.post<RepoView>('/repos', body).then((r) => r.data),
+  updateRepo: (id: string, body: RepoUpdateRequest) =>
+    http.put<RepoView>(`/repos/${id}`, body).then((r) => r.data),
+  deleteRepo: (id: string) => http.delete(`/repos/${id}`).then(() => undefined),
+  validateRepo: (id: string) =>
+    http.post<RepoValidationResult>(`/repos/${id}/validate`).then((r) => r.data),
+  getRepoBranches: (id: string) =>
+    http.get<{ branches: string[] }>(`/repos/${id}/branches`).then((r) => r.data.branches),
 }

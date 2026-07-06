@@ -53,11 +53,13 @@ src/
     Tools.py                     # Tools enum — sandbox tool identifiers, dispatched via match/case in gateway
     Dockerfile                   # Base sandbox image (agentic-sandbox:0.1)
   gitops/
-    gitops.py                    # GitOps — GitHub boundary (ADR 0012): clone_and_checkout, push_branch (agent/run-<run_id>), create_pr (stub). Token centralized here
+    gitops.py                    # GitOps — GitHub boundary (ADR 0012): clone_and_checkout (honors base_ref), push_branch (agent/run-<run_id> or per-repo override; default-branch push hard-refused), create_pr (stub). Token centralized here
+    github_api.py                # GitHubRepoClient — repo validation (GET /repos/{owner}/{repo}) + live branch list for the repo registry (ADR 0024)
   db/
     db.py                        # SQLAlchemy engine + session_scope
     event_log.py                 # EventLogger — centralized Event-row construction (session.add only, never commit)
-    models.py                    # ORM models: Run, Event, Artifact, Sandbox, MicrotaskRecord, CodeChunk, Lesson
+    models.py                    # ORM models: Run, Event, Artifact, Sandbox, MicrotaskRecord, CodeChunk, Lesson, RepoRecord
+    repo_store.py                # RepoStore — repo registry (ADR 0024): canonical URL normalization, per-repo token (Fernet+masked), resolve_token chain (repo → Settings → anonymous)
     lessons.py                   # LessonStore — per-repo cross-run failure memory (ADR 0018): write on confirmation (record_plan_lessons/record_code_lessons), read via find_lessons (pgvector top-k) + render_block
     embedder.py                  # Embedder — lazy sentence-transformers (all-MiniLM-L6-v2, 384-dim)
     semantic_store.py            # SemanticStore — pgvector upsert/search/delete over code_chunks
@@ -178,7 +180,10 @@ cd src
 # 4b. Run via Control API (dashboard backend — the going-forward surface)
 cd src
 ../venv/bin/uvicorn api.app:app --port 8000     # serves REST + SSE; needs Postgres up
-#   POST /runs                         trigger a run (body = RunRequest)
+#   POST /runs                         trigger a run (RunRequest: repo_id from the registry OR legacy raw repo; repo+LLM preflights — 4xx = no run created)
+#   GET/POST /repos, PUT/DELETE /repos/{id}   repo registry CRUD (ADR 0024) — POST validates against GitHub before storing
+#   POST /repos/{id}/validate          re-validate a repo entry (status dot)
+#   GET  /repos/{id}/branches          live GitHub branch list (base-branch picker, never DB-cached)
 #   GET  /runs/{id}                    poll status / run_state / hitl_phase
 #   GET  /runs/{id}/hitl               paused-gate review context (plan or green/red diff)
 #   POST /runs/{id}/resume             {decision: approve|reject, note}
@@ -264,7 +269,8 @@ failed runs expose `failure_reason` (latest `run.failed` event) on the API respo
 ## DB schema (all tables)
 | Table | Purpose |
 |---|---|
-| `runs` | One row per run — repo_url, base_sha (nullable), status, timestamps |
+| `runs` | One row per run — repo_url, repo_id (nullable registry ref, no FK), base_sha (nullable), status, timestamps |
+| `repos` | Repo registry (ADR 0024) — canonical repo_url (unique; the lessons/code_chunks memory key), label, optional per-repo token (Fernet `enc:`, masked in API), default_branch, push_branch_override, last validation snapshot. Migration `f6a7b8c9d0e1` also backfilled canonical URLs into runs/lessons/code_chunks |
 | `sandboxes` | Docker container ID per run — survives restarts |
 | `microtasks` | Planner output persisted after each plan — survives crashes |
 | `artifacts` | Plan summaries, test logs, diffs — kind field identifies type |

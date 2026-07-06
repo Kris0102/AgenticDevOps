@@ -5,7 +5,7 @@ from typing import Any, Dict
 from db.db import db
 from db.event_log import EventLogger
 from db.models import Run
-from db.settings_store import SettingsStore
+from db.repo_store import RepoStore
 from gitops.gitops import GitOps
 from observability import Category, get_logger
 from Exceptions.RunExecutionError import RunExecutionError
@@ -121,6 +121,7 @@ class BootStrapper:
                 session.add(Run(
                     run_id=run_id,
                     repo_url=repo.repo_url,
+                    repo_id=repo.repo_id,
                     base_sha=repo.base_sha,
                     status=status.value,
                     task_description=task,
@@ -192,13 +193,15 @@ class BootStrapper:
         sandbox_id = sandbox_state.sandbox_id
         repo = self.state.get("repo")
         repo_dir = "repo"
-        _log.info("bootstrap.cloning", repo_url=repo.repo_url, base_sha=repo.base_sha)
+        _log.info("bootstrap.cloning", repo_url=repo.repo_url, base_ref=repo.base_ref,
+                  base_sha=repo.base_sha)
         try:
             workspace_path = self.gitops.clone_and_checkout(
                 sandbox_id=sandbox_id,
                 repo_url=repo.repo_url,
+                base_ref=repo.base_ref,
                 base_sha=repo.base_sha,
-                token=SettingsStore.github_token(),
+                token=RepoStore.resolve_token(repo.repo_id),
                 repo_dir=repo_dir,
             )
             _log.info("bootstrap.clone_complete", workspace_path=workspace_path)

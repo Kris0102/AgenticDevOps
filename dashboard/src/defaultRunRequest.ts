@@ -5,7 +5,8 @@
 import type { LLMConfig } from './api'
 
 export interface NewRunOpts {
-  repoUrl: string
+  repoId: string            // registered repo (GH #41) — the server resolves URL/token
+  baseRef?: string | null   // base branch for the run; null = the repo's default branch
   baseSha?: string
   task: string
   hitlCheckpoints: string[] // subset of 'plan' | 'code' | 'test' | 'deploy'
@@ -23,14 +24,12 @@ export function buildRunRequest(opts: NewRunOpts) {
       non_goals: [],
     },
     trigger: { type: 'dashboard', source_url: '', actor: 'user', raw_payload_ref: null },
-    repo: {
-      repo_url: opts.repoUrl,
-      default_branch: null,
-      base_ref: 'main',
-      base_sha: opts.baseSha || null,
-      workspace_branch: 'agentic-devops-workspace',
-      pr_url: null,
-    },
+    // Registry pick — the backend resolves the canonical URL, per-repo token, and
+    // default branch from repo_id, and preflights the repo before creating the run.
+    repo: null,
+    repo_id: opts.repoId,
+    base_ref: opts.baseRef ?? null,
+    base_sha: opts.baseSha || null,
     llm: opts.llm ?? null,
     constraints: {
       time_budget_minutes: 60,

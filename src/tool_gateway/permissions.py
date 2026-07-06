@@ -61,7 +61,7 @@ class ReflectorPermissions(RolePermissions):
 
     role = Roles.REFLECTOR
     tools = [Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN]
-    allowed_commands = ["git", "grep", "ls", "cat", "find"]
+    allowed_commands = ["git", "grep", "ls", "cat", "find", "node"]
 
 
 class OrchestratorPermissions(RolePermissions):

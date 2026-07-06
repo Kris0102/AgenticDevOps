@@ -5,6 +5,7 @@ import { ArtifactsPanel } from './components/ArtifactsPanel'
 import { LessonsPanel } from './components/LessonsPanel'
 import { PipelineGraph } from './components/PipelineGraph'
 import { NewRunPage } from './components/NewRunPage'
+import { ReposPage } from './components/ReposPage'
 import { SettingsPage } from './components/SettingsPage'
 import { RunOverview } from './components/RunOverview'
 import { RunsHome } from './components/RunsHome'
@@ -13,7 +14,7 @@ import { LogPanel } from './components/LogPanel'
 import { HitlPanel } from './components/HitlPanel'
 import { EventTimeline } from './components/EventTimeline'
 
-type View = 'home' | 'newrun' | 'settings'
+type View = 'home' | 'newrun' | 'settings' | 'repos'
 type Tab = 'activity' | 'artifacts' | 'lessons'
 
 export default function App() {
@@ -50,9 +51,10 @@ export default function App() {
 
   const openRun = (id: string) => { setView('home'); setTab('activity'); setRunId(id) }
 
-  // Full-page routes (no run open): New run / Settings.
+  // Full-page routes (no run open): New run / Settings / Repos.
   if (!runId && view === 'settings') return <div className="app"><SettingsPage onClose={() => setView('home')} /></div>
-  if (!runId && view === 'newrun') return <div className="app"><NewRunPage onRun={openRun} onCancel={() => setView('home')} /></div>
+  if (!runId && view === 'repos') return <div className="app"><ReposPage onClose={() => setView('home')} /></div>
+  if (!runId && view === 'newrun') return <div className="app"><NewRunPage onRun={openRun} onCancel={() => setView('home')} onManageRepos={() => setView('repos')} /></div>
 
   return (
     <div className="app">
@@ -64,6 +66,7 @@ export default function App() {
         </div>
         {!runId && (
           <div className="topbar-actions">
+            <button className="ghost" onClick={() => setView('repos')} title="Repositories">Repos</button>
             <button className="ghost gear" onClick={() => setView('settings')} title="Settings" aria-label="Settings">⚙</button>
             <button className="primary" onClick={() => setView('newrun')}>＋ New run</button>
           </div>

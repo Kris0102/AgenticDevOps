@@ -19,6 +19,9 @@ class Run(Base):
 
     run_id: Mapped[str] = mapped_column(String, primary_key=True)
     repo_url: Mapped[str] = mapped_column(String, nullable=False)
+    # Registry reference (repos.repo_id) — nullable, no FK: pre-registry runs and runs
+    # whose repo entry was later deleted keep working off the repo_url snapshot.
+    repo_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     base_sha: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     # The human task the run was asked to do — the dashboard's "what was this run about".
@@ -131,6 +134,26 @@ class Lesson(Base):
     guidance: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Optional guidance for future runs
     embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class RepoRecord(Base):
+    """A registered repository (repo registry, GH #41). `repo_url` is canonical
+    (normalized on add: https scheme, no trailing `.git`/slash) and unique — it is
+    the cross-run memory key for lessons/code_chunks. `token` is an optional
+    per-repo PAT, Fernet-encrypted at rest (`enc:` prefix, db/secrets.py) and
+    masked on every API read."""
+    __tablename__ = "repos"
+
+    repo_id: Mapped[str] = mapped_column(String, primary_key=True)
+    repo_url: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    default_branch: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    push_branch_override: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_validation_result: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AppSettings(Base):

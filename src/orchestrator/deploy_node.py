@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 from db.db import db
 from db.event_log import EventLogger
-from db.settings_store import SettingsStore
+from db.repo_store import RepoNotFoundError, RepoStore
 from Exceptions.RunExecutionError import RunExecutionError
 from gitops.gitops import GitOps
 from observability import Category, get_logger
@@ -38,10 +38,19 @@ class DeployRunner:
             _log.warning("deployer.missing_state", has_sandbox=sandbox is not None, has_repo=repo is not None)
             return {}
 
-        branch = GitOps.branch_name(self.run_id)
-        token = SettingsStore.github_token()
+        branch, forbidden_branch = self._resolve_push_target(repo)
+        token = RepoStore.resolve_token(repo.repo_id)
 
         with db.session_scope() as db_session:
+            # Never land on the repo's default branch — even a misconfigured override
+            # must not turn a deploy into a push to main. GitOps re-checks (backstop).
+            if forbidden_branch and branch == forbidden_branch:
+                _log.error("deployer.push_target_forbidden", branch=branch)
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(phase="deploy",
+                                      reason=f"push target '{branch}' is the repo's default branch — refused"),
+                )
             # Secret content-scan is a HARD gate BEFORE the push — even a human-approved
             # deploy must not ship a credential. A finding blocks the push and fails the run
             # (safe by default); a scan failure (gitleaks missing) also blocks. See ADR 0019.
@@ -75,6 +84,8 @@ class DeployRunner:
                     remote_url=repo.repo_url,
                     token=token,
                     commit_message=f"AgenticDevOps run {self.run_id}",
+                    branch=branch,
+                    forbidden_branch=forbidden_branch,
                 )
             except SandboxError as error:
                 _log.error("deployer.push_failed", branch=branch, error=str(error))
@@ -93,6 +104,22 @@ class DeployRunner:
         _log.info("deployer.pushed", branch=branch, repo_url=repo.repo_url, pr_url=pr_url,
                   files=len(fileset))
         return {}
+
+    def _resolve_push_target(self, repo: Repo) -> tuple:
+        """(push branch, forbidden branch). Registry `push_branch_override` wins over
+        the default `agent/run-<run_id>`; the repo's default branch is always
+        forbidden. Unregistered/deleted repos fall back to the defaults."""
+        branch = GitOps.branch_name(self.run_id)
+        forbidden = repo.default_branch
+        if repo.repo_id:
+            try:
+                entry = RepoStore.get(repo.repo_id)
+                branch = entry.push_branch_override or branch
+                forbidden = entry.default_branch or forbidden
+            except RepoNotFoundError:
+                _log.warning("deployer.repo_entry_missing", repo_id=repo.repo_id,
+                             recovery="pushing to the default run branch")
+        return branch, forbidden
 
     def _emit_push_event(self, db_session, branch: str, results: List[ExecResult], pr_url,
                          fileset: List[str]) -> None:

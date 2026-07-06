@@ -61,19 +61,24 @@ class GitOps:
         *,
         sandbox_id: str,
         repo_url: str,
+        base_ref: Optional[str] = None,
         base_sha: Optional[str] = None,
         token: str = "",
         repo_dir: str = "repo",
         timeout_s: int = 600,
     ) -> str:
         """Clone the repo into the sandbox and optionally checkout `base_sha`; returns
-        the workspace path. `base_sha=None` (brand-new/empty repo) → clone only."""
+        the workspace path. `base_ref` selects the branch to clone (None = the repo's
+        default branch); `base_sha=None` (brand-new/empty repo) → clone only."""
         clone_url = self._authenticated_url(repo_url, token)
         workspace_path = f"{self.sandbox.workdir}/{repo_dir}"
 
+        clone_cmd = ["git", "clone"]
+        if base_ref:
+            clone_cmd += ["--branch", base_ref]
         clone = self.sandbox.sandbox_exec(
             sandbox_id=sandbox_id,
-            cmd=["git", "clone", clone_url, repo_dir],
+            cmd=clone_cmd + [clone_url, repo_dir],
             timeout_s=timeout_s,
             cwd=self.sandbox.workdir,
         )
@@ -106,15 +111,25 @@ class GitOps:
         commit_message: Optional[str] = None,
         author_name: str = "AgenticDevOps",
         author_email: str = "agentic-devops@users.noreply.github.com",
+        branch: Optional[str] = None,
+        forbidden_branch: Optional[str] = None,
     ) -> List[ExecResult]:
-        """Stage → commit → push the sandbox working tree to the run branch
-        (`agent/run-<run_id>`).
+        """Stage → commit → push the sandbox working tree to `branch` (default: the
+        run branch `agent/run-<run_id>`, overridable per repo via the registry).
 
-        The Coder edits the working tree on a detached HEAD (base_sha), so changes
-        are uncommitted — this stages and commits them first. Idempotent: safe to
-        re-run (remote re-pointed, "nothing to commit" tolerated).
+        `forbidden_branch` is the repo's default branch: pushing to it is hard-refused
+        here (not just in the API) so an agent can never land on main/master by
+        accident regardless of caller. The Coder edits the working tree on a detached
+        HEAD (base_sha), so changes are uncommitted — this stages and commits them
+        first. Idempotent: safe to re-run (remote re-pointed, "nothing to commit"
+        tolerated).
         """
-        branch = self.branch_name(run_id)
+        branch = branch or self.branch_name(run_id)
+        if forbidden_branch and branch == forbidden_branch:
+            raise SandboxError(
+                f"refusing to push to the repo's default branch '{forbidden_branch}' — "
+                "agents propose on a separate branch, never land directly"
+            )
         repo_cwd = f"{self.sandbox.workdir}/{repo_dir}"
         results: List[ExecResult] = []
 

@@ -92,8 +92,13 @@ class Trigger(BaseModel):
 
 class Repo(BaseModel):
     repo_url: str
+    # Registry reference (repos.repo_id) — resolves the per-repo token and push
+    # override at the gitops seams. None for legacy/unregistered runs.
+    repo_id: Optional[str] = None
     default_branch: Optional[str] = None
-    base_ref: str
+    # Branch the agents work from. None = the repo's default branch (git clone
+    # without --branch). base_sha remains an optional pin on top of it.
+    base_ref: Optional[str] = None
     base_sha: Optional[str] = None
     workspace_branch: str
     pr_url: Optional[str] = None

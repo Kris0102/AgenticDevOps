@@ -11,6 +11,7 @@ export default defineConfig({
     proxy: {
       '/runs': { target: 'http://localhost:8000', changeOrigin: true },
       '/settings': { target: 'http://localhost:8000', changeOrigin: true },
+      '/repos': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

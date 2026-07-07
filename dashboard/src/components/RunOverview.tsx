@@ -36,17 +36,49 @@ interface PhaseSeg {
   pct: number
 }
 
+interface Interval {
+  from: number
+  to: number
+}
+
+// STALLED time shouldn't count toward "how long this run took" — the run wasn't being
+// worked on. Pair each run.stalled with the next run.resumed to get the idle spans; a
+// trailing unpaired run.stalled (still stalled right now) needs no special handling —
+// there's no later event yet for it to inflate.
+function stalledIntervals(events: EventView[]): Interval[] {
+  const stalls = events.filter((e) => e.event_type === 'run.stalled')
+  const resumes = events.filter((e) => e.event_type === 'run.resumed').map((e) => new Date(e.ts).getTime())
+  const out: Interval[] = []
+  for (const s of stalls) {
+    const from = new Date(s.ts).getTime()
+    const to = resumes.find((r) => r > from)
+    if (to !== undefined) out.push({ from, to })
+  }
+  return out
+}
+
+function overlapMs(from: number, to: number, intervals: Interval[]): number {
+  let ms = 0
+  for (const iv of intervals) {
+    ms += Math.max(0, Math.min(to, iv.to) - Math.max(from, iv.from))
+  }
+  return ms
+}
+
 // Consecutive run.status_changed events → proportional phase segments (where time went).
+// Stalled spans are clipped out of whichever segment they fall in — idle time waiting for
+// a human to hit "continue" isn't that phase's work.
 function buildPhases(events: EventView[]): PhaseSeg[] {
   const changes = events.filter((e) => e.event_type === 'run.status_changed')
   if (changes.length === 0 || events.length < 2) return []
   const end = new Date(events[events.length - 1].ts).getTime()
+  const stalls = stalledIntervals(events)
   const raw: { phase: string; ms: number }[] = []
   for (let i = 0; i < changes.length; i++) {
     const from = new Date(changes[i].ts).getTime()
     const to = i + 1 < changes.length ? new Date(changes[i + 1].ts).getTime() : end
     const phase = phaseOf(String(changes[i].payload?.to ?? ''))
-    const ms = Math.max(0, to - from)
+    const ms = Math.max(0, to - from - overlapMs(from, to, stalls))
     if (ms === 0) continue
     // merge adjacent same-phase segments so the strip stays readable
     const last = raw[raw.length - 1]
@@ -103,7 +135,11 @@ export function RunOverview({ runId, live, capVersion }: { runId: string; live: 
     const count = (type: string) => events.filter((e) => e.event_type === type).length
     const first = events[0]?.ts
     const last = events[events.length - 1]?.ts
-    const duration = first && last ? new Date(last).getTime() - new Date(first).getTime() : NaN
+    const rawDuration = first && last ? new Date(last).getTime() - new Date(first).getTime() : NaN
+    const stalledMs = first && last
+      ? overlapMs(new Date(first).getTime(), new Date(last).getTime(), stalledIntervals(events))
+      : 0
+    const duration = isFinite(rawDuration) ? rawDuration - stalledMs : rawDuration
     const pushed = events.find((e) => e.event_type === 'gitops.pushed')
     const toolMs = events
       .filter((e) => e.event_type === 'tool.executed')

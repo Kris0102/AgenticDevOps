@@ -383,7 +383,7 @@ Below is a recommended event type registry.
   - payload required: `reason`, `failed_phase`, `last_known_status`
 - **`run.completed`**
   - payload required: `outcome`, `summary`, `pr_url`
-- **`run.token_budget_raised`** (ADR 0026) — emitted when a human raises
+- **`run.token_budget_raised`** (ADR 0025) — emitted when a human raises
   `Constraints.max_total_tokens` on a STALLED run via `POST /runs/{id}/continue`.
   - payload required: `old_max_total_tokens`, `new_max_total_tokens`, `tokens_used_total`
 

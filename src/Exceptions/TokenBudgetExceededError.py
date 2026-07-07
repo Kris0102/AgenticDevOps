@@ -6,7 +6,7 @@ class TokenBudgetExceededError(Exception):
     `except RunExecutionError` handler and routed to `RunFailureHandler` (terminal FAILED).
     Instead it escapes `graph.invoke()` up to `Service._drive`, which catches it
     specifically and leaves the run non-terminal (STALLED, checkpoint intact) — the human
-    can raise the budget via `/continue`'s optional body (ADR 0026), or close the case via
+    can raise the budget via `/continue`'s body (ADR 0025), or close the case via
     `/fail`. See ADR 0025 (why token-budget stalls are recoverable, unlike other
     deterministic caps).
     """

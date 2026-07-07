@@ -15,7 +15,7 @@ export interface RunResponse {
   hitl_phase?: string | null
   hitl_approval_id?: string | null
   stalled_reason?: string | null   // transient-error / crash reason when run_state === 'stalled'
-  stalled_kind?: 'token_budget' | 'transient' | string | null   // cause of the stall (ADR 0026)
+  stalled_kind?: 'token_budget' | 'transient' | string | null   // cause of the stall (ADR 0025)
   failure_reason?: string | null   // run.failed reason when run_state === 'failed'
 }
 
@@ -283,7 +283,7 @@ export const api = {
 
   // Re-drive a stalled run (worker died mid-graph, or a token-budget stop) from its
   // checkpoint. Not for HITL gates. Optional `maxTotalTokens` raises the checkpointed cap
-  // before resuming (ADR 0026) — for a token-budget stall.
+  // before resuming (ADR 0025) — for a token-budget stall.
   continueRun: (id: string, maxTotalTokens?: number) =>
     http.post<RunResponse>(`/runs/${id}/continue`, maxTotalTokens != null ? { max_total_tokens: maxTotalTokens } : undefined).then((r) => r.data),
 

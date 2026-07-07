@@ -7,8 +7,8 @@ stops cleanly the moment the accumulated `Iteration.tokens_used_total` reaches
 token budget does NOT fail the run: each Runner raises `TokenBudgetExceededError`
 (`Exceptions/TokenBudgetExceededError.py`), which escapes `graph.invoke()` and is caught by
 `Service._drive`, leaving the run non-terminal (STALLED, checkpoint intact). The human can
-raise the budget via `POST /runs/{id}/continue`'s optional `max_total_tokens` body (ADR
-0026, `Service.raise_token_budget`) before it re-runs the same node, or `POST
+raise the budget via `POST /runs/{id}/continue`'s `max_total_tokens` body (ADR
+0025, `Service.raise_token_budget`) before it re-runs the same node, or `POST
 /runs/{id}/fail` to close the case.
 
 `record_usage` is the single place that turns a per-invocation `TokenUsage` into: the updated

@@ -77,7 +77,7 @@ class RunResponse(BaseModel):
     stalled_reason: Optional[str] = None
     # set only when run_state == stalled — 'token_budget' (Constraints.max_total_tokens
     # reached) vs 'transient' (LLM hiccup / uncaught crash / worker died). Lets the
-    # dashboard show the raise-cap input only for the former (ADR 0025/0026).
+    # dashboard show the raise-cap input only for the former (ADR 0025).
     stalled_kind: Optional[str] = None
     # set only when run_state == failed — the run.failed reason, so the dashboard can
     # say WHY instead of just showing a red badge.

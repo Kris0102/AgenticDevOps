@@ -39,7 +39,7 @@ export default function App() {
     setContinuing(true)
     try {
       // blank = today's plain retry (no override); a value raises the checkpointed cap
-      // before resuming (ADR 0026) — required for a token-budget stall.
+      // before resuming (ADR 0025) — required for a token-budget stall.
       const cap = newCap.trim() === '' ? undefined : parseInt(newCap, 10)
       await api.continueRun(runId, cap)   // poll picks up the transition to running/paused
       if (cap != null) setCapVersion((v) => v + 1)   // let RunOverview refetch its cap immediately

@@ -209,7 +209,7 @@ def continue_run(run_id: str, background: BackgroundTasks, body: Optional[Contin
     (use /resume), or already being driven.
 
     Optional `body.max_total_tokens` patches the checkpointed Constraints BEFORE re-driving
-    (ADR 0026) — the follow-up to a token-budget stall, so /continue can actually raise the
+    (ADR 0025) — the follow-up to a token-budget stall, so /continue can actually raise the
     cap instead of immediately re-tripping the same check. Validated synchronously here so a
     bad value 422s the request instead of silently re-stalling in the background task."""
     current = service.status(run_id)

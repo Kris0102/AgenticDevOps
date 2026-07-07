@@ -37,7 +37,7 @@ class ContinueRunRequest(BaseModel):
     patches the checkpointed Constraints.max_total_tokens to a new (higher) cap before
     re-driving a stalled run (continuing a token-budget stall unchanged just immediately
     re-trips the same check). Omitted body (or a null field) is today's plain re-drive,
-    unaffected — see ADR 0026."""
+    unaffected — see ADR 0025."""
     max_total_tokens: Optional[int] = None
 
     @model_validator(mode="after")

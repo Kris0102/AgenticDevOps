@@ -77,7 +77,7 @@ class RunAlreadyExistsError(RuntimeError):
 
 class InvalidTokenBudgetError(ValueError):
     """A /continue request's `max_total_tokens` doesn't make sense against the run's
-    checkpointed state (ADR 0026) — no checkpointed Constraints to patch, or a cap at/below
+    checkpointed state (ADR 0025) — no checkpointed Constraints to patch, or a cap at/below
     tokens already spent (would just immediately re-trip `token_budget_exceeded` and
     re-stall the instant the node re-enters)."""
 
@@ -208,7 +208,7 @@ class Service:
 
     def raise_token_budget(self, run_id: str, new_max_total_tokens: int) -> None:
         """Patch the checkpointed `Constraints.max_total_tokens` to a new (higher) cap
-        (ADR 0026): continuing a token-budget stall unchanged just immediately re-trips
+        (ADR 0025): continuing a token-budget stall unchanged just immediately re-trips
         `token_budget_exceeded` and re-stalls, so the human needs a way to actually raise
         the cap before `/continue` re-drives. Called synchronously from the route BEFORE
         `continue_run` is scheduled in the background, so a bad value 422s the HTTP request
@@ -867,7 +867,7 @@ class Service:
     @staticmethod
     def _last_event_payload(run_id: str, event_type: str) -> Optional[dict]:
         """Full `payload_json` of the run's most recent event of the given type (run.stalled /
-        run.failed) — powers the stalled-bar (reason + kind, ADR 0026) and the failure banner
+        run.failed) — powers the stalled-bar (reason + kind, ADR 0025) and the failure banner
         (reason)."""
         with db.session_scope() as session:
             row = (

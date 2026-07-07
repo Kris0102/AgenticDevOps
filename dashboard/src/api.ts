@@ -212,14 +212,36 @@ export interface ArtifactContent extends ArtifactView {
   content_text: string
 }
 
+export interface IOExampleView {
+  given: Record<string, unknown>
+  expect: unknown
+}
+
+export interface AcceptanceCriterionView {
+  text: string
+  examples: IOExampleView[]
+}
+
+// Full microtasks-table row (mirrors responses.MicrotaskRow) — carries the complete
+// planner record (description/approach/acceptance criteria/etc), not just the board
+// summary, so both the compact overview board and the full Microtasks tab read from
+// the same fetch.
 export interface MicrotaskRow {
   microtask_id: string
   idx: number
   title: string
+  description: string
+  approach?: string | null
   status: string
   attempts: number
+  acceptance_criteria: AcceptanceCriterionView[]
   target_files: string[]
+  context_files: string[]
+  dependencies: string[]
   files_touched: string[]
+  test_strategy?: string | null
+  created_at: string
+  updated_at: string
 }
 
 // ----------------------------------------------------------------- client

@@ -628,8 +628,13 @@ class Service:
             for m in bundle.microtasks:
                 session.add(MicrotaskRecord(
                     microtask_id=m.microtask_id, run_id=run.run_id, idx=m.idx,
-                    title=m.title, description="", status=m.status, attempts=m.attempts,
-                    target_files=m.target_files, files_touched=m.files_touched,
+                    title=m.title, description=m.description, approach=m.approach,
+                    status=m.status, attempts=m.attempts,
+                    acceptance_criteria=[c.model_dump() for c in m.acceptance_criteria],
+                    target_files=m.target_files, context_files=m.context_files,
+                    dependencies=m.dependencies, files_touched=m.files_touched,
+                    test_strategy=m.test_strategy,
+                    created_at=m.created_at, updated_at=m.updated_at,
                 ))
             for a in bundle.artifacts:
                 session.add(ArtifactRow(
@@ -722,10 +727,18 @@ class Service:
                     microtask_id=r.microtask_id,
                     idx=r.idx,
                     title=r.title,
+                    description=r.description,
+                    approach=r.approach,
                     status=r.status,
                     attempts=r.attempts,
+                    acceptance_criteria=list(r.acceptance_criteria or []),
                     target_files=list(r.target_files or []),
+                    context_files=list(r.context_files or []),
+                    dependencies=list(r.dependencies or []),
                     files_touched=list(r.files_touched or []),
+                    test_strategy=r.test_strategy,
+                    created_at=r.created_at,
+                    updated_at=r.updated_at,
                 )
                 for r in rows
             ]

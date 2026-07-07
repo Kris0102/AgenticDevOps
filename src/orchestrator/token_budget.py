@@ -43,10 +43,15 @@ def record_usage(
     iteration: Iteration,
     usage: TokenUsage,
     model: str,
+    microtask_id: str | None = None,
 ) -> Iteration:
     """Accumulate `usage` onto `iteration.tokens_used_total`, mirror the new total onto the
     `runs` row, log it, and emit the durable event. Returns the updated `Iteration` —
-    callers put it on their result dict."""
+    callers put it on their result dict.
+
+    `microtask_id` is set by Coder/Tester/Reflector (all three run scoped to one microtask)
+    so the dashboard can attribute per-microtask token spend; the Planner drafts the whole plan
+    before any microtask exists, so it's omitted there (None)."""
     updated = iteration.model_copy(update={
         "tokens_used_total": iteration.tokens_used_total + usage.total_tokens,
     })
@@ -57,11 +62,13 @@ def record_usage(
         "llm.usage", agent=actor, model=model,
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
         total_tokens=usage.total_tokens, run_total=updated.tokens_used_total,
+        microtask_id=microtask_id,
     )
     EventLogger.log(db_session, run_id, actor, EventType.LLM_USAGE_RECORDED, {
         "agent": actor, "model": model,
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
+        "microtask_id": microtask_id,
     })
     return updated

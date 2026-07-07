@@ -219,6 +219,9 @@ def continue_run(run_id: str, background: BackgroundTasks, body: Optional[Contin
         raise HTTPException(status.HTTP_409_CONFLICT, "run is paused at a HITL gate — use /resume")
     if current.run_state == RunState.RUNNING:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is already being driven")
+    if current.stalled_kind == "token_budget" and (body is None or body.max_total_tokens is None):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             "a new token cap is required to continue a token-budget stall")
     if body and body.max_total_tokens is not None:
         try:
             service.raise_token_budget(run_id, body.max_total_tokens)

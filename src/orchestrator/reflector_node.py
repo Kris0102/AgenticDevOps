@@ -109,7 +109,8 @@ class ReflectorRunner:
             fix_target = raw.pop("_fix_target", "code")
             result = self._build_state_result(raw, microtask, fix_target)
             result["iteration"] = record_usage(
-                db_session, self.run_id, self.name, iteration, reflector.token_usage, config.llm.model
+                db_session, self.run_id, self.name, iteration, reflector.token_usage, config.llm.model,
+                microtask_id=microtask.microtask_id,
             )
             self._persist_results(db_session, microtask, result)
             # NOTE: lessons are NOT written here. A reflector diagnosis is unconfirmed — it

@@ -122,16 +122,39 @@ class ArtifactContent(ArtifactView):
     content_text: str
 
 
+class IOExampleView(BaseModel):
+    """One concrete input→output example backing an acceptance criterion."""
+    given: Dict[str, Any] = {}
+    expect: Any = None
+
+
+class AcceptanceCriterionView(BaseModel):
+    """One observable behaviour a microtask must satisfy, with any concrete
+    input→output examples the Planner supplied."""
+    text: str
+    examples: List[IOExampleView] = []
+
+
 class MicrotaskRow(BaseModel):
     """One microtasks-table row for the run-detail progress board (durable — works for
-    finished runs, unlike the checkpoint-derived HITL PlanView)."""
+    finished runs, unlike the checkpoint-derived HITL PlanView). Carries the full record
+    (description/approach/acceptance criteria/etc) so the dashboard's Microtasks tab can
+    render complete detail without a second fetch."""
     microtask_id: str
     idx: int
     title: str
+    description: str
+    approach: Optional[str] = None
     status: str
     attempts: int
+    acceptance_criteria: List[AcceptanceCriterionView] = []
     target_files: List[str]
+    context_files: List[str] = []
+    dependencies: List[str] = []
     files_touched: List[str]
+    test_strategy: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class LessonView(BaseModel):

@@ -80,7 +80,8 @@ class CoderRunner:
             # never reach the graph's node-result dict
             diff_text = result.pop("_diff_text", "")
             result["iteration"] = record_usage(
-                db_session, self.run_id, self.name, iteration, coder.token_usage, config.llm.model
+                db_session, self.run_id, self.name, iteration, coder.token_usage, config.llm.model,
+                microtask_id=microtask.microtask_id,
             )
             self._persist_results(db_session, result, microtask, diff_text)
             return result

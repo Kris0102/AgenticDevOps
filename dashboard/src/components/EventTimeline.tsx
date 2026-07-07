@@ -42,7 +42,7 @@ export function EventTimeline({ runId, stop }: { runId: string; stop: boolean })
     }
   }, [runId, stop])
 
-  const isNoisy = (e: EventView) => e.event_type.startsWith('tool.') || e.event_type === 'llm.usage'
+  const isNoisy = (e: EventView) => e.event_type.startsWith('tool.')
   const toolCount = events.filter(isNoisy).length
   const visible = showTools ? events : events.filter((e) => !isNoisy(e))
 
@@ -53,7 +53,7 @@ export function EventTimeline({ runId, stop }: { runId: string; stop: boolean })
         {toolCount > 0 && (
           <label className="ev-toggle">
             <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
-            tool calls / llm usage ({toolCount})
+            tool calls ({toolCount})
           </label>
         )}
       </div>

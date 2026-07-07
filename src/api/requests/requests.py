@@ -32,6 +32,21 @@ class RunRequest(BaseModel):
         return self
 
 
+class ContinueRunRequest(BaseModel):
+    """Optional body for POST /runs/{id}/continue. When `max_total_tokens` is set, it
+    patches the checkpointed Constraints.max_total_tokens to a new (higher) cap before
+    re-driving a stalled run (continuing a token-budget stall unchanged just immediately
+    re-trips the same check). Omitted body (or a null field) is today's plain re-drive,
+    unaffected — see ADR 0025."""
+    max_total_tokens: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _positive_if_set(self) -> "ContinueRunRequest":
+        if self.max_total_tokens is not None and self.max_total_tokens <= 0:
+            raise ValueError("max_total_tokens must be a positive integer")
+        return self
+
+
 class RepoCreateRequest(BaseModel):
     """Register a repo. `repo_url` is canonicalized server-side; label defaults to
     owner/repo. `token` is an optional per-repo PAT (falls back to the global

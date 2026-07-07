@@ -49,6 +49,7 @@ class VerdictPhase(TestPhase):
             ctx.run_id, ctx.microtask, ctx.project_type,
             ctx.synth_test_file or "", ctx.synth_test_content, unit,
             rejection_note=ctx.rejection_note, reflections=ctx.reflections,
+            token_usage=ctx.token_usage,
         ) or None
         _log.info("tester.verdict", run_id=ctx.run_id, status=str(unit.status),
                   final_validation=ctx.final_validation, output_path=ctx.output_path)

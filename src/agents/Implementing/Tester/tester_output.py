@@ -7,6 +7,7 @@ from typing import List, Optional
 from agents.Implementing.Tester.results import CheckResult
 from observability import Category, get_logger
 from orchestrator.state import Microtask, Reflection
+from providers import TokenUsage
 
 _log = get_logger(Category.TESTER)
 
@@ -37,6 +38,7 @@ def create_test_file_as_output(
     check_result: "CheckResult",
     rejection_note: Optional[str] = None,
     reflections: Optional[List[Reflection]] = None,
+    token_usage: Optional[TokenUsage] = None,
 ) -> str:
     """Write the tester output to disk and return the absolute path."""
     try:
@@ -55,6 +57,8 @@ def create_test_file_as_output(
             label = "TESTER OUTPUT (REWRITE)" if rejection_note else "TESTER OUTPUT"
             f.write(f"  {label}  |  run_id: {run_id}\n")
             f.write(f"  Generated:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if token_usage:
+                f.write(f"  Tokens:        {token_usage.input_tokens} in / {token_usage.output_tokens} out / {token_usage.total_tokens} total\n")
             f.write(f"{sep}\n\n")
 
             # ── Verdict ───────────────────────────────────────────────────────

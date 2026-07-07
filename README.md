@@ -47,7 +47,7 @@ Open terminal in the repository root and run the following commands.
    alembic upgrade head
    ```
 
-5. Run the main entrypoint from the `src` folder:
+5. Run the main entrypoint from the `src` folder (legacy CLI path — being phased out in favor of the API/dashboard below, see `CLAUDE.md`):
 
    ```powershell
    cd .\src
@@ -58,6 +58,32 @@ Open terminal in the repository root and run the following commands.
    python main.py --repo_url https://github.com/dopferstefan/python-test-project --base-sha 0223096697270d123063aa991488f39d4c4abfc8 --hitl-checkpoints "plan,code" --task_description "Add support for counting words to the python module. In counter.py add a count_words(text) function. In main.py, make sure that the word count function is called and added to the console output. Preserve the existing code style."
    ```
 
+## Dashboard (recommended)
+
+The dashboard is a React web frontend over the FastAPI control API (`src/api/`) — it
+triggers runs, registers repos, streams live logs, and drives the HITL approval gates
+instead of the CLI flags above. It's single-user and runs on localhost.
+
+1. Start the control API (needs Postgres up and migrations applied, steps 1-4 above):
+
+   ```powershell
+   cd .\src
+   ..\.venv\Scripts\Activate.ps1
+   uvicorn api.app:app --port 8000
+   ```
+
+2. In a second terminal, start the dashboard dev server:
+
+   ```powershell
+   cd .\dashboard
+   npm install
+   npm run dev
+   ```
+
+3. Open **http://localhost:5173** in a browser. The Vite dev server proxies API calls
+   to uvicorn on port 8000, so no CORS setup is needed.
+
+See `dashboard/README.md` for more detail on the UI's screens and mental model.
 
 ## Notes
 

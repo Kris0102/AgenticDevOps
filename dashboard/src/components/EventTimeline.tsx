@@ -42,8 +42,9 @@ export function EventTimeline({ runId, stop }: { runId: string; stop: boolean })
     }
   }, [runId, stop])
 
-  const toolCount = events.filter((e) => e.event_type.startsWith('tool.')).length
-  const visible = showTools ? events : events.filter((e) => !e.event_type.startsWith('tool.'))
+  const isNoisy = (e: EventView) => e.event_type.startsWith('tool.')
+  const toolCount = events.filter(isNoisy).length
+  const visible = showTools ? events : events.filter((e) => !isNoisy(e))
 
   return (
     <div className="panel events">

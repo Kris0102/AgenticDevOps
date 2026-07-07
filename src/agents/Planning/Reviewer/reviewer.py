@@ -21,7 +21,7 @@ from agents.Planning.Reviewer.reviewer_support import (
     _last_ai_text,
     _log_investigation_steps,
 )
-from providers import build_chat_llm
+from providers import TokenUsage, build_chat_llm, sum_usage
 
 from agents.Planning.Reviewer.prompts.reviewer_prompt import build_investigation_prompt, build_review_prompt
 from db.lessons import LessonStore
@@ -113,13 +113,17 @@ class Reviewer:
         self.max_tool_steps = self.config.knobs.reviewer_max_tool_steps
         self.name = Roles.REVIEWER.value
         self.timeout_seconds = self.config.knobs.reviewer_timeout_seconds
+        self.token_usage = TokenUsage()
 
         try:
             self.llm = build_chat_llm(self.config.provider, self.config.llm,
                                       timeout_seconds=self.timeout_seconds)
 
-            # Enforce structured output
-            self.structured_llm = self.llm.with_structured_output(ReviewerOutput, method="json_mode")
+            # Enforce structured output. include_raw=True keeps the underlying AIMessage
+            # (and its usage_metadata) accessible for token accounting (ADR 0025).
+            self.structured_llm = self.llm.with_structured_output(
+                ReviewerOutput, method="json_mode", include_raw=True
+            )
 
             if self.tools:
                 self.investigator_agent = create_agent(
@@ -137,6 +141,7 @@ class Reviewer:
 
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
         """Review the current plan and return a decision plus updated feedback."""
+        self.token_usage = TokenUsage()
         _log.debug("reviewer.invoke.start", run_id=self.run_id)
         
         # get plan from state, if missing return NEEDS_PLAN to go back to planner
@@ -167,6 +172,7 @@ class Reviewer:
                 )
                 messages = investigative_state.get("messages", [])
                 _log_investigation_steps(messages)
+                self.token_usage = self.token_usage + sum_usage(messages)
                 investigation_summary = _last_ai_text(messages) or (
                     "Investigation finished but produced no assistant summary."
                 )
@@ -228,10 +234,12 @@ class Reviewer:
 
         try:
             raw = self.structured_llm.invoke([HumanMessage(content=prompt)])
-            if isinstance(raw, ReviewerOutput):
-                result = raw
-            else:
-                result = ReviewerOutput.model_validate(raw)
+            if raw.get("raw") is not None:
+                self.token_usage = self.token_usage + sum_usage([raw["raw"]])
+            if raw.get("parsing_error"):
+                raise raw["parsing_error"]
+            parsed = raw["parsed"]
+            result = parsed if isinstance(parsed, ReviewerOutput) else ReviewerOutput.model_validate(parsed)
         except ValidationError as error:
             _log.error("reviewer.output_validation_failed", error=str(error))
             raise
@@ -263,6 +271,7 @@ class Reviewer:
             investigation_summary=investigation_summary,
             prior_feedback=list(plan.review_feedback),
             lessons_block=lessons_block,
+            token_usage=self.token_usage,
         )
         reviewed_plan = plan.model_copy(update={
             "review_feedback": list(plan.review_feedback) + [feedback],

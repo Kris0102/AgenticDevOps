@@ -9,8 +9,10 @@ from db.settings_store import resolve_run_config
 from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
-from orchestrator.state import BlackboardState, EventType, RunStatus
+from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
+from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunStatus
 from orchestrator.run_failure import RunFailureHandler
+from orchestrator.token_budget import record_usage, token_budget_exceeded
 from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
 from context_engine.engine import ContextEngine
@@ -33,6 +35,19 @@ class PlannerRunner:
 
     def invoke(self) -> Dict[str, Any]:
         with db.session_scope() as db_session:
+            iteration: Iteration = self.state.get("iteration")
+            constraints: Constraints = self.state.get("constraints")
+
+            # Global token-budget guard (ADR 0025) — checked before spending another
+            # LLM call. Raises (not RunFailureHandler) so the run STALLS instead of FAILS —
+            # recoverable via /continue once the budget is raised, or /fail to close it.
+            if token_budget_exceeded(iteration, constraints):
+                _log.warning("planner.token_budget_exceeded",
+                             used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
+                raise TokenBudgetExceededError(
+                    phase="planner", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
+                )
+
             tools = self._init_tools(db_session)
             try:
                 result = self._run_planner(tools)
@@ -45,6 +60,9 @@ class PlannerRunner:
             finally:
                 self._teardown_sandbox()
 
+            result["iteration"] = record_usage(
+                db_session, self.run_id, self.name, iteration, self.token_usage, self._config.llm.model
+            )
             self._persist_results(db_session, result)
             return result
 
@@ -71,8 +89,11 @@ class PlannerRunner:
 
     def _run_planner(self, tools: list[BaseTool]) -> Dict[str, Any]:
         config = self.state.get("config") or resolve_run_config()
+        self._config = config
         planner = Planner(run_id=self.run_id, tools=tools, config=config)
-        return planner.invoke(self.state)
+        result = planner.invoke(self.state)
+        self.token_usage = planner.token_usage
+        return result
 
     def _teardown_sandbox(self) -> None:
         if self.sandbox_tools and self.run_id and os.getenv("TEAR_DOWN_SANDBOX_AFTER_RUN", "false").lower() == "true":

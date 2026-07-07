@@ -75,6 +75,10 @@ class RunResponse(BaseModel):
     # error or an uncaught crash) — shown on the continue bar. None for a worker-died
     # stall (generic message).
     stalled_reason: Optional[str] = None
+    # set only when run_state == stalled — 'token_budget' (Constraints.max_total_tokens
+    # reached) vs 'transient' (LLM hiccup / uncaught crash / worker died). Lets the
+    # dashboard show the raise-cap input only for the former (ADR 0025).
+    stalled_kind: Optional[str] = None
     # set only when run_state == failed — the run.failed reason, so the dashboard can
     # say WHY instead of just showing a red badge.
     failure_reason: Optional[str] = None
@@ -89,6 +93,8 @@ class RunResponseWithDetails(RunResponse):
     pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)
     llm_provider: Optional[str] = None        # settings hub — provider/model this run used
     llm_model: Optional[str] = None
+    tokens_used_total: int = 0                # running total across every agent (ADR 0025)
+    max_total_tokens: Optional[int] = None    # this run's token budget, if one was set
     created_at: datetime
     updated_at: datetime
     
@@ -116,16 +122,39 @@ class ArtifactContent(ArtifactView):
     content_text: str
 
 
+class IOExampleView(BaseModel):
+    """One concrete input→output example backing an acceptance criterion."""
+    given: Dict[str, Any] = {}
+    expect: Any = None
+
+
+class AcceptanceCriterionView(BaseModel):
+    """One observable behaviour a microtask must satisfy, with any concrete
+    input→output examples the Planner supplied."""
+    text: str
+    examples: List[IOExampleView] = []
+
+
 class MicrotaskRow(BaseModel):
     """One microtasks-table row for the run-detail progress board (durable — works for
-    finished runs, unlike the checkpoint-derived HITL PlanView)."""
+    finished runs, unlike the checkpoint-derived HITL PlanView). Carries the full record
+    (description/approach/acceptance criteria/etc) so the dashboard's Microtasks tab can
+    render complete detail without a second fetch."""
     microtask_id: str
     idx: int
     title: str
+    description: str
+    approach: Optional[str] = None
     status: str
     attempts: int
+    acceptance_criteria: List[AcceptanceCriterionView] = []
     target_files: List[str]
+    context_files: List[str] = []
+    dependencies: List[str] = []
     files_touched: List[str]
+    test_strategy: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class LessonView(BaseModel):

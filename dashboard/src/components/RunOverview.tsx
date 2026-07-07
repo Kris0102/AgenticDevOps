@@ -13,6 +13,10 @@ function fmtDuration(ms: number): string {
   return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
+
 const DONE = new Set(['COMPLETED', 'DONE'])
 
 // Blackboard status → coarse phase for the Gantt strip.
@@ -53,18 +57,19 @@ function buildPhases(events: EventView[]): PhaseSeg[] {
   return total > 0 ? raw.map((s) => ({ ...s, pct: (s.ms / total) * 100 })) : []
 }
 
-export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
+export function RunOverview({ runId, live, capVersion }: { runId: string; live: boolean; capVersion?: number }) {
   const [events, setEvents] = useState<EventView[]>([])
   const [tasks, setTasks] = useState<MicrotaskRow[]>([])
   const [info, setInfo] = useState<RunResponseWithDetails | null>(null)
 
   // Run labels (task, repo) — picked from the runs list; small, single-user deployment.
+  // Also re-fetched when `capVersion` bumps (a token-budget cap raise just succeeded) so the
+  // tokens-used tile's denominator reflects the new cap immediately, not on next remount.
   useEffect(() => {
-    setInfo(null)
     api.getRunsDetails()
       .then((rs) => setInfo(rs.find((r) => r.run_id === runId) ?? null))
       .catch(() => {})
-  }, [runId])
+  }, [runId, capVersion])
 
   useEffect(() => {
     let alive = true
@@ -103,6 +108,10 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
     const toolMs = events
       .filter((e) => e.event_type === 'tool.executed')
       .reduce((acc, e) => acc + (typeof e.payload?.duration_ms === 'number' ? (e.payload.duration_ms as number) : 0), 0)
+    const tokensUsed = events
+      .filter((e) => e.event_type === 'llm.usage')
+      .reduce((acc, e) => acc + (typeof e.payload?.total_tokens === 'number' ? (e.payload.total_tokens as number) : 0), 0)
+    const capRaises = events.filter((e) => e.event_type === 'run.token_budget_raised')
     return {
       duration: fmtDuration(duration),
       planDrafts: count('plan.drafted'),
@@ -112,10 +121,18 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
       gates: count('hitl.decided'),
       tools: count('tool.executed'),
       toolTime: fmtDuration(toolMs),
+      tokensUsed,
+      capRaises,
       branch: pushed ? String(pushed.payload?.branch ?? '') : null,
       blocked: count('gitops.secret_blocked') > 0,
     }
   }, [events])
+
+  // The cap in force at run start — the first raise's "old" value if it was ever
+  // raised, otherwise whatever's on the run now (never raised → never changed).
+  const initialCap = stats.capRaises.length > 0
+    ? Number(stats.capRaises[0].payload?.old_max_total_tokens ?? 0)
+    : info?.max_total_tokens ?? null
 
   const phases = useMemo(() => buildPhases(events), [events])
 
@@ -147,6 +164,10 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
         </div>
         <div className="tile"><span className="tv">{stats.tools}</span><span className="tl">tool calls</span></div>
         <div className="tile"><span className="tv">{stats.toolTime}</span><span className="tl">tool time</span></div>
+        <div className="tile">
+          <span className="tv">{fmtTokens(stats.tokensUsed)}{info?.max_total_tokens ? ` / ${fmtTokens(info.max_total_tokens)}` : ''}</span>
+          <span className="tl">tokens used</span>
+        </div>
       </div>
 
       {phases.length > 0 && (
@@ -165,6 +186,14 @@ export function RunOverview({ runId, live }: { runId: string; live: boolean }) {
       )}
 
       {stats.blocked && <div className="error">⛔ push was blocked — secret findings in the working tree</div>}
+      <div className="capraised">
+        {initialCap ? `token cap at start: ${fmtTokens(initialCap)}` : 'no token cap set at start'}
+      </div>
+      {stats.capRaises.map((e) => (
+        <div key={e.seq} className="capraised" title={new Date(e.ts).toLocaleString()}>
+          ⬆ cap raised {fmtTokens(Number(e.payload?.old_max_total_tokens ?? 0))} → {fmtTokens(Number(e.payload?.new_max_total_tokens ?? 0))}
+        </div>
+      ))}
       {stats.branch && <div className="pushedto">pushed to <code>{stats.branch}</code></div>}
 
       {current && (

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 from observability import Category, get_logger
 from orchestrator.state import ReviewFeedback
+from providers import TokenUsage
 
 _log = get_logger(Category.REVIEWER)
 
@@ -125,6 +126,7 @@ def create_review_file_as_output(
     investigation_summary: Optional[str] = None,
     prior_feedback: Optional[List[ReviewFeedback]] = None,
     lessons_block: str = "",
+    token_usage: Optional[TokenUsage] = None,
 ) -> str:
     """Write the review to disk and return the absolute path."""
     try:
@@ -140,6 +142,8 @@ def create_review_file_as_output(
             f.write(f"{sep}\n")
             f.write(f"  REVIEW OUTPUT  |  run_id: {run_id}\n")
             f.write(f"  Generated:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if token_usage:
+                f.write(f"  Tokens:       {token_usage.input_tokens} in / {token_usage.output_tokens} out / {token_usage.total_tokens} total\n")
             f.write(f"{sep}\n\n")
 
             f.write("REVIEW DECISION\n")

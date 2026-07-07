@@ -31,6 +31,12 @@ class Run(Base):
     # Which provider/model this run executed under (settings hub) — shown on the dashboard.
     llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     llm_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Denormalized mirror of the checkpointed Iteration.tokens_used_total (ADR 0025) —
+    # cheap to query without deserializing the LangGraph checkpoint blob.
+    tokens_used_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Denormalized mirror of this run's Constraints.max_total_tokens, set once at bootstrap —
+    # lets the dashboard show "used / cap" without deserializing the checkpoint. None = no cap.
+    max_total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

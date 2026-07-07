@@ -15,6 +15,7 @@ export interface RunResponse {
   hitl_phase?: string | null
   hitl_approval_id?: string | null
   stalled_reason?: string | null   // transient-error / crash reason when run_state === 'stalled'
+  stalled_kind?: 'token_budget' | 'transient' | string | null   // cause of the stall (ADR 0025)
   failure_reason?: string | null   // run.failed reason when run_state === 'failed'
 }
 
@@ -28,6 +29,8 @@ export interface RunResponseWithDetails extends RunResponse {
   pushed_files?: number | null       // files shipped by the deploy push
   llm_provider?: string | null       // provider/model this run used
   llm_model?: string | null
+  tokens_used_total: number          // running total across every agent (ADR 0025)
+  max_total_tokens?: number | null   // this run's token budget, if one was set
   created_at: string   // ISO 8601
   updated_at: string   // ISO 8601
 }
@@ -62,6 +65,7 @@ export interface Knobs {
 export interface RunDefaults {
   max_total_iterations: number
   max_microtask_attempts: number
+  max_total_tokens?: number | null
   hitl_checkpoints: string[]
   teardown_on_terminal: boolean
 }
@@ -80,6 +84,7 @@ export interface SchemaField {
   description: string
   type: string
   group: 'basic' | 'expert'
+  nullable?: boolean   // int/float only: blank input means "clear to null", not 0/NaN
 }
 
 export interface ProviderTestResult {
@@ -207,14 +212,36 @@ export interface ArtifactContent extends ArtifactView {
   content_text: string
 }
 
+export interface IOExampleView {
+  given: Record<string, unknown>
+  expect: unknown
+}
+
+export interface AcceptanceCriterionView {
+  text: string
+  examples: IOExampleView[]
+}
+
+// Full microtasks-table row (mirrors responses.MicrotaskRow) — carries the complete
+// planner record (description/approach/acceptance criteria/etc), not just the board
+// summary, so both the compact overview board and the full Microtasks tab read from
+// the same fetch.
 export interface MicrotaskRow {
   microtask_id: string
   idx: number
   title: string
+  description: string
+  approach?: string | null
   status: string
   attempts: number
+  acceptance_criteria: AcceptanceCriterionView[]
   target_files: string[]
+  context_files: string[]
+  dependencies: string[]
   files_touched: string[]
+  test_strategy?: string | null
+  created_at: string
+  updated_at: string
 }
 
 // ----------------------------------------------------------------- client
@@ -254,9 +281,11 @@ export const api = {
   resume: (id: string, decision: 'approve' | 'reject', note?: string) =>
     http.post<RunResponse>(`/runs/${id}/resume`, { decision, note: note ?? null }).then((r) => r.data),
 
-  // Re-drive a stalled run (worker died mid-graph) from its checkpoint. Not for HITL gates.
-  continueRun: (id: string) =>
-    http.post<RunResponse>(`/runs/${id}/continue`).then((r) => r.data),
+  // Re-drive a stalled run (worker died mid-graph, or a token-budget stop) from its
+  // checkpoint. Not for HITL gates. Optional `maxTotalTokens` raises the checkpointed cap
+  // before resuming (ADR 0025) — for a token-budget stall.
+  continueRun: (id: string, maxTotalTokens?: number) =>
+    http.post<RunResponse>(`/runs/${id}/continue`, maxTotalTokens != null ? { max_total_tokens: maxTotalTokens } : undefined).then((r) => r.data),
 
   // Human verdict on a stalled run: close the case as FAILED ('Mark as failed').
   failRun: (id: string, note?: string) =>

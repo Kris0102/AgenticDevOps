@@ -33,7 +33,7 @@ from orchestrator.state import (
     RunConfig,
     RunStatus,
 )
-from providers import build_chat_llm
+from providers import TokenUsage, build_chat_llm, sum_usage
 from tool_gateway.Roles import Roles
 
 # Load environment variables from .env if present
@@ -92,6 +92,7 @@ class Coder:
         self.max_empty_diff_retries = knobs.coder_max_empty_diff_retries
         self.max_compile_retries = knobs.coder_max_compile_retries
         self.timeout_seconds = knobs.coder_timeout_seconds
+        self.token_usage = TokenUsage()
 
         try:
             self.llm = build_chat_llm(self.config.provider, self.config.llm,
@@ -112,6 +113,7 @@ class Coder:
         file_contents: Dict[str, str],
     ) -> Dict[str, Any]:
         """Run the coding loop for one microtask and return the node-result dict."""
+        self.token_usage = TokenUsage()
         # Advisory: top-k confirmed code lessons from PAST runs on this repo (ADR 0018).
         # Computed once (constant across empty-diff retries), injected into the prompt and
         # recorded in the debug log. Excludes this run — same-run reflections already reach
@@ -139,7 +141,8 @@ class Coder:
                   title=microtask.title, files_touched=files_touched)
         create_code_file_log(self.run_id, microtask, diff_text, files_touched, attempts_log,
                                   reflections=list(state.get("reflections") or []),
-                                  lessons_block=lessons_block)
+                                  lessons_block=lessons_block,
+                                  token_usage=self.token_usage)
         return self._build_result(state, microtask, diff_text, files_touched)
 
     def _code_until_diff(
@@ -200,6 +203,7 @@ class Coder:
                     raise RetriableError(f"coder LLM call failed: {exception}", phase="coder")
                 raise
 
+            self.token_usage = self.token_usage + sum_usage(agent_result.get("messages", []))
             transcript = format_react_transcript(agent_result.get("messages", []))
             diff_text = self.coder_tools.get_repo_diff()
             diff_empty = not diff_text.strip()
@@ -278,6 +282,7 @@ class Coder:
                     {"messages": messages},
                     config={"recursion_limit": _recursion_limit(self.max_tool_steps)},
                 )
+                self.token_usage = self.token_usage + sum_usage(agent_result.get("messages", []))
                 messages = agent_result.get("messages", messages)
                 attempts_log.append({
                     "attempt": f"compile-fix-{attempt}",

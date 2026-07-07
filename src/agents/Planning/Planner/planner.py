@@ -20,7 +20,7 @@ from agents.Planning.Planner.investigation_support import (
     _last_ai_text,
     _log_investigation_steps,
 )
-from providers import build_chat_llm
+from providers import TokenUsage, build_chat_llm, sum_usage
 from agents.Planning.Planner.plan_output import create_plan_file_as_output
 from agents.Planning.Planner.prompts.investigator import (
     INVESTIGATOR_SYSTEM_PROMPT,
@@ -120,13 +120,18 @@ class Planner:
         self.max_synthesis_attempts = knobs.planner_max_synthesis_attempts
         self.name = Roles.PLANNER.value
         self.timeout_seconds = knobs.planner_timeout_seconds
+        self.token_usage = TokenUsage()
 
         try:
             self.llm = build_chat_llm(self.config.provider, self.config.llm,
                                       timeout_seconds=self.timeout_seconds)
 
-            # Enforce structured output at the end of the pipeline
-            self.structured_llm = self.llm.with_structured_output(PlannerDraft, method="json_mode")
+            # Enforce structured output at the end of the pipeline. include_raw=True so the
+            # underlying AIMessage (and its usage_metadata) stays accessible for token
+            # accounting (ADR 0025) — see the parsing_error handling in invoke() below.
+            self.structured_llm = self.llm.with_structured_output(
+                PlannerDraft, method="json_mode", include_raw=True
+            )
 
             # Setup the investigator ReAct agent if tools are available
             if self.tools:
@@ -144,6 +149,7 @@ class Planner:
 
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
         """Runs the planner logic to build the macro Plan and Microtasks."""
+        self.token_usage = TokenUsage()
         objective = state.get("objective")
         obj_text = ""
         if objective:
@@ -182,6 +188,7 @@ class Planner:
                 )
                 messages = investigative_state.get("messages", [])
                 _log_investigation_steps(messages)
+                self.token_usage = self.token_usage + sum_usage(messages)
                 investigation_summary = _last_ai_text(messages) or (
                     "Investigation finished but produced no assistant summary."
                 )
@@ -238,7 +245,12 @@ class Planner:
                 raw = self.structured_llm.invoke(
                     [HumanMessage(content=synthesis_prompt)],
                 )
-                draft = raw if isinstance(raw, PlannerDraft) else PlannerDraft.model_validate(raw)
+                if raw.get("raw") is not None:
+                    self.token_usage = self.token_usage + sum_usage([raw["raw"]])
+                if raw.get("parsing_error"):
+                    raise raw["parsing_error"]
+                parsed = raw["parsed"]
+                draft = parsed if isinstance(parsed, PlannerDraft) else PlannerDraft.model_validate(parsed)
                 # Lift the draft into a full PlannerOutput: the LLM never authors
                 # review_feedback, so it starts empty and is carried forward below.
                 raw_result = PlannerOutput(
@@ -256,7 +268,7 @@ class Planner:
                 raise
 
             # Write output file from raw LLM result — always, even if quality checks fail below
-            plan_file_path = create_plan_file_as_output(investigation_summary, raw_result, self.run_id, revision_context)
+            plan_file_path = create_plan_file_as_output(investigation_summary, raw_result, self.run_id, revision_context, self.token_usage)
 
             # Quality validation — raises BadMicroTaskException with specific failures if microtasks are too vague
             try:

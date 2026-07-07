@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from agents.Planning.Planner.quality import _quality_report
 from observability import Category, get_logger
+from providers import TokenUsage
 
 _log = get_logger(Category.PLANNER)
 
@@ -30,7 +31,7 @@ def _next_iteration(folder: Path, glob_pattern: str) -> int:
     return len(list(folder.glob(glob_pattern))) + 1
 
 
-def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str]) -> str:
+def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str], token_usage: Optional[TokenUsage] = None) -> str:
     """Write the plan to disk and return the absolute path."""
     try:
         src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
@@ -46,6 +47,8 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
             f.write(f"{sep}\n")
             f.write(f"  PLAN OUTPUT  |  run_id: {run_id}\n")
             f.write(f"  Generated:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if token_usage:
+                f.write(f"  Tokens:      {token_usage.input_tokens} in / {token_usage.output_tokens} out / {token_usage.total_tokens} total\n")
             f.write(f"{sep}\n\n")
 
             # ── Coder Readiness ───────────────────────────────────────────────

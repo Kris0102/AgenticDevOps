@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from observability import Category, get_logger
 from orchestrator.state import Microtask, Reflection
+from providers import TokenUsage
 
 _log = get_logger(Category.REFLECTOR)
 
@@ -39,6 +40,7 @@ def create_reflection_file_as_output(
     approved: bool = False,
     prior_reflections: Optional[List[Reflection]] = None,
     lessons_block: str = "",
+    token_usage: Optional[TokenUsage] = None,
 ) -> str:
     """Write the reflector output to disk and return the absolute path."""
     try:
@@ -57,6 +59,8 @@ def create_reflection_file_as_output(
             label = "REFLECTOR OUTPUT (RE-REFLECTION)" if rejection_note else "REFLECTOR OUTPUT"
             f.write(f"  {label}  |  run_id: {run_id}\n")
             f.write(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if token_usage:
+                f.write(f"  Tokens:    {token_usage.input_tokens} in / {token_usage.output_tokens} out / {token_usage.total_tokens} total\n")
             f.write(f"{sep}\n\n")
 
             # ── Diagnosis summary ─────────────────────────────────────────────

@@ -20,7 +20,7 @@ from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from db.lessons import LessonStore
 from observability import Category, get_logger
 from orchestrator.state import BlackboardState, Microtask, Reflection, RunConfig, RunStatus
-from providers import build_chat_llm
+from providers import TokenUsage, build_chat_llm, sum_usage
 from tool_gateway.Roles import Roles
 
 load_dotenv()
@@ -126,10 +126,15 @@ class Reflector:
         self.name = Roles.REFLECTOR.value
         self.config = config   # mandatory — the node supplies the fallback
         self.max_tool_steps = self.config.knobs.reflector_max_tool_steps
+        self.token_usage = TokenUsage()
 
         self.llm = build_chat_llm(self.config.provider, self.config.llm,
                                   timeout_seconds=self.config.knobs.reflector_timeout_seconds)
-        self.structured_llm = self.llm.with_structured_output(ReflectionOutput, method="json_mode")
+        # include_raw=True keeps the underlying AIMessage (and its usage_metadata) accessible
+        # for token accounting (ADR 0025).
+        self.structured_llm = self.llm.with_structured_output(
+            ReflectionOutput, method="json_mode", include_raw=True
+        )
         self.investigator = create_agent(
             self.llm,
             tools=self.reflector_tools.build_tools(),
@@ -146,6 +151,7 @@ class Reflector:
         """`test_output` is the failing tester output, fetched by ReflectorRunner from the
         durable `unit_tests` artifact (blackboard carries only the ref) and passed in — the
         node owns DB access, the agent just reasons over the text."""
+        self.token_usage = TokenUsage()
         rejection_note: Optional[str] = state.get("reflection_rejection_note")
         mode = "quality-review" if test_passed else "failure-diagnosis"
         _log.info(
@@ -211,6 +217,7 @@ class Reflector:
             approved=approved,
             prior_reflections=existing,
             lessons_block=lessons_block,
+            token_usage=self.token_usage,
         )
         _log.info(
             "reflector.invoke.end",
@@ -262,6 +269,7 @@ class Reflector:
                 config={"recursion_limit": _recursion_limit(self.max_tool_steps)},
             )
             messages = result.get("messages", [])
+            self.token_usage = self.token_usage + sum_usage(messages)
             tool_calls = sum(
                 1 for m in messages if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
             )
@@ -330,7 +338,12 @@ class Reflector:
             prompt = f"{lessons_block}\n\n{prompt}"
         try:
             raw = self.structured_llm.invoke([HumanMessage(content=prompt)])
-            output = raw if isinstance(raw, ReflectionOutput) else ReflectionOutput.model_validate(raw)
+            if raw.get("raw") is not None:
+                self.token_usage = self.token_usage + sum_usage([raw["raw"]])
+            if raw.get("parsing_error"):
+                raise raw["parsing_error"]
+            parsed = raw["parsed"]
+            output = parsed if isinstance(parsed, ReflectionOutput) else ReflectionOutput.model_validate(parsed)
             # Tests failed → always improve regardless of what the LLM said.
             if not test_passed and output.decision == "approve":
                 _log.warning(

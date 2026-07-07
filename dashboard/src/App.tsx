@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { api } from './api'
 import { useRunStatus } from './hooks/useRunStatus'
 import { ArtifactsPanel } from './components/ArtifactsPanel'
+import { MicrotasksPanel } from './components/MicrotasksPanel'
 import { LessonsPanel } from './components/LessonsPanel'
 import { PipelineGraph } from './components/PipelineGraph'
+import { TokensByAgent } from './components/TokensByAgent'
 import { NewRunPage } from './components/NewRunPage'
 import { ReposPage } from './components/ReposPage'
 import { SettingsPage } from './components/SettingsPage'
@@ -15,21 +17,33 @@ import { HitlPanel } from './components/HitlPanel'
 import { EventTimeline } from './components/EventTimeline'
 
 type View = 'home' | 'newrun' | 'settings' | 'repos'
-type Tab = 'activity' | 'artifacts' | 'lessons'
+type Tab = 'activity' | 'artifacts' | 'microtasks' | 'lessons'
 
 export default function App() {
   const [runId, setRunId] = useState<string | null>(null)
   const [view, setView] = useState<View>('home')
   const [tab, setTab] = useState<Tab>('activity')
   const [continuing, setContinuing] = useState(false)
+  const [newCap, setNewCap] = useState('')
+  const [capVersion, setCapVersion] = useState(0)
   const { run, error } = useRunStatus(runId)
   const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
+  // A token-budget stall can't usefully be retried unchanged — it just re-trips the same
+  // check and re-stalls — so the new cap is mandatory for this stall kind (not for a plain
+  // transient/crash stall, where blank = retry unchanged).
+  const capRequired = run?.stalled_kind === 'token_budget'
+  const capValid = !capRequired || (newCap.trim() !== '' && Number(newCap) > 0)
 
   const onContinue = async () => {
-    if (!runId) return
+    if (!runId || !capValid) return
     setContinuing(true)
     try {
-      await api.continueRun(runId)   // poll picks up the transition to running/paused
+      // blank = today's plain retry (no override); a value raises the checkpointed cap
+      // before resuming (ADR 0025) — required for a token-budget stall.
+      const cap = newCap.trim() === '' ? undefined : parseInt(newCap, 10)
+      await api.continueRun(runId, cap)   // poll picks up the transition to running/paused
+      if (cap != null) setCapVersion((v) => v + 1)   // let RunOverview refetch its cap immediately
+      setNewCap('')
     } catch (e) {
       alert(String(e))
     } finally {
@@ -104,9 +118,18 @@ export default function App() {
                 </span>
               </div>
               {run.stalled_reason && <div className="cb-reason">{run.stalled_reason}</div>}
+              {run.stalled_kind === 'token_budget' && (
+                <label className="cb-cap">
+                  new token cap (required)
+                  <input
+                    type="number" min={1} placeholder="required — new token cap"
+                    value={newCap} onChange={(e) => setNewCap(e.target.value)}
+                  />
+                </label>
+              )}
               <div className="cb-actions">
-                <button className="continue" disabled={continuing} onClick={onContinue}>
-                  {continuing ? 'continuing…' : 'Continue run'}
+                <button className="continue" disabled={continuing || !capValid} onClick={onContinue}>
+                  {continuing ? 'continuing…' : capRequired ? 'Raise cap & continue' : newCap.trim() !== '' ? 'Raise cap & continue' : 'Continue run'}
                 </button>
                 <button className="giveup" disabled={continuing} onClick={onGiveUp} title="close the case — the run becomes terminal FAILED and can no longer be continued">
                   Mark as failed
@@ -124,13 +147,15 @@ export default function App() {
             />
           )}
 
-          <RunOverview runId={runId} live={!terminal} />
+          <RunOverview runId={runId} live={!terminal} capVersion={capVersion} />
+
+          <TokensByAgent runId={runId} live={!terminal} />
 
           {/* ONE content area below the overview — tabs instead of four stacked panels
               each with its own scrollbar. Live feeds keep an internal scroll (they must
               stick to bottom without moving the page); everything else page-scrolls. */}
           <nav className="tabbar" role="tablist">
-            {(['activity', 'artifacts', 'lessons'] as Tab[]).map((t) => (
+            {(['activity', 'artifacts', 'microtasks', 'lessons'] as Tab[]).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t}
                 className={`tabbtn ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
                 {t}
@@ -147,6 +172,7 @@ export default function App() {
             </div>
           )}
           {tab === 'artifacts' && <ArtifactsPanel runId={runId} />}
+          {tab === 'microtasks' && <MicrotasksPanel runId={runId} />}
           {tab === 'lessons' && <LessonsPanel runId={runId} />}
         </>
       )}

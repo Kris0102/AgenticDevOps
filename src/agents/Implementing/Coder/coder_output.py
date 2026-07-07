@@ -5,6 +5,7 @@ from pathlib import Path
 from orchestrator.state import (
     Microtask,
 )
+from providers import TokenUsage
 _log = get_logger(Category.CODER)
 
 def create_code_file_log(
@@ -15,6 +16,7 @@ def create_code_file_log(
         attempts_log: List[Dict[str, Any]],
         reflections: Optional[List] = None,
         lessons_block: str = "",
+        token_usage: Optional[TokenUsage] = None,
     ) -> None:
         """Write a structured record of this microtask's coding attempts to a
         per-iteration file: coder_microtask_<n>_iteration_<m>.txt."""
@@ -43,6 +45,8 @@ def create_code_file_log(
                 f.write(f"{sep}\n")
                 f.write(f"  CODER OUTPUT  |  run_id: {run_id}\n")
                 f.write(f"  Generated:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                if token_usage:
+                    f.write(f"  Tokens:       {token_usage.input_tokens} in / {token_usage.output_tokens} out / {token_usage.total_tokens} total\n")
                 f.write(f"{sep}\n\n")
 
                 # ── Outcome ───────────────────────────────────────────────────

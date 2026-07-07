@@ -13,6 +13,7 @@ export interface NewRunOpts {
   llm?: LLMConfig | null                 // per-run model override (settings hub)
   maxTotalIterations?: number
   maxMicrotaskAttempts?: number
+  maxTotalTokens?: number | null
 }
 
 export function buildRunRequest(opts: NewRunOpts) {
@@ -36,6 +37,7 @@ export function buildRunRequest(opts: NewRunOpts) {
       cost_budget_usd: 10.0,
       max_total_iterations: opts.maxTotalIterations ?? 5,
       max_microtask_attempts: opts.maxMicrotaskAttempts ?? 3,
+      max_total_tokens: opts.maxTotalTokens ?? null,
       allowed_languages: ['python', 'javascript'],
       forbidden_paths: ['src/secrets/'],
       allowed_network: 'none',

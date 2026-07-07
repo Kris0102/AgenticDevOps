@@ -6,6 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from Exceptions.RetriableError import RetriableError, is_transient_llm_error
+from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 
 from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunRequest
 from datetime import datetime, timezone
@@ -72,6 +73,13 @@ class HitlNotPausedError(RuntimeError):
 
 class RunAlreadyExistsError(RuntimeError):
     """import_run() targeted a run_id that is already in this database."""
+
+
+class InvalidTokenBudgetError(ValueError):
+    """A /continue request's `max_total_tokens` doesn't make sense against the run's
+    checkpointed state (ADR 0026) — no checkpointed Constraints to patch, or a cap at/below
+    tokens already spent (would just immediately re-trip `token_budget_exceeded` and
+    re-stall the instant the node re-enters)."""
 
 
 class ProviderUnreachableError(RuntimeError):
@@ -198,6 +206,43 @@ class Service:
             self._active.discard(run_id)
             clear_context()
 
+    def raise_token_budget(self, run_id: str, new_max_total_tokens: int) -> None:
+        """Patch the checkpointed `Constraints.max_total_tokens` to a new (higher) cap
+        (ADR 0026): continuing a token-budget stall unchanged just immediately re-trips
+        `token_budget_exceeded` and re-stalls, so the human needs a way to actually raise
+        the cap before `/continue` re-drives. Called synchronously from the route BEFORE
+        `continue_run` is scheduled in the background, so a bad value 422s the HTTP request
+        instead of silently re-stalling inside the background task.
+
+        Also mirrors the new cap onto the denormalized `runs.max_total_tokens` column (same
+        precedent as `bootstrap_node._upsert_run_record` / `token_budget.record_usage`) so
+        `RunResponseWithDetails`/the dashboard tile reflect it without waiting on another
+        checkpoint write, and emits a durable audit event."""
+        snapshot = graph.get_state(self._config(run_id))
+        values = snapshot.values or {}
+        constraints = values.get("constraints")
+        if constraints is None:
+            raise InvalidTokenBudgetError(f"run {run_id} has no checkpointed constraints to patch")
+        iteration = values.get("iteration")
+        used = iteration.tokens_used_total if iteration else 0
+        if new_max_total_tokens <= used:
+            raise InvalidTokenBudgetError(
+                f"new cap ({new_max_total_tokens}) must be greater than tokens already used ({used})"
+            )
+        old_max_total_tokens = constraints.max_total_tokens
+        patched = constraints.model_copy(update={"max_total_tokens": new_max_total_tokens})
+        graph.update_state(self._config(run_id), {"constraints": patched})
+        with db.session_scope() as session:
+            run_record = session.get(Run, run_id)
+            if run_record:
+                run_record.max_total_tokens = new_max_total_tokens
+            EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_TOKEN_BUDGET_RAISED, {
+                "old_max_total_tokens": old_max_total_tokens,
+                "new_max_total_tokens": new_max_total_tokens,
+                "tokens_used_total": used,
+            })
+        _log.info("run.token_budget_raised", run_id=run_id, new_cap=new_max_total_tokens, used=used)
+
     def continue_run(self, run_id: str) -> RunResponse:
         """Re-drive a STALLED run from its checkpoint. Used when the worker that was driving
         the graph died (uvicorn crash/restart, OOM-kill) leaving a non-terminal checkpoint
@@ -320,7 +365,7 @@ class Service:
             run_id=run.run_id,
             run_state=state,
             status=run.status,
-            failure_reason=self._last_event_reason(run.run_id, EventType.RUN_FAILED.value)
+            failure_reason=(self._last_event_payload(run.run_id, EventType.RUN_FAILED.value) or {}).get("reason")
             if state == RunState.FAILED else None,
             repo_url=run.repo_url,
             repo_name=self._repo_name(run.repo_url),
@@ -329,6 +374,8 @@ class Service:
             pushed_files=pushed_files,
             llm_provider=run.llm_provider,
             llm_model=run.llm_model,
+            tokens_used_total=run.tokens_used_total,
+            max_total_tokens=run.max_total_tokens,
             created_at=run.created_at,
             updated_at=run.updated_at,
         )
@@ -712,6 +759,14 @@ class Service:
         (LangGraph swallows its internal GraphInterrupt), so catching Exception is safe."""
         try:
             graph.invoke(graph_input, config=self._config(run_id))
+        except TokenBudgetExceededError as exc:
+            # Constraints.max_total_tokens reached (ADR 0025/0027). Deliberately NOT a
+            # terminal FAILED like the other deterministic caps (max_total_iterations,
+            # microtask attempts): a token cap is a policy knob the human can raise
+            # out-of-band, so leave the run non-terminal — STALLED, checkpoint intact —
+            # and recoverable via /continue (retries the same node) or /fail to close it.
+            _log.warning("graph.token_budget_exceeded", run_id=run_id, error=exc.reason)
+            self._mark_stalled(run_id, exc.reason, kind="token_budget")
         except RetriableError as exc:
             # Explicit transient signal from an agent — an LLM API hiccup (timeout / 429
             # "overloaded" / 5xx), not a run defect. Do NOT fail: leave the run non-terminal
@@ -735,14 +790,15 @@ class Service:
             _log.error("graph.uncaught", run_id=run_id, error=str(exc), exc_info=True)
             self._mark_stalled(run_id, f"Uncaught {type(exc).__name__}: {exc}")
 
-    def _mark_stalled(self, run_id: str, reason: str) -> None:
-        """Record a transient stall WITHOUT touching Run.status — the run stays at whatever
-        node it reached, so `_derive_state` reports STALLED and /continue re-drives it. Only
-        emits an audit event carrying the reason so the dashboard can say why (api timeout
-        vs worker died)."""
+    def _mark_stalled(self, run_id: str, reason: str, kind: str = "transient") -> None:
+        """Record a stall WITHOUT touching Run.status — the run stays at whatever node it
+        reached, so `_derive_state` reports STALLED and /continue re-drives it. Only emits
+        an audit event carrying the reason so the dashboard can say why (api timeout vs
+        worker died vs token budget). `kind` distinguishes a genuinely transient error from
+        a token-budget stop (ADR 0025) — same recovery mechanics, different cause."""
         with db.session_scope() as session:
             EventLogger.log(session, run_id, Roles.ORCHESTRATOR.value, EventType.RUN_STALLED, {
-                "reason": reason, "kind": "transient",
+                "reason": reason, "kind": kind,
             })
 
     def _bootstrap(self, run_id: str, state) -> dict:
@@ -773,17 +829,20 @@ class Service:
             # human closed the case (give_up): checkpoint stays non-terminal, but the
             # runs-table verdict is FAILED — the row wins over the orphaned checkpoint.
             state = RunState.FAILED
+        stall_payload = self._last_event_payload(run_id, EventType.RUN_STALLED.value) if state == RunState.STALLED else None
+        fail_payload = self._last_event_payload(run_id, EventType.RUN_FAILED.value) if state == RunState.FAILED else None
         return RunResponse(
             run_id=run_id,
             run_state=state,
             status=status.value if isinstance(status, RunStatus) else status,
             hitl_phase=pending.get("phase") if pending else None,
             hitl_approval_id=pending.get("approval_id") if pending else None,
-            # Only for a stalled run: the reason if the stall carried one (worker-died
+            # Only for a stalled run: the reason/kind if the stall carried one (worker-died
             # stalls have no run.stalled event → None → the UI shows the generic message).
-            stalled_reason=self._last_event_reason(run_id, EventType.RUN_STALLED.value) if state == RunState.STALLED else None,
+            stalled_reason=stall_payload.get("reason") if stall_payload else None,
+            stalled_kind=stall_payload.get("kind") if stall_payload else None,
             # Only for a failed run: the run.failed reason — the dashboard's error banner.
-            failure_reason=self._last_event_reason(run_id, EventType.RUN_FAILED.value) if state == RunState.FAILED else None,
+            failure_reason=fail_payload.get("reason") if fail_payload else None,
         )
 
     @staticmethod
@@ -793,9 +852,10 @@ class Service:
             return run.status if run else None
 
     @staticmethod
-    def _last_event_reason(run_id: str, event_type: str) -> Optional[str]:
-        """`reason` payload of the run's most recent event of the given type (run.stalled /
-        run.failed) — powers the stalled-bar and the failure banner."""
+    def _last_event_payload(run_id: str, event_type: str) -> Optional[dict]:
+        """Full `payload_json` of the run's most recent event of the given type (run.stalled /
+        run.failed) — powers the stalled-bar (reason + kind, ADR 0026) and the failure banner
+        (reason)."""
         with db.session_scope() as session:
             row = (
                 session.query(EventRow)
@@ -803,7 +863,7 @@ class Service:
                 .order_by(EventRow.seq.desc())
                 .first()
             )
-            return (row.payload_json or {}).get("reason") if row else None
+            return (row.payload_json or {}) if row else None
 
     @staticmethod
     def _plan_view(state: dict) -> Optional[PlanView]:

@@ -9,6 +9,7 @@ from db.settings_store import resolve_run_config
 from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
+from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunStatus
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.token_budget import record_usage, token_budget_exceeded
@@ -37,17 +38,14 @@ class PlannerRunner:
             iteration: Iteration = self.state.get("iteration")
             constraints: Constraints = self.state.get("constraints")
 
-            # Global token-budget guard (ADR 0025) — checked before spending another LLM
-            # call, mirroring the planner-reviewer max_total_iterations cap.
+            # Global token-budget guard (ADR 0025) — checked before spending another
+            # LLM call. Raises (not RunFailureHandler) so the run STALLS instead of FAILS —
+            # recoverable via /continue once the budget is raised, or /fail to close it.
             if token_budget_exceeded(iteration, constraints):
                 _log.warning("planner.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(
-                        phase="planner",
-                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
-                    ),
+                raise TokenBudgetExceededError(
+                    phase="planner", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
                 )
 
             tools = self._init_tools(db_session)

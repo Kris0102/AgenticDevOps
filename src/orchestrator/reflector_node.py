@@ -7,6 +7,7 @@ from db.event_log import EventLogger
 from db.models import Artifact as DbArtifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.RetriableError import RetriableError, is_transient_llm_error
+from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 from agents.Implementing.Reflector.reflector import Reflector
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
 from observability import Category, get_logger
@@ -62,17 +63,14 @@ class ReflectorRunner:
             iteration: Iteration = self.state.get("iteration")
             constraints: Constraints = self.state.get("constraints")
 
-            # Global token-budget guard (ADR 0025) — checked before spending another LLM
-            # call.
+            # Global token-budget guard (ADR 0025) — checked before spending another
+            # LLM call. Raises (not RunFailureHandler) so the run STALLS instead of FAILS —
+            # recoverable via /continue once the budget is raised, or /fail to close it.
             if token_budget_exceeded(iteration, constraints):
                 _log.warning("reflector.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(
-                        phase="reflect",
-                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
-                    ),
+                raise TokenBudgetExceededError(
+                    phase="reflect", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
                 )
 
             try:

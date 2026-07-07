@@ -34,6 +34,9 @@ class Run(Base):
     # Denormalized mirror of the checkpointed Iteration.tokens_used_total (ADR 0025) —
     # cheap to query without deserializing the LangGraph checkpoint blob.
     tokens_used_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Denormalized mirror of this run's Constraints.max_total_tokens, set once at bootstrap —
+    # lets the dashboard show "used / cap" without deserializing the checkpoint. None = no cap.
+    max_total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

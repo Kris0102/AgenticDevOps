@@ -9,9 +9,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/runs': { target: 'http://localhost:8000', changeOrigin: true },
-      '/settings': { target: 'http://localhost:8000', changeOrigin: true },
-      '/repos': { target: 'http://localhost:8000', changeOrigin: true },
+      // 127.0.0.1, not localhost: on Windows "localhost" can resolve to the
+      // IPv6 ::1 first, which uvicorn (IPv4-only bind) refuses -> 500s here.
+      '/runs': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/settings': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/repos': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

@@ -69,6 +69,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
         llm: { provider_id: providerId, model, temperature: settings.selected.temperature, max_retries: settings.selected.max_retries },
         maxTotalIterations: settings.defaults.max_total_iterations,
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
+        maxTotalTokens: settings.defaults.max_total_tokens,
       })
       const r = await api.createRun(req)
       onRun(r.run_id)

@@ -42,8 +42,9 @@ export function EventTimeline({ runId, stop }: { runId: string; stop: boolean })
     }
   }, [runId, stop])
 
-  const toolCount = events.filter((e) => e.event_type.startsWith('tool.')).length
-  const visible = showTools ? events : events.filter((e) => !e.event_type.startsWith('tool.'))
+  const isNoisy = (e: EventView) => e.event_type.startsWith('tool.') || e.event_type === 'llm.usage'
+  const toolCount = events.filter(isNoisy).length
+  const visible = showTools ? events : events.filter((e) => !isNoisy(e))
 
   return (
     <div className="panel events">
@@ -52,7 +53,7 @@ export function EventTimeline({ runId, stop }: { runId: string; stop: boolean })
         {toolCount > 0 && (
           <label className="ev-toggle">
             <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
-            tool calls ({toolCount})
+            tool calls / llm usage ({toolCount})
           </label>
         )}
       </div>

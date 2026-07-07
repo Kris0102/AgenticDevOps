@@ -35,6 +35,8 @@ const LABELS: Record<string, string> = {
   'semantic.workspace_synced': 'index synced',
   'test.unit_completed': 'tests ran',
   'check.lint_completed': 'lint ran',
+  'llm.usage': 'llm usage',
+  'run.token_budget_raised': 'token cap raised',
 }
 
 // event_type → payload one-liner. Fallback: first few primitive key=value pairs.
@@ -56,6 +58,8 @@ const SUMMARIES: Record<string, (p: Record<string, unknown>) => string> = {
   'gitops.pushed': (p) => `${s(p.branch, 40)}${p.file_count !== undefined ? ` (${s(p.file_count)} files)` : ''}`,
   'gitops.secret_blocked': (p) => `${s(p.count ?? '?')} finding(s)`,
   'semantic.baseline_ingested': (p) => `${s(p.chunks)} chunks`,
+  'llm.usage': (p) => `${s(p.agent, 20)} · ${s(p.total_tokens)} tokens (${s(p.model, 30)})`,
+  'run.token_budget_raised': (p) => `${s(p.old_max_total_tokens ?? '∞')} → ${s(p.new_max_total_tokens)} (used ${s(p.tokens_used_total)})`,
 }
 
 const PRIMITIVE = (v: unknown) => ['string', 'number', 'boolean'].includes(typeof v)

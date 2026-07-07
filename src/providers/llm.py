@@ -38,7 +38,6 @@ def build_chat_llm(
             temperature=llm.temperature,
             max_retries=llm.max_retries,
             timeout=timeout_seconds,
-            max_tokens=llm.max_output_tokens,
             stop=None,
         )
     # openai_compatible (the cluster + anything OpenAI-shaped)
@@ -51,7 +50,6 @@ def build_chat_llm(
         temperature=llm.temperature,
         max_retries=llm.max_retries,
         timeout=timeout_seconds,
-        max_tokens=llm.max_output_tokens,
     )
 
 

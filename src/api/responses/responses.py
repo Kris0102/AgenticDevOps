@@ -75,6 +75,10 @@ class RunResponse(BaseModel):
     # error or an uncaught crash) — shown on the continue bar. None for a worker-died
     # stall (generic message).
     stalled_reason: Optional[str] = None
+    # set only when run_state == stalled — 'token_budget' (Constraints.max_total_tokens
+    # reached) vs 'transient' (LLM hiccup / uncaught crash / worker died). Lets the
+    # dashboard show the raise-cap input only for the former (ADR 0025/0026).
+    stalled_kind: Optional[str] = None
     # set only when run_state == failed — the run.failed reason, so the dashboard can
     # say WHY instead of just showing a red badge.
     failure_reason: Optional[str] = None
@@ -89,6 +93,8 @@ class RunResponseWithDetails(RunResponse):
     pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)
     llm_provider: Optional[str] = None        # settings hub — provider/model this run used
     llm_model: Optional[str] = None
+    tokens_used_total: int = 0                # running total across every agent (ADR 0025)
+    max_total_tokens: Optional[int] = None    # this run's token budget, if one was set
     created_at: datetime
     updated_at: datetime
     

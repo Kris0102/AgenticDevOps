@@ -117,6 +117,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   padding: 8px 10px; max-height: 130px; overflow-y: auto;
 }
 button.continue { background: var(--yellow); color: #0d1117; white-space: nowrap; }
+.cb-cap { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.cb-cap input { width: 140px; }
 .cb-actions { display: flex; gap: 8px; }
 button.giveup { background: transparent; color: var(--red); border: 1px solid #f8514955; white-space: nowrap; }
 button.giveup:hover { border-color: var(--red); background: #f851490f; }
@@ -259,12 +261,22 @@ button.giveup:hover { border-color: var(--red); background: #f851490f; }
 .sp-section-head h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg); }
 .sp-section-head p { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; }
 
+.info-wrap { position: relative; display: inline-flex; text-transform: none; }
 .info {
   color: var(--muted); cursor: help; font-size: 10px; font-style: italic; font-weight: 700;
   border: 1px solid var(--border); border-radius: 50%; width: 15px; height: 15px;
   display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono);
 }
-.info:hover { color: var(--accent); border-color: var(--accent); }
+.info-wrap:hover .info, .info-wrap:focus-within .info { color: var(--accent); border-color: var(--accent); }
+.info-tip {
+  position: absolute; z-index: 20; bottom: 130%; left: 50%; transform: translateX(-50%);
+  visibility: hidden; opacity: 0; pointer-events: none; transition: opacity .12s ease;
+  width: max-content; max-width: 240px; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px;
+  font-size: 12px; font-style: normal; font-weight: 400; line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35); white-space: normal;
+}
+.info-wrap:hover .info-tip, .info-wrap:focus-within .info-tip { visibility: visible; opacity: 1; }
 
 .setfld { margin-bottom: 0; }
 .setfld > span { display: flex; align-items: center; gap: 6px; }

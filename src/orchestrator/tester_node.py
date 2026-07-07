@@ -7,6 +7,7 @@ from db.lessons import LessonStore
 from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.RetriableError import RetriableError, is_transient_llm_error
+from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 from agents.Implementing.Tester.pipeline import TestPipeline
 from agents.Implementing.Tester.results import CheckResult, CheckStatus
 from agents.Implementing.Tester.tester_tools import TesterTools
@@ -59,17 +60,14 @@ class TesterRunner:
             iteration: Iteration = self.state.get("iteration")
             constraints: Constraints = self.state.get("constraints")
 
-            # Global token-budget guard (ADR 0025) — checked before spending another LLM
-            # call.
+            # Global token-budget guard (ADR 0025) — checked before spending another
+            # LLM call. Raises (not RunFailureHandler) so the run STALLS instead of FAILS —
+            # recoverable via /continue once the budget is raised, or /fail to close it.
             if token_budget_exceeded(iteration, constraints):
                 _log.warning("tester.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(
-                        phase="test",
-                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
-                    ),
+                raise TokenBudgetExceededError(
+                    phase="test", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
                 )
 
             try:

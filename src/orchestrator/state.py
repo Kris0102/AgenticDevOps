@@ -80,6 +80,7 @@ class EventType(str, Enum):
     SEMANTIC_BASELINE_INGESTED = "semantic.baseline_ingested"
     SEMANTIC_WORKSPACE_SYNCED = "semantic.workspace_synced"
     LLM_USAGE_RECORDED = "llm.usage"
+    RUN_TOKEN_BUDGET_RAISED = "run.token_budget_raised"
 
     def __str__(self) -> str:
         return self.value
@@ -152,9 +153,6 @@ class LLMConfig(BaseModel):
     model: str
     temperature: float = 0.0
     max_retries: int = 3
-    # Hard cap on tokens generated per single LLM call (every agent). None = no cap
-    # (provider/model default). See ADR 0025.
-    max_output_tokens: Optional[int] = Field(default=None, gt=0)
 
 
 class Knobs(BaseModel):

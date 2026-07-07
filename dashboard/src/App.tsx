@@ -22,6 +22,7 @@ export default function App() {
   const [view, setView] = useState<View>('home')
   const [tab, setTab] = useState<Tab>('activity')
   const [continuing, setContinuing] = useState(false)
+  const [newCap, setNewCap] = useState('')
   const { run, error } = useRunStatus(runId)
   const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
 
@@ -29,7 +30,11 @@ export default function App() {
     if (!runId) return
     setContinuing(true)
     try {
-      await api.continueRun(runId)   // poll picks up the transition to running/paused
+      // blank = today's plain retry (no override); a value raises the checkpointed cap
+      // before resuming (ADR 0026) — only meaningful for a token-budget stall.
+      const cap = newCap.trim() === '' ? undefined : parseInt(newCap, 10)
+      await api.continueRun(runId, cap)   // poll picks up the transition to running/paused
+      setNewCap('')
     } catch (e) {
       alert(String(e))
     } finally {
@@ -104,9 +109,18 @@ export default function App() {
                 </span>
               </div>
               {run.stalled_reason && <div className="cb-reason">{run.stalled_reason}</div>}
+              {run.stalled_kind === 'token_budget' && (
+                <label className="cb-cap">
+                  new token cap
+                  <input
+                    type="number" min={1} placeholder="leave blank to retry unchanged"
+                    value={newCap} onChange={(e) => setNewCap(e.target.value)}
+                  />
+                </label>
+              )}
               <div className="cb-actions">
                 <button className="continue" disabled={continuing} onClick={onContinue}>
-                  {continuing ? 'continuing…' : 'Continue run'}
+                  {continuing ? 'continuing…' : newCap.trim() !== '' ? 'Raise cap & continue' : 'Continue run'}
                 </button>
                 <button className="giveup" disabled={continuing} onClick={onGiveUp} title="close the case — the run becomes terminal FAILED and can no longer be continued">
                   Mark as failed

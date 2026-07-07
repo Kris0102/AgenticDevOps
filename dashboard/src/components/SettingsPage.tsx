@@ -27,7 +27,12 @@ function setPath(obj: any, path: string, value: any): any {
 const GATES = ['plan', 'code', 'test', 'deploy']
 
 function Info({ text }: { text: string }) {
-  return <span className="info" title={text} aria-label={text}>i</span>
+  return (
+    <span className="info-wrap" tabIndex={0}>
+      <span className="info" aria-hidden="true">i</span>
+      <span className="info-tip" role="tooltip">{text}</span>
+    </span>
+  )
 }
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
@@ -111,7 +116,11 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     return (
       <input
         type="number" step={f.type === 'float' ? '0.1' : '1'} value={val ?? ''}
-        onChange={(e) => set(f.key, f.type === 'float' ? parseFloat(e.target.value) : parseInt(e.target.value, 10))}
+        onChange={(e) => {
+          const raw = e.target.value
+          if (f.nullable && raw === '') { set(f.key, null); return }
+          set(f.key, f.type === 'float' ? parseFloat(raw) : parseInt(raw, 10))
+        }}
       />
     )
   }

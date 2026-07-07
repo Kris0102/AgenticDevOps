@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
-from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunRequest
+from api.requests.requests import ContinueRunRequest, RepoCreateRequest, RepoUpdateRequest, RunRequest
 from api.responses.responses import (
     ArtifactContent,
     ArtifactView,
@@ -21,6 +21,7 @@ from api.responses.responses import (
     RunState,
 )
 from api.service.service import (
+    InvalidTokenBudgetError,
     ProviderUnreachableError,
     RepoValidationFailedError,
     RunAlreadyExistsError,
@@ -201,10 +202,16 @@ def resume_run(run_id: str, decision: HitlResume, background: BackgroundTasks) -
 
 
 @app.post("/runs/{run_id}/continue", status_code=status.HTTP_202_ACCEPTED, response_model=RunResponse)
-def continue_run(run_id: str, background: BackgroundTasks) -> RunResponse:
+def continue_run(run_id: str, background: BackgroundTasks, body: Optional[ContinueRunRequest] = None) -> RunResponse:
     """Re-drive a STALLED run (worker died mid-graph, checkpoint left non-terminal with no
-    pending interrupt). Distinct from /resume, which answers a HITL gate. Rejected if the
-    run is terminal, paused at a gate (use /resume), or already being driven."""
+    pending interrupt — or a token-budget stop, ADR 0025) from its checkpoint. Distinct from
+    /resume, which answers a HITL gate. Rejected if the run is terminal, paused at a gate
+    (use /resume), or already being driven.
+
+    Optional `body.max_total_tokens` patches the checkpointed Constraints BEFORE re-driving
+    (ADR 0026) — the follow-up to a token-budget stall, so /continue can actually raise the
+    cap instead of immediately re-tripping the same check. Validated synchronously here so a
+    bad value 422s the request instead of silently re-stalling in the background task."""
     current = service.status(run_id)
     if current.run_state in (RunState.COMPLETED, RunState.FAILED):
         raise HTTPException(status.HTTP_409_CONFLICT, "run is already terminal")
@@ -212,6 +219,11 @@ def continue_run(run_id: str, background: BackgroundTasks) -> RunResponse:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is paused at a HITL gate — use /resume")
     if current.run_state == RunState.RUNNING:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is already being driven")
+    if body and body.max_total_tokens is not None:
+        try:
+            service.raise_token_budget(run_id, body.max_total_tokens)
+        except InvalidTokenBudgetError as e:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
     service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
     background.add_task(service.continue_run, run_id)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)

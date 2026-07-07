@@ -14,8 +14,6 @@ SETTINGS_SCHEMA = [
      "description": "Sampling randomness (0 = deterministic). The agents run at 0 for reproducible plans/code; raise only to explore."},
     {"key": "selected.max_retries", "label": "LLM retries", "type": "int", "group": "expert",
      "description": "How many times a single LLM call is retried on a transient error before it bubbles up (and stalls the run for /continue)."},
-    {"key": "selected.max_output_tokens", "label": "Max output tokens / call", "type": "int", "group": "expert", "nullable": True,
-     "description": "Hard cap on tokens generated per single LLM call, across every agent. Blank = no cap (provider/model default)."},
 
     # ── Expert · agent tuning (knobs.*) ─────────────────────────────────────────
     {"key": "knobs.planner_max_tool_steps", "label": "Planner tool steps", "type": "int", "group": "expert",

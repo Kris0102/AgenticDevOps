@@ -2,8 +2,14 @@
 
 `token_budget_exceeded` mirrors the `max_total_iterations` guard in `reviewer_node.py`: each
 Runner checks this at the START of `invoke()`, before spending another LLM call, so a run
-stops cleanly (FAILED) the moment the accumulated `Iteration.tokens_used_total` reaches
-`Constraints.max_total_tokens` — never mid-call.
+stops cleanly the moment the accumulated `Iteration.tokens_used_total` reaches
+`Constraints.max_total_tokens` — never mid-call. Unlike that iteration cap, exceeding the
+token budget does NOT fail the run: each Runner raises `TokenBudgetExceededError`
+(`Exceptions/TokenBudgetExceededError.py`), which escapes `graph.invoke()` and is caught by
+`Service._drive`, leaving the run non-terminal (STALLED, checkpoint intact). The human can
+raise the budget via `POST /runs/{id}/continue`'s optional `max_total_tokens` body (ADR
+0026, `Service.raise_token_budget`) before it re-runs the same node, or `POST
+/runs/{id}/fail` to close the case.
 
 `record_usage` is the single place that turns a per-invocation `TokenUsage` into: the updated
 `Iteration` (running total), a denormalized mirror on the `runs.tokens_used_total` DB column

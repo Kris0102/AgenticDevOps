@@ -10,6 +10,7 @@ from db.lessons import LessonStore
 from db.models import Artifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.RetriableError import RetriableError
+from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 from db.settings_store import resolve_run_config
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.token_budget import record_usage, token_budget_exceeded
@@ -59,17 +60,14 @@ class ReviewerRunner:
             iteration: Iteration = self.state.get("iteration")
             constraints: Constraints = self.state.get("constraints")
 
-            # Global token-budget guard (ADR 0025) — checked before spending another LLM
-            # call.
+            # Global token-budget guard (ADR 0025) — checked before spending another
+            # LLM call. Raises (not RunFailureHandler) so the run STALLS instead of FAILS —
+            # recoverable via /continue once the budget is raised, or /fail to close it.
             if token_budget_exceeded(iteration, constraints):
                 _log.warning("reviewer.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(
-                        phase="plan_review",
-                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
-                    ),
+                raise TokenBudgetExceededError(
+                    phase="plan_review", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
                 )
 
             # Runaway planner↔reviewer guard. Cap the planning loop at

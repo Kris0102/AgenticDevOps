@@ -257,6 +257,8 @@ class Service:
         try:
             log_bus.reset(run_id)   # stalled run is producing again — reopen its live stream
             _log.info("run.continue", run_id=run_id)
+            with db.session_scope() as session:
+                EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_RESUMED, {})
             self._drive(run_id, None)
             self._finalize(run_id)
             return self._response(run_id)

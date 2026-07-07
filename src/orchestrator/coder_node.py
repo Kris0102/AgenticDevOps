@@ -8,12 +8,15 @@ from Exceptions.RunExecutionError import RunExecutionError
 from db.settings_store import resolve_run_config
 from orchestrator.state import (
     BlackboardState,
+    Constraints,
     EventType,
+    Iteration,
     Microtask,
     MicrotaskStatus,
     RunStatus,
 )
 from orchestrator.run_failure import RunFailureHandler
+from orchestrator.token_budget import record_usage, token_budget_exceeded
 from agents.Implementing.Coder.coder import Coder
 from agents.Implementing.Coder.coder_tools import CoderTools, to_sandbox_path
 from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
@@ -39,6 +42,22 @@ class CoderRunner:
 
     def invoke(self) -> Dict[str, Any]:
         with db.session_scope() as db_session:
+            iteration: Iteration = self.state.get("iteration")
+            constraints: Constraints = self.state.get("constraints")
+
+            # Global token-budget guard (ADR 0025) — checked before spending another LLM
+            # call.
+            if token_budget_exceeded(iteration, constraints):
+                _log.warning("coder.token_budget_exceeded",
+                             used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(
+                        phase="code",
+                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
+                    ),
+                )
+
             try:
                 microtask = self._select_microtask()
                 if microtask is None:
@@ -48,8 +67,8 @@ class CoderRunner:
                 gateway = self._init_gateway(db_session)
                 coder_tools = CoderTools(gateway=gateway)
                 file_contents = self._gather_file_context(gateway, microtask)
-                
-                config = self.state.get("config") or resolve_run_config()    
+
+                config = self.state.get("config") or resolve_run_config()
                 coder = Coder(run_id=self.run_id, coder_tools=coder_tools, config=config)
                 result = coder.invoke(self.state, microtask, file_contents)
             except RunExecutionError as e:
@@ -62,6 +81,9 @@ class CoderRunner:
             # internal hand-off from Coder — not a BlackboardState channel, must
             # never reach the graph's node-result dict
             diff_text = result.pop("_diff_text", "")
+            result["iteration"] = record_usage(
+                db_session, self.run_id, self.name, iteration, coder.token_usage, config.llm.model
+            )
             self._persist_results(db_session, result, microtask, diff_text)
             return result
 

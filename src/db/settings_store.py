@@ -45,7 +45,8 @@ def _env_seed() -> AppSettings:
     return AppSettings(
         providers=[provider],
         selected=LLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model,
-                           max_retries=int(os.getenv("LLM_RETRIES", "3"))),
+                           max_retries=int(os.getenv("LLM_RETRIES", "3")),
+                           max_output_tokens=int(v) if (v := os.getenv("LLM_MAX_OUTPUT_TOKENS")) else None),
         knobs=Knobs(),          # field defaults already mirror the old env defaults
         defaults=RunDefaults(),
         github_token=os.getenv("GITHUB_TOKEN") or None,

@@ -86,6 +86,9 @@ Below is a precise attribute list. You can implement it as a **Pydantic model** 
   - `cost_budget_usd: float | null`
   - `max_total_iterations: int` (global loop cap)
   - `max_microtask_attempts: int` (per microtask loop cap)
+  - `max_total_tokens: int | null` (global per-run token budget; `null` = no cap. Enforced in
+    every agent node — the run FAILs cleanly once `iteration.tokens_used_total` reaches this.
+    See ADR 0025)
   - `allowed_languages: list[str]` (optional)
   - `forbidden_paths: list[str]` (e.g., `[".github/workflows/"]` if you want to block changes)
   - `allowed_network: str` (`"deny_all" | "allow_github_only" | "custom"`)
@@ -122,6 +125,9 @@ Below is a precise attribute list. You can implement it as a **Pydantic model** 
 - `iteration: object`
   - `global_step: int` (monotonic step counter)
   - `global_iterations_used: int`
+  - `tokens_used_total: int` (running total of tokens consumed by every agent's LLM calls this
+    run, accumulated after each node invocation; checked against `constraints.max_total_tokens`.
+    See ADR 0025)
   - `current_loop_reason: str | null` (e.g., `"lint_failed"`, `"test_failed"`, `"security_failed"`)
 
 ### E) Planning Outputs
@@ -490,6 +496,12 @@ Below is a recommended event type registry.
 - **`deploy.finished`**
   - payload required: `environment`, `version_sha`, `status`, `duration_ms`, `logs_ref`
 
+### 6.7.14 llm.\*
+
+- **`llm.usage`** (ADR 0025) — emitted once per agent-node invocation (Planner, Reviewer,
+  Coder, Tester, Reflector), right after that node's agent returns.
+  - payload required: `agent`, `model`, `input_tokens`, `output_tokens`, `total_tokens`
+
 ---
 
 ## 7) Full updated Blackboard JSON example (includes events pointer + tail)
@@ -545,6 +557,7 @@ Below is a recommended event type registry.
     "cost_budget_usd": 10.0,
     "max_total_iterations": 200,
     "max_microtask_attempts": 5,
+    "max_total_tokens": null,
     "allowed_languages": ["python"],
     "forbidden_paths": [".github/workflows/"],
     "allowed_network": "deny_all",
@@ -563,6 +576,7 @@ Below is a recommended event type registry.
   "iteration": {
     "global_step": 42,
     "global_iterations_used": 42,
+    "tokens_used_total": 184320,
     "current_loop_reason": "unit_test_failed"
   },
   "plan": {

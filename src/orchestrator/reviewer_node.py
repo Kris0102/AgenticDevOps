@@ -12,6 +12,7 @@ from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.RetriableError import RetriableError
 from db.settings_store import resolve_run_config
 from orchestrator.run_failure import RunFailureHandler
+from orchestrator.token_budget import record_usage, token_budget_exceeded
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
@@ -58,6 +59,19 @@ class ReviewerRunner:
             iteration: Iteration = self.state.get("iteration")
             constraints: Constraints = self.state.get("constraints")
 
+            # Global token-budget guard (ADR 0025) — checked before spending another LLM
+            # call.
+            if token_budget_exceeded(iteration, constraints):
+                _log.warning("reviewer.token_budget_exceeded",
+                             used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(
+                        phase="plan_review",
+                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
+                    ),
+                )
+
             # Runaway planner↔reviewer guard. Cap the planning loop at
             # max_total_iterations; on exhaustion fail the run (and persist it)
             # rather than re-invoking the LLM forever.
@@ -87,7 +101,8 @@ class ReviewerRunner:
             try:
                 tools = self._init_tools(db_session)
                 config = self.state.get("config") or resolve_run_config()
-                result = Reviewer(run_id=self.run_id, tools=tools, config=config).invoke(self.state)
+                reviewer_agent = Reviewer(run_id=self.run_id, tools=tools, config=config)
+                result = reviewer_agent.invoke(self.state)
             except RetriableError:
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
@@ -99,6 +114,10 @@ class ReviewerRunner:
                     RunExecutionError(phase="plan_review", reason=f"Reviewer crashed: {error}"),
                 )
 
+            next_iteration = record_usage(
+                db_session, self.run_id, self.name, next_iteration,
+                reviewer_agent.token_usage, config.llm.model,
+            )
             result["iteration"] = next_iteration
             self._persist_results(db_session, result)
             self._emit_review_event(db_session, result)

@@ -19,6 +19,7 @@ from agents.Implementing.Tester.prompt.tester_prompt import (
 )
 from agents.Implementing.Tester.tester_tools import TesterTools
 from observability import Category, get_logger
+from providers import sum_usage
 
 _log = get_logger(Category.TESTER)
 
@@ -78,10 +79,11 @@ class SynthesisPhase(TestPhase):
             reflections=ctx.reflections,
         )
         try:
-            agent.invoke(
+            agent_result = agent.invoke(
                 {"messages": [HumanMessage(content=prompt)]},
                 config={"recursion_limit": self.recursion_limit},
             )
+            ctx.token_usage = ctx.token_usage + sum_usage(agent_result.get("messages", []))
         except GraphRecursionError:
             # The test-writer looped past its tool-call budget. DON'T crash the run — use
             # whatever it wrote (if anything); the trivial-guard rejects an unusable file

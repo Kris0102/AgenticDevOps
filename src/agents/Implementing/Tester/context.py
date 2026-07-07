@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from agents.Implementing.Tester.results import CheckResult
 from orchestrator.state import BlackboardState, Microtask, Reflection
+from providers import TokenUsage
 
 ProjectType = str  # "python" | "javascript" | "unknown"
 
@@ -46,6 +47,7 @@ class TestContext:
     summary: str = ""
     output_path: Optional[str] = None
     repo_diff: str = ""
+    token_usage: TokenUsage = field(default_factory=TokenUsage)
 
     def to_result(self) -> Dict[str, Any]:
         """The dict TesterRunner consumes. `check_results` feeds evidence.checks; the
@@ -58,4 +60,7 @@ class TestContext:
             "repo_diff": self.repo_diff,
             # Clear the rejection note after use so it doesn't leak to the next microtask.
             "test_rejection_note": None,
+            # _INTERNAL_: consumed by TesterRunner (token accounting, ADR 0025), not a
+            # BlackboardState key.
+            "_token_usage": self.token_usage,
         }

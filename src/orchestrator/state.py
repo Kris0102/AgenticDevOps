@@ -79,6 +79,7 @@ class EventType(str, Enum):
     REFLECTION_CREATED = "reflection.created"
     SEMANTIC_BASELINE_INGESTED = "semantic.baseline_ingested"
     SEMANTIC_WORKSPACE_SYNCED = "semantic.workspace_synced"
+    LLM_USAGE_RECORDED = "llm.usage"
 
     def __str__(self) -> str:
         return self.value
@@ -151,6 +152,9 @@ class LLMConfig(BaseModel):
     model: str
     temperature: float = 0.0
     max_retries: int = 3
+    # Hard cap on tokens generated per single LLM call (every agent). None = no cap
+    # (provider/model default). See ADR 0025.
+    max_output_tokens: Optional[int] = Field(default=None, gt=0)
 
 
 class Knobs(BaseModel):
@@ -184,6 +188,8 @@ class RunDefaults(BaseModel):
     """Global defaults the per-run page pre-fills (all overridable per run)."""
     max_total_iterations: int = 6
     max_microtask_attempts: int = 3
+    # Default run-wide token budget (Constraints.max_total_tokens). None = no cap.
+    max_total_tokens: Optional[int] = None
     hitl_checkpoints: List[Phase] = Field(default_factory=list)
     # Destroy the run's Docker sandbox once it reaches a TERMINAL state (completed/failed).
     # Never fires for a stalled run — its container must survive for /continue.
@@ -206,6 +212,9 @@ class Constraints(BaseModel):
     cost_budget_usd: Optional[float] = None
     max_total_iterations: int
     max_microtask_attempts: int
+    # Hard cap on total tokens consumed across every agent in this run. None = no
+    # budget. Enforced in each node (see orchestrator/token_budget.py, ADR 0025).
+    max_total_tokens: Optional[int] = None
     allowed_languages: Optional[List[str]] = None
     forbidden_paths: Optional[List[str]] = None
     allowed_network: str
@@ -408,7 +417,11 @@ class Iteration(BaseModel):
     global_iteration:int
     planner_reviewer_iteration_current:int
     coder_tester_reflector_iteration_current:int
-    global_iterations_used:int    
+    global_iterations_used:int
+    # Running total of tokens consumed by every agent's LLM calls this run. Accumulated
+    # via model_copy after each node's invocation; enforced against
+    # Constraints.max_total_tokens (orchestrator/token_budget.py). See ADR 0025.
+    tokens_used_total: int = 0
 
 # NOTE: lessons are DURABLE cross-run memory → the `lessons` DB table (db/models.py +
 # db/lessons.py), NOT blackboard state (which is per-run and wiped). See ADR 0018.

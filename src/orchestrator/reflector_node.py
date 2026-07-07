@@ -11,9 +11,12 @@ from agents.Implementing.Reflector.reflector import Reflector
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
+from orchestrator.token_budget import record_usage, token_budget_exceeded
 from orchestrator.state import (
     BlackboardState,
+    Constraints,
     EventType,
+    Iteration,
     Microtask,
     MicrotaskStatus,
     Reflection,
@@ -56,10 +59,27 @@ class ReflectorRunner:
                 )
 
         with db.session_scope() as db_session:
+            iteration: Iteration = self.state.get("iteration")
+            constraints: Constraints = self.state.get("constraints")
+
+            # Global token-budget guard (ADR 0025) — checked before spending another LLM
+            # call.
+            if token_budget_exceeded(iteration, constraints):
+                _log.warning("reflector.token_budget_exceeded",
+                             used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(
+                        phase="reflect",
+                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
+                    ),
+                )
+
             try:
                 gateway = self._init_gateway(db_session)
                 reflector_tools = ReflectorTools(gateway=gateway)
-                reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools, config=self.state.get("config") or resolve_run_config())
+                config = self.state.get("config") or resolve_run_config()
+                reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools, config=config)
                 # Always a failure here — the Reflector only runs after a tester FAIL.
                 # TODO Change thisn behaviour to always run!
                 # Reads the artifact which was created by the tester!
@@ -90,6 +110,9 @@ class ReflectorRunner:
             raw.pop("_reflector_approved", None)
             fix_target = raw.pop("_fix_target", "code")
             result = self._build_state_result(raw, microtask, fix_target)
+            result["iteration"] = record_usage(
+                db_session, self.run_id, self.name, iteration, reflector.token_usage, config.llm.model
+            )
             self._persist_results(db_session, microtask, result)
             # NOTE: lessons are NOT written here. A reflector diagnosis is unconfirmed — it
             # could be a misdiagnosis. The code-lesson is written later, in tester_node on the

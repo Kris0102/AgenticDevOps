@@ -14,6 +14,8 @@ SETTINGS_SCHEMA = [
      "description": "Sampling randomness (0 = deterministic). The agents run at 0 for reproducible plans/code; raise only to explore."},
     {"key": "selected.max_retries", "label": "LLM retries", "type": "int", "group": "expert",
      "description": "How many times a single LLM call is retried on a transient error before it bubbles up (and stalls the run for /continue)."},
+    {"key": "selected.max_output_tokens", "label": "Max output tokens / call", "type": "int", "group": "expert", "nullable": True,
+     "description": "Hard cap on tokens generated per single LLM call, across every agent. Blank = no cap (provider/model default)."},
 
     # ── Expert · agent tuning (knobs.*) ─────────────────────────────────────────
     {"key": "knobs.planner_max_tool_steps", "label": "Planner tool steps", "type": "int", "group": "expert",
@@ -50,6 +52,8 @@ SETTINGS_SCHEMA = [
      "description": "Hard cap on planning-loop iterations before a run is FAILED — stops a planner/reviewer that never converges."},
     {"key": "defaults.max_microtask_attempts", "label": "Max microtask attempts", "type": "int", "group": "expert",
      "description": "How many times one microtask may be retried (coder↔tester↔reflector) before the run is FAILED."},
+    {"key": "defaults.max_total_tokens", "label": "Max tokens per run", "type": "int", "group": "expert", "nullable": True,
+     "description": "Hard cap on total tokens consumed across every agent in one run. The run fails cleanly once exceeded. Blank = no cap."},
     {"key": "defaults.hitl_checkpoints", "label": "Default review gates", "type": "gates", "group": "expert",
      "description": "Which phases pause for human approval by default (plan / code / deploy). Overridable per run."},
     {"key": "defaults.teardown_on_terminal", "label": "Tear down sandbox when run ends", "type": "bool", "group": "expert",

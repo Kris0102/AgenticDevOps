@@ -222,7 +222,7 @@ Override container name: `POSTGRES_CONTAINER=<name>` in `.env`.
 
 ## Environment variables (`.env` in project root)
 **Settings hub (ADR 0020):** the LLM vars below (`CLUSTER_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`,
-`LLM_RETRIES`) and every `*_MAX_TOOL_STEPS` / `*_TIMEOUT_SECONDS` / `CODER_MAX_*` /
+`LLM_RETRIES`, `LLM_MAX_OUTPUT_TOKENS`) and every `*_MAX_TOOL_STEPS` / `*_TIMEOUT_SECONDS` / `CODER_MAX_*` /
 `PLANNER_MAX_SYNTHESIS_ATTEMPTS` / `REFLECTOR_MAX_TEST_RESYNTH` knob are now **seeds/fallbacks
 only** — they populate `app_settings` on first boot; after that the UI (DB) is the source of
 truth and per-run overrides win. Edit them in the dashboard Settings page, not `.env`.
@@ -233,6 +233,7 @@ truth and per-run overrides win. Edit them in the dashboard Settings page, not `
 | `DATABASE_URL` | Optional override — set to point app + Alembic at an **external** Postgres (RDS/Supabase). When set, wins over `POSTGRES_*`. Leave unset for the local compose DB |
 | `CLUSTER_API_KEY` | API key for LLM cluster endpoint |
 | `LLM_MODEL` | Model name for LLM cluster endpoint (default `google/gemma-4-31B-it`) |
+| `LLM_MAX_OUTPUT_TOKENS` | Hard cap on tokens generated per single LLM call, across every agent (`LLMConfig.max_output_tokens`, `build_chat_llm`). Optional; blank/unset = no cap (provider/model default). See ADR 0025 |
 | `USE_TOOLS` | `true` to enable planner's ReAct investigation tools |
 | `PLANNER_MAX_TOOL_STEPS` | Max tool call rounds for planner investigation |
 | `TESTER_MAX_TOOL_STEPS` | Tool-call rounds for the test-writer ReAct loop (default 6 → recursion limit 17). Kept tight so a wandering synth fails fast; on GraphRecursionError the SynthesisPhase degrades (no crash). The test-writer is NOT given `get_repo_diff` (avoids a verify-loop) |
@@ -269,7 +270,7 @@ failed runs expose `failure_reason` (latest `run.failed` event) on the API respo
 ## DB schema (all tables)
 | Table | Purpose |
 |---|---|
-| `runs` | One row per run — repo_url, repo_id (nullable registry ref, no FK), base_sha (nullable), status, timestamps |
+| `runs` | One row per run — repo_url, repo_id (nullable registry ref, no FK), base_sha (nullable), status, timestamps, `tokens_used_total` (denormalized mirror of the checkpointed `Iteration.tokens_used_total`, ADR 0025) |
 | `repos` | Repo registry (ADR 0024) — canonical repo_url (unique; the lessons/code_chunks memory key), label, optional per-repo token (Fernet `enc:`, masked in API), default_branch, push_branch_override, last validation snapshot. Migration `f6a7b8c9d0e1` also backfilled canonical URLs into runs/lessons/code_chunks |
 | `sandboxes` | Docker container ID per run — survives restarts |
 | `microtasks` | Planner output persisted after each plan — survives crashes |
@@ -300,14 +301,14 @@ Models use **SQLAlchemy 2.0** style: `Mapped[T]` + `mapped_column()`. Never use 
 | Context Engine (pgvector) | Done — code semantic memory: `baseline`+`workspace` namespaces, local MiniLM (384-dim) embeddings, tree-sitter chunking, `semantic.search` Planner tool. Baseline ingested in Bootstrap after clone; workspace synced by coder node after a diff; purged on sandbox teardown. See ADR 0010 |
 | GitOps (webhooks + PR) | Stub — `gitops.GitOps` class (GitHub boundary, ARCHITECTURE §4.4) owns branch/commit/push; terminal `deploy`/`deploy_push` nodes drive it to push the sandbox to `agent/run-<run_id>` (bypasses ToolGateway — not an agent), HITL-gateable (`--hitl-checkpoints deploy`), emits `gitops.pushed`. `GitOps.create_pr` is a stub (no GitHub API yet); no webhooks/CI relay/merge. See ADR 0012. **Deploy hygiene (ADR 0019):** bootstrap seeds a `.gitignore`; `push_branch` stages with pathspec excludes (deps/secrets/`.agentic_tests/` never shipped); `scan_secrets` runs **gitleaks** over the tree before the push and **hard-blocks** on any finding (emits `gitops.secret_blocked`, run→FAILED); Tester synth tests are ephemeral (`.agentic_tests/`, git-ignored) |
 | Control API + dashboard backend | Done — FastAPI (`src/api/`, ADR 0013). Trigger runs + HITL approve/reject over HTTP (`POST /runs/{id}/resume` → `Command(resume=...)`); one `graph.invoke()` per gate (no re-bootstrap on resume — mid-graph pause, sandbox alive). HITL review context (`GET /runs/{id}/hitl`): plan + microtasks for a `plan` gate, raw green/red diff for a `code` gate. Notify by poll (`GET /runs/{id}` → `run_state`/`hitl_phase`). Live logs: structlog → in-memory `RunLogBus` → SSE (`/logs/stream`); durable history: `events` table poll (`/events?after=<seq>`). Runs in `BackgroundTasks` (move to a worker before prod). CLI (`main.py`) being deleted — don't mirror it |
-| Provider abstraction + settings hub | Done (ADR 0020) — `providers/llm.py` factory (OpenAI-compat + Anthropic), UI-managed `app_settings` (providers/model/knobs), per-run override, preflight healthcheck. Closes provider-coupling TODO #6 |
+| Provider abstraction + settings hub | Done (ADR 0020) — `providers/llm.py` factory (OpenAI-compat + Anthropic), UI-managed `app_settings` (providers/model/knobs), per-run override, preflight healthcheck. Closes provider-coupling TODO #6. **Token limits + usage tracking (ADR 0025):** `LLMConfig.max_output_tokens` caps every call's generation; every agent's real token usage is captured (`providers/token_usage.py`) into per-microtask debug files, `llm.usage` logs/events, and `Iteration.tokens_used_total` (mirrored onto `runs.tokens_used_total`); `Constraints.max_total_tokens` is enforced (FAILED) across all five nodes. Backend-only — no dashboard surfacing yet |
 | State snapshots (LangGraph PostgresSaver checkpointer) | Done — see ADR 0005 (replaced `run_state` table) |
 | `reflections` DB table | Not started (reflections live in the checkpointed blackboard; subsumed by the `lessons` table for cross-run reuse) |
 | Per-repo lessons memory | Done (ADR 0018) — `lessons` table + `db/lessons.py`. **Write** (outcome-validated): `record_plan_lessons` on reviewer APPROVE, `record_code_lessons` on tester PASS (gated `fix_target=="code"` + `should_store_in_semantic_memory`); `record_test_lessons` is a deliberate no-op. **Read**: `find_lessons` (pgvector cosine top-k, repo+scope filtered, current run excluded) + `render_block` → advisory prompt block in reviewer/coder/reflector, also dumped to each agent's debug output file. Open: per-repo prune/cap hygiene; retrieval-usefulness reinforcement |
 
 ## Known bugs / remaining TODOs (priority order)
 See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + fixes — fix 1-2 below *before* wiring real Coder/Tester/Reflector, the blast radius multiplies otherwise.
-1. **Stop conditions PARTIALLY enforced** (remaining half: must-fix, safety): `CoderRunner._check_stop_limit` refuses a microtask when `attempts >= (Microtask.max_attempts or Constraints.max_microtask_attempts)` → FAILED, killing the runaway coder↔reflector loop. The planner↔reviewer loop is now also capped — `ReviewerRunner.invoke` fails the run when `Iteration.planner_reviewer_iteration_current >= Constraints.max_total_iterations` (enforced in the node, not the router; counter incremented via the node-return dict). STILL MISSING: the same cap on the coder↔tester↔reflector loop (`Iteration.coder_tester_reflector_iteration_current` is defined but never incremented) and a single whole-run `global_iterations_used` counter (currently dead — `global_iteration` + `global_iterations_used` are redundant, collapse to one).
+1. **Stop conditions PARTIALLY enforced** (remaining half: must-fix, safety): `CoderRunner._check_stop_limit` refuses a microtask when `attempts >= (Microtask.max_attempts or Constraints.max_microtask_attempts)` → FAILED, killing the runaway coder↔reflector loop. The planner↔reviewer loop is now also capped — `ReviewerRunner.invoke` fails the run when `Iteration.planner_reviewer_iteration_current >= Constraints.max_total_iterations` (enforced in the node, not the router; counter incremented via the node-return dict). A run-wide **token** budget is now also enforced the same way, across all five agent nodes — `Constraints.max_total_tokens` vs. `Iteration.tokens_used_total`, checked at the top of every node's `invoke()` (see ADR 0025, `orchestrator/token_budget.py`). STILL MISSING: the same cap on the coder↔tester↔reflector loop (`Iteration.coder_tester_reflector_iteration_current` is defined but never incremented) and a single whole-run `global_iterations_used` counter (currently dead — `global_iteration` + `global_iterations_used` are redundant, collapse to one).
 2. ~~**`run_state` never written**~~ — **SUPERSEDED by ADR 0005**: hand-rolled `run_state` snapshots replaced by the LangGraph PostgresSaver checkpointer (snapshots every superstep, keyed by `thread_id=run_id`). `run_state` table dropped.
 3. ~~**`ToolGateway` commits mid-transaction**~~ — **FIXED**: `_log_event` now delegates to `EventLogger.log()` (`db/event_log.py`), which only ever calls `session.add()`. Commit ownership correctly sits with the lending `session_scope()`.
 4. ~~**`planner → END` shortcut**~~ — **FIXED**: full loops wired (`planner → plan_reviewer → (planner | coder)`, `coder → tester → reflector → coder`), plus the shared `hitl` gate (ADR 0006). Phase agents are still stubs (#8).
@@ -349,3 +350,4 @@ See `docs/Blackboard.md` §6.7 for full registry. Key ones:
 - `test.unit_completed`, `check.lint_completed`
 - `reflection.created`
 - `semantic.baseline_ingested`, `semantic.workspace_synced`
+- `llm.usage` (per agent-node invocation — tokens in/out/total; see ADR 0025)

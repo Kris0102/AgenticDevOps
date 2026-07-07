@@ -13,11 +13,14 @@ from agents.Implementing.Tester.tester_tools import TesterTools
 from db.settings_store import resolve_run_config
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
+from orchestrator.token_budget import record_usage, token_budget_exceeded
 from orchestrator.state import (
     BlackboardState,
     CheckOutput,
+    Constraints,
     Evidence,
     EventType,
+    Iteration,
     Microtask,
     MicrotaskStatus,
     Reflection,
@@ -53,6 +56,22 @@ class TesterRunner:
         final_validation = not self._has_remaining_microtasks(microtask.microtask_id)
 
         with db.session_scope() as db_session:
+            iteration: Iteration = self.state.get("iteration")
+            constraints: Constraints = self.state.get("constraints")
+
+            # Global token-budget guard (ADR 0025) — checked before spending another LLM
+            # call.
+            if token_budget_exceeded(iteration, constraints):
+                _log.warning("tester.token_budget_exceeded",
+                             used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(
+                        phase="test",
+                        reason=f"Token budget exceeded: {iteration.tokens_used_total}/{constraints.max_total_tokens} tokens used",
+                    ),
+                )
+
             try:
                 gateway = self._init_gateway(db_session)
                 tester_tools = TesterTools(gateway=gateway)
@@ -79,11 +98,20 @@ class TesterRunner:
                     RunExecutionError(phase="test", reason=f"Tester crashed: {error}"),
                 )
 
+            # internal hand-off from the pipeline — not a BlackboardState channel, must
+            # never reach the graph's node-result dict
+            token_usage = result.pop("_token_usage", None)
+            updated_iteration = record_usage(
+                db_session, self.run_id, self.name, iteration, token_usage, config.llm.model
+            ) if token_usage else iteration
+
             passed = self._verdict_passed(result)
             new_microtasks, new_evidence = self._persist_results(
                 db_session, microtask, result, passed, final_validation)
-            return self._build_state_result(
+            state_result = self._build_state_result(
                 microtask, result, new_microtasks, new_evidence, passed, final_validation)
+            state_result["iteration"] = updated_iteration
+            return state_result
 
     @staticmethod
     def _verdict_passed(result: Dict[str, Any]) -> bool:

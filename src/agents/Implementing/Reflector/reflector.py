@@ -35,8 +35,16 @@ class ReflectionOutput(BaseModel):
       "improve" — something needs fixing; Coder/Tester must retry with the given instructions.
     """
 
-    decision: Literal["approve", "improve"] = Field(
-        description="'approve' to advance to next microtask; 'improve' to send back for fixes."
+    decision: Literal["approve", "improve", "blocked"] = Field(
+        description=(
+            "'approve' to advance to next microtask; 'improve' to send back for fixes; "
+            "'blocked' when NO code change can succeed because two requirements/checks "
+            "contradict each other (e.g. an existing-suite behaviour and a new acceptance "
+            "criterion demand mutually exclusive outcomes for the same input) or your own "
+            "prior diagnoses for this microtask oscillate (a fix that undoes the previous "
+            "fix). 'blocked' stops the retry loop and surfaces the conflict to the human "
+            "instead of burning the remaining attempts (GH #61)."
+        )
     )
     fix_target: Literal["code", "test"] = Field(
         default="code",
@@ -91,6 +99,34 @@ def _last_ai_text(messages: List) -> Optional[str]:
         if isinstance(msg, AIMessage) and isinstance(msg.content, str) and msg.content.strip():
             return msg.content.strip()
     return None
+
+
+def _render_prior_diagnoses(reflections: List[Reflection], microtask_id: str,
+                            max_each: int = 500) -> str:
+    """The reflector's OWN earlier diagnoses for this microtask, rendered for the assess
+    prompt (GH #61). Without this the reflector reasons blind to its past each attempt —
+    the mechanical cause of the observed flip-flop (attempt 2 re-inserted exactly what
+    attempt 1 removed). Empty string on the first attempt."""
+    prior = [r for r in reflections if r.microtask_id == microtask_id]
+    if not prior:
+        return ""
+    lines = []
+    for i, r in enumerate(prior, 1):
+        lines.append(
+            f"[attempt {i}] failure_type: {r.failure_type}\n"
+            f"  root cause: {r.root_cause[:max_each]}\n"
+            f"  fix instructions given: {r.fix_instructions[:max_each]}"
+        )
+    return (
+        "YOUR OWN PRIOR DIAGNOSES FOR THIS MICROTASK (earlier attempts):\n"
+        + "\n".join(lines)
+        + "\n\nCheck yourself against this history BEFORE deciding:\n"
+        "- If your new fix would UNDO a fix you prescribed in an earlier attempt (or vice "
+        "versa), you are OSCILLATING — the checks themselves likely conflict. Do NOT issue "
+        "another opposite code fix; set decision=\"blocked\" and state the conflict.\n"
+        "- If the same root cause keeps recurring despite the coder applying your fix, "
+        "reconsider whether the fault is really in the code."
+    )
 
 
 def _tests_passed_from_evidence(state: BlackboardState) -> bool:
@@ -186,25 +222,31 @@ class Reflector:
         # Track-A-only failure (the repo's own suite, which we don't regenerate).
         synth_test_source = self._read_synth_test(microtask.microtask_id)
 
+        # This microtask's earlier diagnoses (GH #61) — injected into the assessment so
+        # the reflector can recognize its own oscillation instead of flip-flopping.
+        existing: List[Reflection] = list(state.get("reflections") or [])
+        prior_diagnoses_block = _render_prior_diagnoses(existing, microtask.microtask_id)
+
         # Phase 2: structured assessment
         output = self._assess(
             microtask, test_output, diff, investigation_summary, test_passed, rejection_note,
-            lessons_block, synth_test_source,
+            lessons_block, synth_test_source, prior_diagnoses_block,
         )
         approved = output.decision == "approve"
+        blocked = output.decision == "blocked"
 
         reflection = Reflection(
             timestamp=datetime.now(timezone.utc).isoformat(),
             microtask_id=microtask.microtask_id,
-            failure_type=output.failure_type or ("approved" if approved else "unknown"),
+            failure_type=output.failure_type or (
+                "approved" if approved else ("requirements_conflict" if blocked else "unknown")
+            ),
             root_cause=output.root_cause or (output.quality_notes if approved else ""),
             fix_instructions=output.fix_instructions,
             linked_artifacts=[],
             should_store_in_semantic_memory=output.should_store_in_semantic_memory,
-            fix_target=output.fix_target,
+            fix_target="escalate" if blocked else output.fix_target,
         )
-
-        existing: List[Reflection] = list(state.get("reflections") or [])
         output_path = create_reflection_file_as_output(
             run_id=self.run_id,
             microtask=microtask,
@@ -215,6 +257,7 @@ class Reflector:
             rejection_note=rejection_note,
             test_passed=test_passed,
             approved=approved,
+            blocked=blocked,
             prior_reflections=existing,
             lessons_block=lessons_block,
             token_usage=self.token_usage,
@@ -236,11 +279,15 @@ class Reflector:
             "_reflector_approved": approved,
             # _INTERNAL_: "code" (coder retry) | "test" (regenerate the synthesized test).
             "_fix_target": output.fix_target,
+            # _INTERNAL_: requirements contradict / oscillation — no code fix can succeed.
+            # ReflectorRunner ends the run BLOCKED with the reason (GH #61).
+            "_reflector_blocked": blocked,
         }
 
-        if not approved:
+        if not approved and not blocked:
             result["status"] = RunStatus.NEEDS_CODE
-        # When approved the node sets status (NEEDS_CODE or DONE) based on remaining tasks.
+        # When approved the node sets status (NEEDS_CODE or DONE) based on remaining tasks;
+        # when blocked the node routes to the failure path with the conflict reason.
 
         return result
 
@@ -324,6 +371,7 @@ class Reflector:
         rejection_note: Optional[str],
         lessons_block: str = "",
         synth_test_source: str = "",
+        prior_diagnoses_block: str = "",
     ) -> ReflectionOutput:
         prompt = build_diagnosis_prompt(
             microtask=microtask,
@@ -333,6 +381,7 @@ class Reflector:
             test_passed=test_passed,
             rejection_note=rejection_note,
             synth_test_source=synth_test_source,
+            prior_diagnoses_block=prior_diagnoses_block,
         )
         if lessons_block:
             prompt = f"{lessons_block}\n\n{prompt}"

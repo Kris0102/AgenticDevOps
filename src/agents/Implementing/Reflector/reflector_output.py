@@ -38,6 +38,7 @@ def create_reflection_file_as_output(
     rejection_note: Optional[str] = None,
     test_passed: bool = False,
     approved: bool = False,
+    blocked: bool = False,
     prior_reflections: Optional[List[Reflection]] = None,
     lessons_block: str = "",
     token_usage: Optional[TokenUsage] = None,
@@ -65,7 +66,7 @@ def create_reflection_file_as_output(
 
             # ── Diagnosis summary ─────────────────────────────────────────────
             mode = "QUALITY REVIEW" if test_passed else "FAILURE DIAGNOSIS"
-            decision_label = "APPROVE" if approved else "IMPROVE"
+            decision_label = "APPROVE" if approved else ("BLOCKED" if blocked else "IMPROVE")
             f.write(f"ASSESSMENT  [{mode}]\n")
             f.write("-" * 40 + "\n")
             f.write(f"Decision:      {decision_label}\n")

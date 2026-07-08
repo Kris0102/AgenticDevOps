@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from db.db import db
 from db.settings_store import resolve_run_config
 from db.event_log import EventLogger
-from db.models import Artifact as DbArtifact, Run
+from db.models import Artifact as DbArtifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
@@ -107,16 +107,165 @@ class ReflectorRunner:
             # Drop the approve signal (failure-only) and read the fix target.
             raw.pop("_reflector_approved", None)
             fix_target = raw.pop("_fix_target", "code")
-            result = self._build_state_result(raw, microtask, fix_target)
-            result["iteration"] = record_usage(
+            blocked = bool(raw.pop("_reflector_blocked", False))
+            updated_iteration = record_usage(
                 db_session, self.run_id, self.name, iteration, reflector.token_usage, config.llm.model,
                 microtask_id=microtask.microtask_id,
             )
+
+            # Deterministic loop backstop (GH #61, layer 3): a revert cycle (A→B→A) or
+            # stagnation (…B→B) in the per-attempt diffs is provably unwinnable — force
+            # the blocked path even if the LLM diagnosis missed it.
+            cycle_kind = None
+            if not blocked:
+                cycle_kind = self._diff_cycle_kind(db_session, microtask)
+                if cycle_kind:
+                    blocked = True
+                    _log.warning("reflector.unwinnable_loop_detected", run_id=self.run_id,
+                                 microtask_id=microtask.microtask_id, kind=cycle_kind)
+
+            if blocked:
+                # Requirements contradict / loop is provably cycling — no code fix can
+                # succeed. End the run with a readable reason instead of burning the
+                # remaining attempts on an unwinnable loop (GH #61).
+                return self._handle_blocked(db_session, microtask, raw, updated_iteration,
+                                            cycle_kind=cycle_kind)
+
+            result = self._build_state_result(raw, microtask, fix_target)
+            result["iteration"] = updated_iteration
             self._persist_results(db_session, microtask, result)
             # NOTE: lessons are NOT written here. A reflector diagnosis is unconfirmed — it
             # could be a misdiagnosis. The code-lesson is written later, in tester_node on the
             # microtask PASS that proves the fix worked (outcome-validated, ADR 0018).
             return result
+
+    # ------------------------------------------------------------------ #
+    # BLOCKED path (GH #61) — contradictory requirements / oscillation      #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalize_diff(text: str) -> str:
+        """Whitespace-insensitive diff comparison key. Blob hashes in `index` lines are
+        content-derived, so identical working trees produce identical diffs — plain
+        line-normalization is enough to detect an A→B→A revert."""
+        return "\n".join(ln.rstrip() for ln in (text or "").strip().splitlines() if ln.strip())
+
+    def _diff_cycle_kind(self, db_session, microtask: Microtask) -> Optional[str]:
+        """Detect a provably unwinnable coder loop from the per-attempt `diff` artifacts
+        (the coder writes one per attempt). Two deterministic signatures:
+
+          "revert_cycle" — the latest tree equals the tree from two attempts ago while
+              differing from the one in between (A→B→A): the coder is bouncing between
+              two states, each fix undoing the previous one.
+          "stagnation"   — the latest tree is IDENTICAL to the previous attempt's (…B→B):
+              the coder changed nothing despite fix instructions, so re-running the same
+              code against the same checks is guaranteed to fail again. (This was the
+              actual pattern in the run that motivated GH #61.)
+
+        Requires ≥3 attempts (never fires on the first retry); returns None when the loop
+        is still making real progress. Best-effort — never raises."""
+        try:
+            rows = (
+                db_session.query(DbArtifact)
+                .filter(
+                    DbArtifact.run_id == self.run_id,
+                    DbArtifact.kind == "diff",
+                    DbArtifact.microtask_id == microtask.microtask_id,
+                )
+                .order_by(DbArtifact.created_at)
+                .all()
+            )
+            if len(rows) < 3:
+                return None
+            a, b, c = (self._normalize_diff(r.content_text or "") for r in rows[-3:])
+            if not c:
+                return None
+            if c == b:
+                return "stagnation"
+            if c == a:
+                return "revert_cycle"
+            return None
+        except Exception as exc:
+            _log.warning("reflector.oscillation_check_failed", error=str(exc))
+            return None
+
+    _CYCLE_DESCRIPTIONS = {
+        "revert_cycle": ("revert cycle detected: the latest change reverts to the state of two "
+                         "attempts ago — the checks demand mutually exclusive behaviour"),
+        "stagnation": ("stagnation detected: the coder made NO change on the latest attempt — "
+                       "re-running identical code against the same checks cannot pass"),
+    }
+
+    def _handle_blocked(
+        self,
+        db_session,
+        microtask: Microtask,
+        raw: Dict[str, Any],
+        iteration: Iteration,
+        *,
+        cycle_kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Terminal BLOCKED: mark the microtask BLOCKED (state + DB row), persist the
+        conflict reflection as an artifact, and end the run through the failure path with
+        a human-readable reason — 'requirements conflict at X' instead of a mystifying
+        'attempts exhausted (3/3)' several attempts later."""
+        now = datetime.now(timezone.utc)
+        reflections: List[Reflection] = list(raw.get("reflections") or [])
+        latest = reflections[-1] if reflections else None
+        conflict = (latest.root_cause if latest and latest.root_cause
+                    else "requirements conflict — see the reflection artifact")
+        if cycle_kind:
+            conflict = f"{self._CYCLE_DESCRIPTIONS[cycle_kind]}. Reflector diagnosis: {conflict}"
+
+        # Microtask → BLOCKED in the checkpointed state AND the durable row.
+        microtasks: List[Microtask] = [
+            mt.model_copy(update={"status": MicrotaskStatus.BLOCKED})
+            if mt.microtask_id == microtask.microtask_id else mt
+            for mt in (self.state.get("microtasks") or [])
+        ]
+        record = db_session.get(MicrotaskRecord, microtask.microtask_id)
+        if record:
+            record.status = MicrotaskStatus.BLOCKED.value
+            record.updated_at = now
+
+        # Persist the conflict diagnosis — the dashboard's answer to "why did this stop?".
+        if latest:
+            artifact_ref = (
+                f"art_{self.run_id}_reflect_{microtask.microtask_id}"
+                f"_{now.strftime('%Y%m%d%H%M%S%f')}"
+            )
+            db_session.merge(DbArtifact(
+                artifact_id=artifact_ref,
+                run_id=self.run_id,
+                kind="reflection",
+                microtask_id=microtask.microtask_id,
+                content_text=(
+                    f"Microtask:         {microtask.microtask_id}\n"
+                    f"Decision:          blocked\n"
+                    f"Failure Type:      {latest.failure_type}\n"
+                    f"Conflict:          {conflict}\n"
+                    f"Question for you:  {latest.fix_instructions}\n"
+                ),
+                created_at=now,
+            ))
+            EventLogger.log(db_session, self.run_id, self.name, EventType.REFLECTION_CREATED, {
+                "microtask_id": microtask.microtask_id,
+                "decision": "blocked",
+                "failure_type": latest.failure_type,
+                "artifact_ref": artifact_ref,
+                "cycle_kind": cycle_kind,
+            })
+
+        failure = RunFailureHandler.handle(
+            db_session, self.run_id, self.name, self.state,
+            RunExecutionError(
+                phase="reflect",
+                reason=(f"BLOCKED — requirements conflict on microtask "
+                        f"'{microtask.microtask_id}': {conflict}"),
+            ),
+        )
+        # raw carries reflections/output-path/cleared-note; failure overrides status.
+        return {**raw, **failure, "microtasks": microtasks, "iteration": iteration}
 
     def _max_test_resynth(self) -> int:
         # Settings hub: from the run's resolved knobs; env fallback for pre-config runs.

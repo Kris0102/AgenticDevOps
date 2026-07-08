@@ -38,7 +38,7 @@ from db.models import Event as EventRow
 from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
 from gitops.github_api import GitHubRepoClient, RepoValidationKind, RepoValidationResult
-from providers import health_check
+from providers import health_check, probe_cache
 from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
 from observability.log_bus import log_bus
@@ -464,15 +464,23 @@ class Service:
         return SettingsStore.update(new)
 
     def test_provider(self, provider_id: str) -> dict:
-        """Health-probe a stored provider (settings 'Test connection'). Uses the real key."""
+        """Health-probe a stored provider (settings 'Test connection'). Uses the real key.
+        On a healthy provider it ALSO probes prompt caching (GH #65) — two identical
+        padded calls, cache_read on the second — so an invisible server property
+        (vLLM prefix caching on / off, OpenAI automatic caching) becomes checkable
+        from the dashboard. Probe failure degrades to cache=None, never fails the test."""
         settings = SettingsStore.get()
         provider = SettingsStore.provider(settings, provider_id)
         if provider is None:
             return {"ok": False, "reason": f"provider '{provider_id}' not found", "kind": "config"}
         model = provider.models[0] if provider.models else settings.selected.model
         from orchestrator.state import LLMConfig
-        result = health_check(provider, LLMConfig(provider_id=provider_id, model=model))
-        return {"ok": result.ok, "latency_ms": result.latency_ms, "reason": result.reason, "kind": result.kind}
+        llm = LLMConfig(provider_id=provider_id, model=model)
+        result = health_check(provider, llm)
+        out = {"ok": result.ok, "latency_ms": result.latency_ms, "reason": result.reason, "kind": result.kind}
+        if result.ok:
+            out["cache"] = probe_cache(provider, llm)   # {"active", "read_tokens"} | None
+        return out
 
     def test_github(self) -> dict:
         """Validate the stored GitHub token (settings 'Test connection'): GET /user with

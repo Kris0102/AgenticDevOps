@@ -45,7 +45,7 @@ class PlannerRunner:
                 _log.warning("planner.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
                 raise TokenBudgetExceededError(
-                    phase="planner", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
+                    phase="planner", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
             tools = self._init_tools(db_session)

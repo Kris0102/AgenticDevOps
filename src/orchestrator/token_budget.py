@@ -62,6 +62,8 @@ def record_usage(
         "llm.usage", agent=actor, model=model,
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
         total_tokens=usage.total_tokens, run_total=updated.tokens_used_total,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_creation_tokens=usage.cache_creation_tokens,
         microtask_id=microtask_id,
     )
     EventLogger.log(db_session, run_id, actor, EventType.LLM_USAGE_RECORDED, {
@@ -69,6 +71,10 @@ def record_usage(
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
+        # Prompt-caching breakdown (GH #62) — subsets of input_tokens (informational,
+        # never added onto totals). 0 for providers that don't report caching.
+        "cache_read_tokens": usage.cache_read_tokens,
+        "cache_creation_tokens": usage.cache_creation_tokens,
         "microtask_id": microtask_id,
     })
     return updated

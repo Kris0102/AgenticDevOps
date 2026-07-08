@@ -15,12 +15,20 @@ class TokenUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    # Prompt-caching breakdown (GH #62) — SUBSETS of input_tokens, never added on top
+    # (LangChain's input_tokens already includes them; these are informational).
+    # cache_read costs ~0.1x input price, cache_creation ~1.25x. Both 0 for providers
+    # that don't report caching (the cluster today).
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     def __add__(self, other: "TokenUsage") -> "TokenUsage":
         return TokenUsage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_creation_tokens=self.cache_creation_tokens + other.cache_creation_tokens,
         )
 
 
@@ -32,9 +40,12 @@ def sum_usage(messages: Iterable[BaseMessage]) -> TokenUsage:
         if not isinstance(message, AIMessage) or not message.usage_metadata:
             continue
         meta = message.usage_metadata
+        input_details = meta.get("input_token_details") or {}
         usage = usage + TokenUsage(
             input_tokens=meta.get("input_tokens", 0),
             output_tokens=meta.get("output_tokens", 0),
             total_tokens=meta.get("total_tokens", 0),
+            cache_read_tokens=input_details.get("cache_read", 0) or 0,
+            cache_creation_tokens=input_details.get("cache_creation", 0) or 0,
         )
     return usage

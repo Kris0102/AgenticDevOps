@@ -40,6 +40,8 @@ service = Service()
 _REPO_KIND_STATUS = {
     RepoValidationKind.NOT_FOUND: status.HTTP_404_NOT_FOUND,
     RepoValidationKind.NO_ACCESS: status.HTTP_401_UNAUTHORIZED,
+    RepoValidationKind.NO_PUSH_ACCESS: status.HTTP_403_FORBIDDEN,
+    RepoValidationKind.NO_PR_ACCESS: status.HTTP_403_FORBIDDEN,
     RepoValidationKind.UNREACHABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
     RepoValidationKind.UNEXPECTED: status.HTTP_503_SERVICE_UNAVAILABLE,
 }

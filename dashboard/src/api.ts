@@ -97,7 +97,8 @@ export interface ProviderTestResult {
 
 // ----------------------------------------------------------------- repo registry (GH #41)
 export type RepoValidationKind =
-  | 'ok_public' | 'ok_private' | 'not_found' | 'no_access' | 'unreachable' | 'unexpected'
+  | 'ok_public' | 'ok_private' | 'not_found' | 'no_access'
+  | 'no_push_access' | 'no_pr_access' | 'unreachable' | 'unexpected'
 
 // Mirrors gitops.github_api.RepoValidationResult.
 export interface RepoValidationResult {
@@ -106,6 +107,8 @@ export interface RepoValidationResult {
   reason: string
   default_branch?: string | null
   latency_ms?: number | null
+  can_push?: boolean | null
+  can_create_pr?: boolean | null
 }
 
 // One registered repo. `token` is the mask ('••••••••') when a per-repo token is stored.

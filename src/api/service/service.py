@@ -506,7 +506,11 @@ class Service:
 
     def add_repo(self, req: RepoCreateRequest) -> RepoView:
         """Normalize → validate against GitHub → create only when validation passes.
-        The provided token (else the global one) must actually see the repo."""
+        The provided token (else the global one) must actually see the repo. Only
+        push access gates whether a repo can be added — missing PR access never
+        blocks adding (it's surfaced to the UI via `can_create_pr` as an informational
+        note; whether it blocks a *run* depends on Settings.defaults.auto_create_pr,
+        checked separately at run-start in `resolve_repo`)."""
         canonical = normalize_repo_url(req.repo_url)          # ValueError → 422
         token = req.token or SettingsStore.github_token()
         result = self._github.validate_repo(canonical, token)
@@ -542,6 +546,20 @@ class Service:
         RepoStore.record_validation(repo_id, result)
         return result
 
+    @staticmethod
+    def _require_run_rights(result: RepoValidationResult, *, auto_create_pr: bool) -> None:
+        """Run-start preflight (NOT the add-repo path): push access is always
+        required (already enforced by `result.ok`, since validate_repo fails closed
+        on NO_PUSH_ACCESS). PR access is only required when the deploy flow will
+        actually try to open one — i.e. when auto_create_pr is on."""
+        if auto_create_pr and not result.can_create_pr:
+            raise RepoValidationFailedError(
+                RepoValidationKind.NO_PR_ACCESS,
+                "auto-create-PR is enabled in Settings but the token has no "
+                "pull-request access to this repository — disable auto-create-PR "
+                "or use a token with pull-request permission",
+            )
+
     def repo_branches(self, repo_id: str) -> List[str]:
         """Live GitHub branch names for the picker — raises BranchListError with a
         validation-style kind on failure. Never cached in the DB."""
@@ -564,13 +582,17 @@ class Service:
         repo_id path: registry row + per-repo token, re-validated now (the snapshot is
         recorded either way so the repo list shows the red dot). Legacy raw-repo path:
         URL normalized, registry entry attached by canonical URL when one exists (so
-        its token applies), then validated the same way."""
+        its token applies), then validated the same way. Either path also checks PR
+        rights via `_require_run_rights` when auto_create_pr is on — unlike add_repo,
+        a run must not start without the rights it will actually need."""
+        auto_create_pr = SettingsStore.get().defaults.auto_create_pr
         if request.repo_id:
             entry = RepoStore.get(request.repo_id)            # RepoNotFoundError → 404
             result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(entry.repo_id))
             RepoStore.record_validation(entry.repo_id, result)
             if not result.ok:
                 raise RepoValidationFailedError(result.kind, result.reason)
+            self._require_run_rights(result, auto_create_pr=auto_create_pr)
             return Repo(
                 repo_url=entry.repo_url,
                 repo_id=entry.repo_id,
@@ -593,6 +615,7 @@ class Service:
             RepoStore.record_validation(repo_id, result)
         if not result.ok:
             raise RepoValidationFailedError(result.kind, result.reason)
+        self._require_run_rights(result, auto_create_pr=auto_create_pr)
         return legacy.model_copy(update={
             "repo_url": canonical,
             "repo_id": repo_id,

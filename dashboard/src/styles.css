@@ -664,6 +664,7 @@ a.export:hover { border-color: var(--accent); }
 .valpill .vdot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .valpill.ok { background: #3fb95026; color: var(--green); }
 .valpill.bad { background: #f8514926; color: var(--red); }
+.valpill.warn { background: #d2992226; color: var(--yellow); }
 
 /* fact micro-grid: uppercase key + mono value, one quiet row */
 .repofacts { display: flex; flex-wrap: wrap; gap: 6px 22px; }
@@ -673,12 +674,19 @@ a.export:hover { border-color: var(--accent); }
 .rfact .rv.quiet { color: var(--muted); }
 .rfact .rv .glyph { color: var(--accent); margin-right: 4px; }
 
-/* failed-validation reason: mono block, same voice as cb-reason */
-.valreason {
-  font-family: var(--mono); font-size: 12px; color: var(--red);
-  background: #f851490a; border: 1px solid #f8514933; border-radius: 6px;
-  padding: 6px 9px; margin-top: 10px; word-break: break-word;
+/* access-check note: mono block, same voice as cb-reason. Tinted per traffic-light
+   state (ok=green/full access, warn=orange/push-only, bad=red/not usable) — same
+   three states as .valpill, spelled out in a sentence instead of a badge. */
+.valnote {
+  font-family: var(--mono); font-size: 12px;
+  border-radius: 6px; padding: 6px 9px; margin-top: 10px; word-break: break-word;
 }
+.valnote-ok { color: var(--green); background: #3fb9500a; border: 1px solid #3fb95033; }
+.valnote-warn { color: var(--yellow); background: #d299220a; border: 1px solid #d2992233; }
+.valnote-bad { color: var(--red); background: #f851490a; border: 1px solid #f8514933; }
+
+/* "Check & add" result: pill + note for the repo just registered */
+.addrepo-result { margin-top: 8px; }
 
 /* edit drawer: hairline-separated, never floats free of its card */
 .repoedit { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }

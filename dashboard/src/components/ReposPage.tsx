@@ -30,16 +30,44 @@ function splitName(repoUrl: string, label: string): { owner: string; name: strin
   return { owner, name }
 }
 
+// Traffic-light access feedback: green = push + PR access, orange = push only (no
+// PR), red = not usable at all (push missing, or repo unreachable/not found/etc).
+// One source of truth so "Check access" (existing repos) and "Check & add" (new
+// repos) read identically.
+type AccessCls = 'ok' | 'warn' | 'bad'
+
+function accessState(result: RepoValidationResult): { cls: AccessCls; badge: string; note: string } {
+  if (!result.ok) {
+    return { cls: 'bad', badge: result.kind.replace(/_/g, ' '), note: result.reason }
+  }
+  const kindLabel = result.kind === 'ok_private' ? 'private' : 'public'
+  if (result.can_push == null) {
+    // anonymous request (no token) — push/PR were never actually probed
+    return { cls: 'ok', badge: kindLabel, note: 'No token was used for this check — push and pull-request access were not verified.' }
+  }
+  if (result.can_create_pr === false) {
+    return {
+      cls: 'warn',
+      badge: `${kindLabel} · push only`,
+      note: 'Push access confirmed, but the token has no pull-request access — auto-create-PR will fail until this is fixed.',
+    }
+  }
+  return { cls: 'ok', badge: `${kindLabel} · full access`, note: 'Token has both push and pull-request access.' }
+}
+
 function ValPill({ result }: { result?: RepoValidationResult | null }) {
   if (!result) return <span className="valpill"><span className="vdot" /> unvalidated</span>
-  if (result.ok) {
-    return (
-      <span className="valpill ok">
-        <span className="vdot" /> {result.kind === 'ok_private' ? 'private' : 'public'}
-      </span>
-    )
-  }
-  return <span className="valpill bad">✗ {result.kind.replace('_', ' ')}</span>
+  const { cls, badge } = accessState(result)
+  return (
+    <span className={`valpill ${cls}`}>
+      <span className="vdot" /> {cls === 'bad' ? `✗ ${badge}` : badge}
+    </span>
+  )
+}
+
+function ValNote({ result }: { result: RepoValidationResult }) {
+  const { cls, note } = accessState(result)
+  return <div className={`valnote valnote-${cls}`}>{note}</div>
 }
 
 function RepoCard({ repo, onChanged, onDeleted }: {
@@ -127,7 +155,7 @@ function RepoCard({ repo, onChanged, onDeleted }: {
         )}
       </div>
 
-      {result && !result.ok && <div className="valreason">{result.reason}</div>}
+      {result && <ValNote result={result} />}
 
       {editing && (
         <div className="repoedit np-grid">
@@ -162,17 +190,24 @@ export function ReposPage({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState<RepoCreateRequest>({ repo_url: '' })
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Feedback for the just-completed "Check & add" — the repo is already in the list
+  // below by the time this renders, but the traffic-light + note right here confirms
+  // what was actually checked without having to go find the new card.
+  const [justAdded, setJustAdded] = useState<RepoValidationResult | null>(null)
 
   useEffect(() => {
     api.listRepos().then(setRepos).catch((e) => setError(String(e)))
   }, [])
 
+  const setRepoUrl = (repo_url: string) => { setForm({ ...form, repo_url }); setJustAdded(null) }
+
   const add = async () => {
-    setAdding(true); setError(null)
+    setAdding(true); setError(null); setJustAdded(null)
     try {
       const created = await api.createRepo(form)
       setRepos((r) => [...(r ?? []), created])
       setForm({ repo_url: '' })
+      setJustAdded(created.last_validation_result ?? null)
     } catch (e) {
       // validation failures (404/401/503) carry the GitHub-derived reason
       setError(String(e))
@@ -200,7 +235,7 @@ export function ReposPage({ onClose }: { onClose: () => void }) {
           <div className="np-grid">
             <label className="fld span2 addrepo-url"><span>repository url</span>
               <input placeholder="https://github.com/owner/repo" value={form.repo_url}
-                onChange={(e) => setForm({ ...form, repo_url: e.target.value })}
+                onChange={(e) => setRepoUrl(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && form.repo_url.trim() && !adding) add() }} /></label>
             <label className="fld"><span>label <em>optional — defaults to owner/repo</em></span>
               <input value={form.label ?? ''}
@@ -213,6 +248,12 @@ export function ReposPage({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setForm({ ...form, push_branch_override: e.target.value || null })} /></label>
           </div>
           {error && <div className="error">{error}</div>}
+          {justAdded && (
+            <div className="addrepo-result">
+              <ValPill result={justAdded} />
+              <ValNote result={justAdded} />
+            </div>
+          )}
           <div className="np-actions">
             <button className="primary" disabled={adding || !form.repo_url.trim()} onClick={add}>
               {adding ? 'checking access…' : 'Check & add'}

@@ -68,6 +68,7 @@ export interface RunDefaults {
   max_total_tokens?: number | null
   hitl_checkpoints: string[]
   teardown_on_terminal: boolean
+  auto_create_pr: boolean
 }
 
 export interface AppSettings {
@@ -179,6 +180,8 @@ export interface HitlReviewContext {
   prompt: string
   plan?: PlanView | null
   diff?: DiffData | null
+  // Deploy gate only: the commit message the push would use — prefill for the editable input.
+  deploy_commit_message?: string | null
 }
 
 export interface EventView {
@@ -278,8 +281,10 @@ export const api = {
   getEvents: (id: string, after = 0) =>
     http.get<EventView[]>(`/runs/${id}/events`, { params: { after } }).then((r) => r.data),
 
-  resume: (id: string, decision: 'approve' | 'reject', note?: string) =>
-    http.post<RunResponse>(`/runs/${id}/resume`, { decision, note: note ?? null }).then((r) => r.data),
+  // `commitMessage` is only meaningful when approving a deploy gate — it overrides
+  // the run's commit message for the push.
+  resume: (id: string, decision: 'approve' | 'reject', note?: string, commitMessage?: string) =>
+    http.post<RunResponse>(`/runs/${id}/resume`, { decision, note: note ?? null, commit_message: commitMessage ?? null }).then((r) => r.data),
 
   // Re-drive a stalled run (worker died mid-graph, or a token-budget stop) from its
   // checkpoint. Not for HITL gates. Optional `maxTotalTokens` raises the checkpointed cap

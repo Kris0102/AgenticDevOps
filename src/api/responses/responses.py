@@ -226,3 +226,6 @@ class HitlReviewContext(BaseModel):
     prompt: str
     plan: Optional[PlanView] = None
     diff: Optional[DiffView] = None
+    # Deploy gate only: the commit message that WOULD be used (per-run value or the
+    # default), so the UI can prefill its editable commit-message input. ADR 0027.
+    deploy_commit_message: Optional[str] = None

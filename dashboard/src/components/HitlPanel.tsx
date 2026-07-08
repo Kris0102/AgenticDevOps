@@ -8,6 +8,7 @@ import { DiffReview } from './DiffReview'
 export function HitlPanel({ runId, phase }: { runId: string; phase: string }) {
   const [ctx, setCtx] = useState<HitlReviewContext | null>(null)
   const [note, setNote] = useState('')
+  const [commitMsg, setCommitMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -15,7 +16,11 @@ export function HitlPanel({ runId, phase }: { runId: string; phase: string }) {
     let dead = false
     api
       .getHitl(runId)
-      .then((c) => !dead && setCtx(c))
+      .then((c) => {
+        if (dead) return
+        setCtx(c)
+        setCommitMsg(c?.deploy_commit_message ?? '')
+      })
       .catch((e) => !dead && setErr(String(e)))
     return () => {
       dead = true
@@ -30,7 +35,10 @@ export function HitlPanel({ runId, phase }: { runId: string; phase: string }) {
     setBusy(true)
     setErr(null)
     try {
-      await api.resume(runId, decision, note.trim() || undefined)
+      // Commit message only rides a deploy-gate approve — the push uses it verbatim.
+      const commitOverride =
+        decision === 'approve' && phase === 'deploy' ? commitMsg.trim() || undefined : undefined
+      await api.resume(runId, decision, note.trim() || undefined, commitOverride)
       setNote('')
     } catch (e) {
       setErr(String(e))
@@ -51,6 +59,17 @@ export function HitlPanel({ runId, phase }: { runId: string; phase: string }) {
       {err && <div className="error">{err}</div>}
 
       <div className="decide">
+        {phase === 'deploy' && (
+          <label className="commit-message">
+            Commit message for the push
+            <input
+              type="text"
+              value={commitMsg}
+              onChange={(e) => setCommitMsg(e.target.value)}
+              placeholder={`AgenticDevOps run ${runId}`}
+            />
+          </label>
+        )}
         <textarea
           placeholder="note (required to reject — fed back to planner/reflector)"
           value={note}

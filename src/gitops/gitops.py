@@ -1,6 +1,7 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from gitops.github_api import GitHubRepoClient
 from observability import Category, get_logger
 from sandbox.sandbox_tools import DockerSandboxTools, ExecResult, SandboxError
 
@@ -9,13 +10,13 @@ _log = get_logger(Category.DEPLOYER)
 
 class GitOps:
     """Bridge to the git remote (GitHub) — the GitHub integration boundary from
-    ARCHITECTURE §4.4. Owns branch naming, commit, push, and (eventually) PR
-    creation, delegating raw git execution to the sandbox.
+    ARCHITECTURE §4.4. Owns branch naming, commit, push, and PR creation,
+    delegating raw git execution to the sandbox and REST calls to GitHubRepoClient.
 
-    Scope today: stage/commit/push a run branch. `create_pr` is a stub until the
-    GitHub App / token wiring lands; webhooks + CI relay + merge are later milestones.
-    Kept separate from DockerSandboxTools (pure sandbox exec) so the GitHub-API
-    surface has an obvious home and the token stays in one place. See ADR 0012.
+    Scope today: stage/commit/push a run branch + open a PR for it (ADR 0027);
+    webhooks + CI relay + merge are later milestones. Kept separate from
+    DockerSandboxTools (pure sandbox exec) so the GitHub-API surface has an obvious
+    home and the token stays in one place. See ADR 0012.
     """
 
     BRANCH_PREFIX = "agent/run-"
@@ -228,21 +229,21 @@ class GitOps:
         self,
         *,
         remote_url: str,
-        run_id: str,
+        branch: str,
+        base: str,
         title: str,
         body: str,
-        base: str = "main",
-    ) -> Optional[str]:
-        """STUB — open/update a PR for the run branch via the GitHub API.
+        token: str = "",
+    ) -> str:
+        """Open (or find the already-open) PR for the pushed branch via the GitHub API.
 
-        Not yet implemented (needs the GitHub App / token wiring from
-        ARCHITECTURE §4.4). Returns the PR URL once implemented; None for now.
+        Takes the ACTUAL pushed branch — never recomputed from run_id, so a per-repo
+        push_branch_override is honored. Raises PrCreationError on failure: the push
+        already landed, so callers degrade instead of failing the run (ADR 0027).
         """
-        branch = self.branch_name(run_id)
-        _log.warning(
-            "gitops.create_pr_not_implemented",
-            branch=branch,
-            base=base,
-            hint="open the PR manually, or implement the GitHub API call here",
+        client = GitHubRepoClient()
+        pr_url = client.create_pull_request(
+            remote_url, token, head=branch, base=base, title=title, body=body,
         )
-        return None
+        _log.info("gitops.pr_created", branch=branch, base=base, pr_url=pr_url)
+        return pr_url

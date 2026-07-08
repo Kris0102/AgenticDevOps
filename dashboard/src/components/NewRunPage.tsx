@@ -20,6 +20,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   const [baseRef, setBaseRef] = useState('')
   const [baseSha, setBaseSha] = useState('')
   const [task, setTask] = useState('')
+  const [commitMessage, setCommitMessage] = useState('')
   const [providerId, setProviderId] = useState('')
   const [model, setModel] = useState('')
   const [gates, setGates] = useState<Record<string, boolean>>({})
@@ -70,6 +71,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
         maxTotalIterations: settings.defaults.max_total_iterations,
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
         maxTotalTokens: settings.defaults.max_total_tokens,
+        commitMessage: commitMessage.trim() || null,
       })
       const r = await api.createRun(req)
       onRun(r.run_id)
@@ -121,6 +123,8 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
             <input placeholder="pin a commit on the base branch" value={baseSha} onChange={(e) => setBaseSha(e.target.value)} /></label>
           <label className="fld span2"><span>task</span>
             <textarea placeholder="what should the agents implement?" value={task} onChange={(e) => setTask(e.target.value)} /></label>
+          <label className="fld span2"><span>deploy commit message <em>optional — editable again at the deploy gate</em></span>
+            <input placeholder="AgenticDevOps run <run id>" value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} /></label>
 
           <label className="fld"><span>provider</span>
             <select value={providerId} onChange={(e) => setProviderId(e.target.value)}>

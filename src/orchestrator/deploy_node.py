@@ -1,11 +1,14 @@
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from db.db import db
 from db.event_log import EventLogger
 from db.repo_store import RepoNotFoundError, RepoStore
+from db.settings_store import SettingsStore
 from Exceptions.RunExecutionError import RunExecutionError
+from gitops.github_api import PrCreationError
 from gitops.gitops import GitOps
+from gitops.pr_body import build_pr_body
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import BlackboardState, EventType, Repo, Sandbox
@@ -16,8 +19,9 @@ _log = get_logger(Category.DEPLOYER)
 
 
 class DeployRunner:
-    """Stub GitOps deployer: push the sandbox working tree to the run branch
-    (`agent/run-<run_id>`) and (eventually) open a PR.
+    """GitOps deployer: push the sandbox working tree to the run branch
+    (`agent/run-<run_id>`) and, when `defaults.auto_create_pr` is on, open a PR
+    (ADR 0027).
 
     Not an LLM agent, so it deliberately BYPASSES the ToolGateway — the gateway's
     job is per-agent tool allowlisting + audit, and there is no allowlist to enforce
@@ -77,13 +81,17 @@ class DeployRunner:
                 )
 
             fileset = self.gitops.changed_files(sandbox_id=sandbox.sandbox_id)
+            # Gate-entered message › per-run message (both on deploy_commit_message,
+            # the gate overwrote the seed) › the default. ADR 0027.
+            commit_message = (self.state.get("deploy_commit_message") or "").strip() \
+                or f"AgenticDevOps run {self.run_id}"
             try:
                 results = self.gitops.push_branch(
                     sandbox_id=sandbox.sandbox_id,
                     run_id=self.run_id,
                     remote_url=repo.repo_url,
                     token=token,
-                    commit_message=f"AgenticDevOps run {self.run_id}",
+                    commit_message=commit_message,
                     branch=branch,
                     forbidden_branch=forbidden_branch,
                 )
@@ -91,19 +99,64 @@ class DeployRunner:
                 _log.error("deployer.push_failed", branch=branch, error=str(error))
                 raise
 
-            # PR creation is still a stub (GitHub API not wired) — returns None.
-            pr_url = self.gitops.create_pr(
-                remote_url=repo.repo_url,
-                run_id=self.run_id,
-                title=f"AgenticDevOps run {self.run_id}",
-                body="Automated changes from an AgenticDevOps run.",
+            pr_url, pr_error = self._maybe_create_pr(
+                db_session, repo, branch, token, commit_message, fileset,
             )
 
-            self._emit_push_event(db_session, branch, results, pr_url, fileset)
+            self._emit_push_event(db_session, branch, results, pr_url, fileset,
+                                  commit_message, pr_error)
 
         _log.info("deployer.pushed", branch=branch, repo_url=repo.repo_url, pr_url=pr_url,
                   files=len(fileset))
+        # PR URL is the run's result on the repo — carry it on state via the node
+        # return dict (never mutate in place).
+        if pr_url:
+            return {"repo": repo.model_copy(update={"pr_url": pr_url})}
         return {}
+
+    def _maybe_create_pr(
+        self,
+        db_session,
+        repo: Repo,
+        branch: str,
+        token: str,
+        commit_message: str,
+        fileset: List[str],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """(pr_url, pr_error) — open the auto-PR when the global setting is on.
+        A PR failure never fails the run: the push already landed, so it degrades to
+        a logged error carried in the gitops.pushed payload (ADR 0027)."""
+        if not SettingsStore.get().defaults.auto_create_pr:
+            return None, None
+        if not fileset:
+            # Nothing shipped → "No commits between base and head" is guaranteed.
+            _log.info("deployer.pr_skipped", reason="empty fileset — nothing to propose")
+            return None, "nothing shipped — PR skipped"
+
+        base = repo.base_ref or repo.default_branch or "main"
+        title = commit_message.splitlines()[0][:100]
+        evidence = self.state.get("evidence")
+        body = build_pr_body(
+            run_id=self.run_id,
+            objective=self.state.get("objective"),
+            microtasks=self.state.get("microtasks") or [],
+            files=fileset,
+            diff_summary=evidence.latest_diff.summary if evidence and evidence.latest_diff else None,
+            branch=branch,
+            base=base,
+        )
+        try:
+            pr_url = self.gitops.create_pr(
+                remote_url=repo.repo_url, branch=branch, base=base,
+                title=title, body=body, token=token,
+            )
+        except PrCreationError as error:
+            _log.warning("deployer.pr_create_failed", branch=branch, base=base, error=str(error))
+            return None, str(error)
+        EventLogger.log(db_session, self.run_id, self.name, EventType.GITOPS_PR_CREATED, {
+            "branch": branch, "base": base, "pr_url": pr_url, "title": title,
+        })
+        return pr_url, None
 
     def _resolve_push_target(self, repo: Repo) -> tuple:
         """(push branch, forbidden branch). Registry `push_branch_override` wins over
@@ -122,11 +175,14 @@ class DeployRunner:
         return branch, forbidden
 
     def _emit_push_event(self, db_session, branch: str, results: List[ExecResult], pr_url,
-                         fileset: List[str]) -> None:
+                         fileset: List[str], commit_message: str,
+                         pr_error: Optional[str]) -> None:
         EventLogger.log(db_session, self.run_id, self.name, EventType.GITOPS_PUSHED, {
             "branch": branch,
             "steps": len(results),
+            "commit_message": commit_message,
             "pr_url": pr_url,
+            "pr_error": pr_error,      # why the auto-PR didn't land (None when fine/off)
             "files": fileset,          # what actually shipped (post-.gitignore) — audit/deploy summary
             "file_count": len(fileset),
         })

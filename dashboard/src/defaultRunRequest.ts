@@ -14,6 +14,7 @@ export interface NewRunOpts {
   maxTotalIterations?: number
   maxMicrotaskAttempts?: number
   maxTotalTokens?: number | null
+  commitMessage?: string | null          // deploy commit message; editable again at the deploy gate
 }
 
 export function buildRunRequest(opts: NewRunOpts) {
@@ -32,6 +33,7 @@ export function buildRunRequest(opts: NewRunOpts) {
     base_ref: opts.baseRef ?? null,
     base_sha: opts.baseSha || null,
     llm: opts.llm ?? null,
+    commit_message: opts.commitMessage ?? null,
     constraints: {
       time_budget_minutes: 60,
       cost_budget_usd: 10.0,

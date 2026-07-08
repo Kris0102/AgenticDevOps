@@ -1,4 +1,6 @@
-"""GitHubRepoClient — read-only GitHub REST calls for the repo registry (GH #41).
+"""GitHubRepoClient — GitHub REST calls for the repo registry (GH #41) and the
+deploy PR (ADR 0027). Read paths validate repos / list branches; the single write
+path is create_pull_request, driven by GitOps.create_pr after a successful push.
 
 Lives in the gitops boundary (ADR 0012): tokens never leave this package or gitops.py.
 Result shape mirrors Service.test_github() ({ok, kind, reason, latency_ms}) so the API
@@ -20,6 +22,8 @@ _log = get_logger(Category.DEPLOYER)
 
 _API_BASE = "https://api.github.com"
 _TIMEOUT_S = 5
+# PR creation is a write — slower than the preflight GETs the 5s budget is tuned for.
+_WRITE_TIMEOUT_S = 15
 
 
 class RepoValidationKind(str, enum.Enum):
@@ -46,6 +50,11 @@ class BranchListError(Exception):
         super().__init__(reason)
         self.kind = kind
         self.reason = reason
+
+
+class PrCreationError(Exception):
+    """PR creation failed — carries a human-readable reason. Deliberately NOT fatal
+    to the caller's run: the push already succeeded (ADR 0027). Never contains the token."""
 
 
 def parse_owner_repo(canonical_url: str) -> tuple[str, str]:
@@ -129,3 +138,59 @@ class GitHubRepoClient:
                                   f"GitHub rejected the token (HTTP {resp.status_code})")
         raise BranchListError(RepoValidationKind.UNEXPECTED,
                               f"unexpected GitHub response (HTTP {resp.status_code})")
+
+    def create_pull_request(self, canonical_url: str, token: str, *,
+                            head: str, base: str, title: str, body: str) -> str:
+        """Open a PR (head → base) and return its html_url. A 422 'already exists'
+        resolves to the existing open PR's URL (idempotent re-deploys); every other
+        failure raises PrCreationError — callers degrade, they don't fail the run."""
+        owner, repo = parse_owner_repo(canonical_url)
+        try:
+            resp = requests.post(f"{_API_BASE}/repos/{owner}/{repo}/pulls",
+                                 json={"title": title, "head": head, "base": base, "body": body},
+                                 headers=self._headers(token), timeout=_WRITE_TIMEOUT_S)
+        except requests.RequestException as exc:
+            raise PrCreationError(f"GitHub unreachable: {exc.__class__.__name__}")
+        if resp.status_code == 201:
+            return resp.json()["html_url"]
+        if resp.status_code == 422:
+            reason = self._pr_422_reason(resp)
+            if "already exists" in reason.lower():
+                existing = self._find_open_pr(owner, repo, token, head=head, base=base)
+                if existing:
+                    return existing
+            raise PrCreationError(f"GitHub refused the PR: {reason}")
+        if resp.status_code in (401, 403):
+            raise PrCreationError(
+                f"GitHub rejected the token (HTTP {resp.status_code}) — the PR needs a token "
+                "with pull-request permission")
+        if resp.status_code == 404:
+            raise PrCreationError("repository not found, or the token lacks access to it")
+        raise PrCreationError(f"unexpected GitHub response (HTTP {resp.status_code})")
+
+    def _pr_422_reason(self, resp: requests.Response) -> str:
+        """Flatten GitHub's 422 body ('message' + per-field 'errors') into one line."""
+        try:
+            payload = resp.json()
+        except ValueError:
+            return "validation failed (unparseable 422 body)"
+        parts = [payload.get("message") or ""]
+        for err in payload.get("errors") or []:
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            if msg:
+                parts.append(msg)
+        return "; ".join(p for p in parts if p) or "validation failed"
+
+    def _find_open_pr(self, owner: str, repo: str, token: str, *,
+                      head: str, base: str) -> Optional[str]:
+        """URL of the already-open PR for head → base, if GitHub reports one."""
+        try:
+            resp = requests.get(f"{_API_BASE}/repos/{owner}/{repo}/pulls",
+                                params={"head": f"{owner}:{head}", "base": base, "state": "open"},
+                                headers=self._headers(token), timeout=_TIMEOUT_S)
+        except requests.RequestException:
+            return None
+        if resp.status_code != 200:
+            return None
+        pulls = resp.json()
+        return pulls[0]["html_url"] if pulls else None

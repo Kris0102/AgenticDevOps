@@ -723,5 +723,7 @@ a.export:hover { border-color: var(--accent); }
 .addrepo-url input { font-family: var(--mono); font-size: 13.5px; padding: 9px 11px; }
 
 .chip-disabled { opacity: 0.4; cursor: not-allowed; }
+.input-invalid { border-color: var(--red) !important; }
+.tbcached { color: var(--green); font-size: 11px; white-space: nowrap; }
 .np-hint { display: block; margin-top: 4px; font-size: 12px; font-style: normal; color: var(--muted); }
 .linklike { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }

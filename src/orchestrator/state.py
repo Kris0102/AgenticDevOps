@@ -146,6 +146,12 @@ class ProviderProfile(BaseModel):
     base_url: Optional[str] = None             # required for openai_compatible; ignored for anthropic
     api_key: Optional[str] = None
     models: List[str] = Field(default_factory=list)
+    # Vendor-specific request params merged into every request body (GH #65) — the
+    # escape hatch for the long tail of OpenAI-compatible endpoints (prompt_cache_key,
+    # OpenRouter cache blocks, …) without per-vendor code. NOT for secrets (stored
+    # unencrypted, returned unmasked). Unknown params 400 on strict endpoints —
+    # verify via the provider's Test connection button.
+    extra_request_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class LLMConfig(BaseModel):

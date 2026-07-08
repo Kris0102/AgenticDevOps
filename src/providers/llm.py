@@ -39,6 +39,16 @@ def build_chat_llm(
             max_retries=llm.max_retries,
             timeout=timeout_seconds,
             stop=None,
+            # Prompt caching (GH #62): merged into the request body as the TOP-LEVEL
+            # `cache_control` param — the direct Anthropic API's automatic-caching form,
+            # which caches the last cacheable block of every request. ReAct histories are
+            # append-only, so each step re-reads the previous step's prefix at ~0.1x input
+            # price (write 1.25x, 5-min TTL, breaks even after 2 calls; prefixes <4096
+            # tokens silently don't cache). Verify via usage_metadata
+            # input_token_details.cache_read (surfaced in llm.usage events).
+            # Per-provider extra_request_params (GH #65) merge after — they may override.
+            model_kwargs={"cache_control": {"type": "ephemeral"},
+                          **provider.extra_request_params},
         )
     # openai_compatible (the cluster + anything OpenAI-shaped)
     if not provider.base_url:
@@ -50,6 +60,8 @@ def build_chat_llm(
         temperature=llm.temperature,
         max_retries=llm.max_retries,
         timeout=timeout_seconds,
+        # Vendor params (GH #65): prompt_cache_key, or anything the endpoint accepts.
+        model_kwargs=dict(provider.extra_request_params),
     )
 
 
@@ -79,6 +91,37 @@ def health_check(provider: ProviderProfile, llm: LLMConfig, *, timeout_seconds: 
             reason=_short(exc),
             kind=_classify(exc),
         )
+
+
+# One deterministic sentence (~15 tokens), repeated to pad the cache probe past every
+# provider's minimum cacheable prefix (Anthropic 4096 tokens is the largest; OpenAI 1024).
+_CACHE_PROBE_SENTENCE = "The quick brown fox jumps over the lazy dog near the riverbank at dawn. "
+
+
+def probe_cache(provider: ProviderProfile, llm: LLMConfig, *,
+                timeout_seconds: int = 30) -> Optional[dict]:
+    """Settings 'Test connection' cache probe (GH #65): send the SAME padded prompt
+    twice and read the second response's cache_read. Caching is a provider/server
+    property the client mostly can't switch on (OpenAI: automatic; self-hosted vLLM:
+    server flag) — this makes it CHECKABLE from the dashboard instead of invisible.
+
+    Returns {"active": bool, "read_tokens": int}, or None when the probe itself failed
+    (never raises — a broken probe must not break the test button). Costs ~13k tokens
+    per click; a deliberate spend on an explicit test action."""
+    try:
+        client = build_chat_llm(provider, llm, timeout_seconds=timeout_seconds)
+        padding = _CACHE_PROBE_SENTENCE * 400   # ~6k tokens, byte-identical across calls
+        messages = [HumanMessage(content=f"{padding}\nReply with the single word: ok")]
+        client.invoke(messages)                  # warm — writes the cache where supported
+        second = client.invoke(messages)         # measure
+        details = (second.usage_metadata or {}).get("input_token_details") or {}
+        read = int(details.get("cache_read") or 0)
+        _log.info("provider.cache_probe", provider=provider.id, active=read > 0,
+                  read_tokens=read)
+        return {"active": read > 0, "read_tokens": read}
+    except Exception as exc:
+        _log.warning("provider.cache_probe_failed", provider=provider.id, error=_short(exc))
+        return None
 
 
 def _classify(exc: Exception) -> str:

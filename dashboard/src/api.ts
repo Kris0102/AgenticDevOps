@@ -65,6 +65,9 @@ export interface ProviderProfile {
   base_url?: string | null
   api_key?: string | null            // masked ('••••••••') on read; leave as-is to keep stored key
   models: string[]
+  // Vendor-specific request params merged into every request body (GH #65),
+  // e.g. {"prompt_cache_key": "agentic"}. NOT for secrets (stored/returned in plain).
+  extra_request_params?: Record<string, unknown>
 }
 
 export interface LLMConfig {
@@ -114,6 +117,9 @@ export interface ProviderTestResult {
   latency_ms?: number
   reason?: string | null
   kind?: string | null
+  // Prompt-cache probe (GH #65): two identical padded calls, cache_read on the 2nd.
+  // null/undefined = probe failed, or the test itself failed (probe not run).
+  cache?: { active: boolean; read_tokens: number } | null
 }
 
 // ----------------------------------------------------------------- repo registry (GH #41)

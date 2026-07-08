@@ -43,6 +43,10 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false)
   const [tests, setTests] = useState<Record<string, ProviderTestResult>>({})
   const [reveal, setReveal] = useState<Record<string, boolean>>({})
+  // extra_request_params editing (GH #65): raw text per provider id while typing —
+  // only valid JSON objects are written into settings; invalid input shows red.
+  const [extraParamsText, setExtraParamsText] = useState<Record<string, string>>({})
+  const [extraParamsError, setExtraParamsError] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
@@ -206,6 +210,28 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                 <label className="fld span2"><span>models <em>comma-separated</em></span>
                   <input value={p.models.join(', ')} onChange={(e) => updateProvider(i, { models: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) })} />
                 </label>
+                <label className="fld span2"><span>extra request params <em>optional JSON, e.g. {'{"prompt_cache_key": "agentic"}'} — never secrets</em></span>
+                  <input
+                    className={extraParamsError[p.id] ? 'input-invalid' : ''}
+                    placeholder="{}"
+                    value={extraParamsText[p.id] ?? JSON.stringify(p.extra_request_params ?? {})}
+                    onChange={(e) => {
+                      const text = e.target.value
+                      setExtraParamsText((t) => ({ ...t, [p.id]: text }))
+                      try {
+                        const parsed = text.trim() === '' ? {} : JSON.parse(text)
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                          updateProvider(i, { extra_request_params: parsed })
+                          setExtraParamsError((er) => ({ ...er, [p.id]: false }))
+                        } else {
+                          setExtraParamsError((er) => ({ ...er, [p.id]: true }))
+                        }
+                      } catch {
+                        setExtraParamsError((er) => ({ ...er, [p.id]: true }))  // keep typing; not saved until valid
+                      }
+                    }}
+                  />
+                </label>
               </div>
 
               {res && (
@@ -213,7 +239,14 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                   {res.reason === 'testing…'
                     ? <><span className="dot" /> testing…</>
                     : res.ok
-                      ? <>✓ reachable · {res.latency_ms}ms</>
+                      ? <>
+                          ✓ reachable · {res.latency_ms}ms
+                          {res.cache
+                            ? res.cache.active
+                              ? <> · caching active ({(res.cache.read_tokens / 1000).toFixed(1)}k read)</>
+                              : <span title="self-hosted endpoint? ask the operator to enable prefix caching (vLLM: --enable-prefix-caching)"> · caching not reported</span>
+                            : <> · cache probe unavailable</>}
+                        </>
                       : <>✗ {res.kind ? `${res.kind}: ` : ''}{res.reason}</>}
                 </div>
               )}

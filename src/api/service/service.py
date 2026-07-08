@@ -175,6 +175,7 @@ class Service:
                 config=config or resolve_run_config(override=request.llm),
                 status=RunStatus.NEEDS_BOOTSTRAP,
                 deploy_commit_message=request.commit_message,
+                skip_deploy=request.skip_deploy,
             )
             bootstrap = self._bootstrap(run_id, state)
             if bootstrap.get("status") == RunStatus.FAILED:
@@ -515,17 +516,16 @@ class Service:
         return [self._repo_view(e) for e in RepoStore.list()]
 
     def add_repo(self, req: RepoCreateRequest) -> RepoView:
-        """Normalize → validate against GitHub → create only when validation passes.
-        The provided token (else the global one) must actually see the repo. Only
-        push access gates whether a repo can be added — missing PR access never
-        blocks adding (it's surfaced to the UI via `can_create_pr` as an informational
-        note; whether it blocks a *run* depends on Settings.defaults.auto_create_pr,
-        checked separately at run-start in `resolve_repo`)."""
+        """Normalize → validate against GitHub → create when the repo is at least
+        READABLE. Registration only needs read/clone access: a repo with no push
+        access (clone-only — usable for dry-runs, or pending a token) is registrable
+        and shown as such in the UI. Push/PR access is NOT required to add — it's
+        gated per-run at run-start (`resolve_repo`/`_require_run_rights`), where a
+        dry-run is the documented escape. Not-found / no-read / unreachable still block."""
         canonical = normalize_repo_url(req.repo_url)          # ValueError → 422
         token = req.token or SettingsStore.github_token()
         result = self._github.validate_repo(canonical, token)
-        if not result.ok:
-            raise RepoValidationFailedError(result.kind, result.reason)
+        self._reject_if_unreadable(result)
         self._reject_default_branch_push(req.push_branch_override, result.default_branch)
         entry = RepoStore.create(repo_url=canonical, label=req.label, token=req.token,
                                  push_branch_override=req.push_branch_override,
@@ -557,11 +557,49 @@ class Service:
         return result
 
     @staticmethod
-    def _require_run_rights(result: RepoValidationResult, *, auto_create_pr: bool) -> None:
-        """Run-start preflight (NOT the add-repo path): push access is always
-        required (already enforced by `result.ok`, since validate_repo fails closed
-        on NO_PUSH_ACCESS). PR access is only required when the deploy flow will
-        actually try to open one — i.e. when auto_create_pr is on."""
+    def _reject_if_unreadable(result: RepoValidationResult) -> None:
+        """Raise unless the repo is at least READABLE/cloneable. A NO_PUSH_ACCESS result
+        came from a 200 on the repo GET (exists + read access) — cloneable even though it
+        can't be pushed to. Every other not-ok kind (not found, no read access,
+        unreachable) blocks — you can't clone what you can't read."""
+        if result.ok or result.kind == RepoValidationKind.NO_PUSH_ACCESS:
+            return
+        raise RepoValidationFailedError(result.kind, result.reason)
+
+    @staticmethod
+    def _reject_if_unusable(result: RepoValidationResult, *, skip_deploy: bool) -> None:
+        """Run-start clone gate. A dry-run only needs read/clone, so a clone-only
+        (NO_PUSH_ACCESS) repo is fine for it; a deploying run additionally needs push
+        (enforced by `_require_run_rights`), so it must be fully `ok` here."""
+        if skip_deploy:
+            Service._reject_if_unreadable(result)
+            return
+        if not result.ok:
+            raise RepoValidationFailedError(result.kind, result.reason)
+
+    @staticmethod
+    def _require_run_rights(result: RepoValidationResult, *, auto_create_pr: bool,
+                            skip_deploy: bool) -> None:
+        """Run-start preflight (NOT the add-repo path). A completing run auto-pushes
+        (tester DONE → deploy → deploy_push), so push access is REQUIRED — and
+        `result.ok` alone is not enough: an anonymous (no-token) request returns
+        `ok=True, can_push=None` (never probed), which would otherwise start a run
+        guaranteed to fail at the final push. So we require `can_push is True`
+        explicitly (catches both the anonymous None and a token that can't push).
+        PR access is required only when the deploy flow will actually open one
+        (auto_create_pr on).
+
+        A dry-run (`skip_deploy`) never reaches the deploy node, so it needs neither
+        push nor PR rights — clone/read is enough (ADR 0029)."""
+        if skip_deploy:
+            return
+        if result.can_push is not True:
+            raise RepoValidationFailedError(
+                RepoValidationKind.NO_PUSH_ACCESS,
+                "a completing run pushes its result branch, but this repository has no "
+                "verified push access — add a token with push permission, or start the "
+                "run as a dry-run (skip deploy)",
+            )
         if auto_create_pr and not result.can_create_pr:
             raise RepoValidationFailedError(
                 RepoValidationKind.NO_PR_ACCESS,
@@ -600,9 +638,8 @@ class Service:
             entry = RepoStore.get(request.repo_id)            # RepoNotFoundError → 404
             result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(entry.repo_id))
             RepoStore.record_validation(entry.repo_id, result)
-            if not result.ok:
-                raise RepoValidationFailedError(result.kind, result.reason)
-            self._require_run_rights(result, auto_create_pr=auto_create_pr)
+            self._reject_if_unusable(result, skip_deploy=request.skip_deploy)
+            self._require_run_rights(result, auto_create_pr=auto_create_pr, skip_deploy=request.skip_deploy)
             return Repo(
                 repo_url=entry.repo_url,
                 repo_id=entry.repo_id,
@@ -623,9 +660,8 @@ class Service:
         result = self._github.validate_repo(canonical, RepoStore.resolve_token(repo_id))
         if repo_id:
             RepoStore.record_validation(repo_id, result)
-        if not result.ok:
-            raise RepoValidationFailedError(result.kind, result.reason)
-        self._require_run_rights(result, auto_create_pr=auto_create_pr)
+        self._reject_if_unusable(result, skip_deploy=request.skip_deploy)
+        self._require_run_rights(result, auto_create_pr=auto_create_pr, skip_deploy=request.skip_deploy)
         return legacy.model_copy(update={
             "repo_url": canonical,
             "repo_id": repo_id,

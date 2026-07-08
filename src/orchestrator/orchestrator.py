@@ -169,7 +169,8 @@ class OrchestratorGraph:
         if status == RunStatus.NEEDS_CODE:
             return "coder"
         if status == RunStatus.DONE:
-            return "deploy"
+            # Dry-run (ADR 0029): finish at DONE without deploying (no push, no PR).
+            return END if state.get("skip_deploy") else "deploy"
         return END
 
     @staticmethod
@@ -203,8 +204,9 @@ class OrchestratorGraph:
             return "deploy_push"
         if status == RunStatus.DONE:
             # Distinguish CODE gate approve (→ deploy) from DEPLOY gate reject (→ END).
+            # A dry-run ends at DONE without deploying either way (ADR 0029).
             hitl_state = state.get("hitl")
-            if hitl_state and hitl_state.pending_approvals:
+            if hitl_state and hitl_state.pending_approvals and not state.get("skip_deploy"):
                 if hitl_state.pending_approvals[-1].type == Phase.CODE.value:
                     return "deploy"
         return END

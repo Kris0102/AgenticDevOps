@@ -115,25 +115,22 @@ class GitHubRepoClient:
             body = resp.json()
             private = bool(body.get("private"))
             default_branch = body.get("default_branch")
+            # Push access is a real write probe (`_check_push_access`), NOT the GET's
+            # `permissions.push` — that reflects the authenticated USER's role, not a
+            # fine-grained PAT's narrower granted scope (an admin holding a read-only
+            # token still shows push=true there). Anonymous (no token) can't push to
+            # anything, so it's treated as no-push directly (can_push=False), no probe.
+            can_push = self._check_push_access(owner, repo, token) if authed else False
 
-            # Anonymous (empty-token) requests never get a push/PR verdict — that's
-            # the documented, long-standing public-repo-without-a-token path, not a
-            # permission failure. `permissions.push` from this GET is deliberately
-            # NOT used for that verdict: it reflects the AUTHENTICATED USER's role on
-            # the repo (e.g. an owning/admin account), not a fine-grained PAT's
-            # narrower granted scope — an admin holding a read-only fine-grained
-            # token still gets `permissions.push=true` here, a false positive we
-            # can't afford on a check that gates whether a run is even allowed to
-            # start. `_check_push_access` probes the real write path instead.
-            can_push = self._check_push_access(owner, repo, token) if authed else None
-
-            if authed and not can_push:
-                # More fundamental blocker than PR access — every run needs push
-                # regardless of auto_create_pr. Skip the PR probe entirely: saves a
-                # call, and keeps one unambiguous failure reason instead of stacking two.
+            if not can_push:
+                # NO_PUSH_ACCESS is ok=False, but the repo IS readable (this is a 200) —
+                # so it stays registrable (clone-only) and dry-runnable; only a DEPLOYING
+                # run is blocked, gated downstream in Service.resolve_repo (ADR 0029).
+                # More fundamental than PR access (every deploying run needs push), so we
+                # skip the PR probe: one call saved, one unambiguous reason instead of two.
                 return RepoValidationResult(
                     ok=False, kind=RepoValidationKind.NO_PUSH_ACCESS,
-                    reason="token does not have push access to this repository",
+                    reason="token does not have push access to this repository" if authed else "Token not provided! Token required for repository write access unless you set run to 'dry run'.",
                     default_branch=default_branch, latency_ms=latency_ms, can_push=False,
                 )
 

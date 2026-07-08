@@ -491,6 +491,11 @@ class BlackboardState(TypedDict):
     # payload). None/blank → "AgenticDevOps run <run_id>". Read by DeployRunner. ADR 0027.
     deploy_commit_message: Optional[str]
 
+    # Dry-run: when True the graph ends at DONE without deploying (no push, no PR) —
+    # the tester/hitl DONE routers go straight to END instead of the deploy node.
+    # Requires no push access at run-start (ADR 0029). Default False.
+    skip_deploy: bool
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -508,6 +513,7 @@ def create_initial_blackboard_state(
     config: Optional[RunConfig] = None,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
     deploy_commit_message: Optional[str] = None,
+    skip_deploy: bool = False,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
     now = _utc_now_iso()
@@ -551,4 +557,5 @@ def create_initial_blackboard_state(
         last_test_output_path=None,
         test_resynth_count=0,
         deploy_commit_message=deploy_commit_message,
+        skip_deploy=skip_deploy,
     )

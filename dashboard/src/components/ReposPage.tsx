@@ -38,12 +38,26 @@ type AccessCls = 'ok' | 'warn' | 'bad'
 
 function accessState(result: RepoValidationResult): { cls: AccessCls; badge: string; note: string } {
   if (!result.ok) {
+    // NO_PUSH_ACCESS came from a readable repo (200) — cloneable, usable for dry-runs
+    // and registrable; not a hard failure. Warn (orange), don't reject (red).
+    if (result.kind === 'no_push_access') {
+      return {
+        cls: 'warn',
+        badge: 'clone-only',
+        note: 'Readable, but no push access — usable for dry-runs only. Add a token with push access to deploy.',
+      }
+    }
     return { cls: 'bad', badge: result.kind.replace(/_/g, ' '), note: result.reason }
   }
   const kindLabel = result.kind === 'ok_private' ? 'private' : 'public'
   if (result.can_push == null) {
-    // anonymous request (no token) — push/PR were never actually probed
-    return { cls: 'ok', badge: kindLabel, note: 'No token was used for this check — push and pull-request access were not verified.' }
+    // anonymous request (no token) — push/PR were never probed, and without a token
+    // the deploy push + auto-PR can't run. Clone-only: warn rather than green-OK.
+    return {
+      cls: 'warn',
+      badge: `${kindLabel} · clone-only`,
+      note: 'No token — clone works, but the deploy push and auto-PR will fail. Add a token to enable deploying.',
+    }
   }
   if (result.can_create_pr === false) {
     return {

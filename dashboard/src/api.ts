@@ -8,6 +8,25 @@ import axios, { AxiosError } from 'axios'
 
 export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'stalled'
 
+// One microtask's position + attempt count while the coder/tester/reflector loop is
+// actively working it. Mirrors responses.MicrotaskProgress (ADR 0028).
+export interface MicrotaskProgress {
+  idx: number
+  total: number
+  title: string
+  status: string
+  attempts: number
+  max_attempts: number
+}
+
+// Planner-loop / microtask-loop iteration counts read off the checkpoint. Mirrors
+// responses.PipelineProgress (ADR 0028).
+export interface PipelineProgress {
+  planner_reviewer_iteration: number
+  planner_reviewer_max: number
+  microtask?: MicrotaskProgress | null
+}
+
 export interface RunResponse {
   run_id: string
   run_state: RunState
@@ -17,6 +36,7 @@ export interface RunResponse {
   stalled_reason?: string | null   // transient-error / crash reason when run_state === 'stalled'
   stalled_kind?: 'token_budget' | 'transient' | string | null   // cause of the stall (ADR 0025)
   failure_reason?: string | null   // run.failed reason when run_state === 'failed'
+  progress?: PipelineProgress | null   // iteration/microtask-loop progress (ADR 0028)
 }
 
 // A run row for the previous-runs home list (GET /runs). Extra fields are the box's
@@ -86,6 +106,7 @@ export interface SchemaField {
   type: string
   group: 'basic' | 'expert'
   nullable?: boolean   // int/float only: blank input means "clear to null", not 0/NaN
+  scale?: number        // int/float only: the input shows/accepts value/scale (e.g. 1000 = "enter thousands")
 }
 
 export interface ProviderTestResult {
@@ -97,7 +118,8 @@ export interface ProviderTestResult {
 
 // ----------------------------------------------------------------- repo registry (GH #41)
 export type RepoValidationKind =
-  | 'ok_public' | 'ok_private' | 'not_found' | 'no_access' | 'unreachable' | 'unexpected'
+  | 'ok_public' | 'ok_private' | 'not_found' | 'no_access'
+  | 'no_push_access' | 'no_pr_access' | 'unreachable' | 'unexpected'
 
 // Mirrors gitops.github_api.RepoValidationResult.
 export interface RepoValidationResult {
@@ -106,6 +128,8 @@ export interface RepoValidationResult {
   reason: string
   default_branch?: string | null
   latency_ms?: number | null
+  can_push?: boolean | null
+  can_create_pr?: boolean | null
 }
 
 // One registered repo. `token` is the mask ('••••••••') when a per-repo token is stored.
@@ -287,10 +311,10 @@ export const api = {
     http.post<RunResponse>(`/runs/${id}/resume`, { decision, note: note ?? null, commit_message: commitMessage ?? null }).then((r) => r.data),
 
   // Re-drive a stalled run (worker died mid-graph, or a token-budget stop) from its
-  // checkpoint. Not for HITL gates. Optional `maxTotalTokens` raises the checkpointed cap
-  // before resuming (ADR 0025) — for a token-budget stall.
-  continueRun: (id: string, maxTotalTokens?: number) =>
-    http.post<RunResponse>(`/runs/${id}/continue`, maxTotalTokens != null ? { max_total_tokens: maxTotalTokens } : undefined).then((r) => r.data),
+  // checkpoint. Not for HITL gates. Optional `additionalTokens` ADDS that many tokens to the
+  // checkpointed cap before resuming (ADR 0025 amendment) — for a token-budget stall.
+  continueRun: (id: string, additionalTokens?: number) =>
+    http.post<RunResponse>(`/runs/${id}/continue`, additionalTokens != null ? { additional_tokens: additionalTokens } : undefined).then((r) => r.data),
 
   // Human verdict on a stalled run: close the case as FAILED ('Mark as failed').
   failRun: (id: string, note?: string) =>

@@ -40,6 +40,8 @@ service = Service()
 _REPO_KIND_STATUS = {
     RepoValidationKind.NOT_FOUND: status.HTTP_404_NOT_FOUND,
     RepoValidationKind.NO_ACCESS: status.HTTP_401_UNAUTHORIZED,
+    RepoValidationKind.NO_PUSH_ACCESS: status.HTTP_403_FORBIDDEN,
+    RepoValidationKind.NO_PR_ACCESS: status.HTTP_403_FORBIDDEN,
     RepoValidationKind.UNREACHABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
     RepoValidationKind.UNEXPECTED: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
@@ -208,10 +210,11 @@ def continue_run(run_id: str, background: BackgroundTasks, body: Optional[Contin
     /resume, which answers a HITL gate. Rejected if the run is terminal, paused at a gate
     (use /resume), or already being driven.
 
-    Optional `body.max_total_tokens` patches the checkpointed Constraints BEFORE re-driving
-    (ADR 0025) — the follow-up to a token-budget stall, so /continue can actually raise the
-    cap instead of immediately re-tripping the same check. Validated synchronously here so a
-    bad value 422s the request instead of silently re-stalling in the background task."""
+    Optional `body.additional_tokens` ADDS that many tokens to the checkpointed
+    Constraints.max_total_tokens BEFORE re-driving (ADR 0025 amendment) — the follow-up to a
+    token-budget stall, so /continue can actually raise the cap instead of immediately
+    re-tripping the same check. Validated synchronously here so a bad value 422s the request
+    instead of silently re-stalling in the background task."""
     current = service.status(run_id)
     if current.run_state in (RunState.COMPLETED, RunState.FAILED):
         raise HTTPException(status.HTTP_409_CONFLICT, "run is already terminal")
@@ -219,12 +222,12 @@ def continue_run(run_id: str, background: BackgroundTasks, body: Optional[Contin
         raise HTTPException(status.HTTP_409_CONFLICT, "run is paused at a HITL gate — use /resume")
     if current.run_state == RunState.RUNNING:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is already being driven")
-    if current.stalled_kind == "token_budget" and (body is None or body.max_total_tokens is None):
+    if current.stalled_kind == "token_budget" and (body is None or body.additional_tokens is None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                             "a new token cap is required to continue a token-budget stall")
-    if body and body.max_total_tokens is not None:
+                             "additional_tokens is required to continue a token-budget stall")
+    if body and body.additional_tokens is not None:
         try:
-            service.raise_token_budget(run_id, body.max_total_tokens)
+            service.raise_token_budget(run_id, body.additional_tokens)
         except InvalidTokenBudgetError as e:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
     service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED

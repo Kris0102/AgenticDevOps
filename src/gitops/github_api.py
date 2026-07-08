@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import time
+import uuid
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -31,6 +32,8 @@ class RepoValidationKind(str, enum.Enum):
     OK_PRIVATE = "ok_private"
     NOT_FOUND = "not_found"
     NO_ACCESS = "no_access"
+    NO_PUSH_ACCESS = "no_push_access"
+    NO_PR_ACCESS = "no_pr_access"
     UNREACHABLE = "unreachable"
     UNEXPECTED = "unexpected"
 
@@ -41,6 +44,8 @@ class RepoValidationResult(BaseModel):
     reason: str
     default_branch: Optional[str] = None
     latency_ms: Optional[int] = None
+    can_push: Optional[bool] = None
+    can_create_pr: Optional[bool] = None
 
 
 class BranchListError(Exception):
@@ -77,9 +82,17 @@ class GitHubRepoClient:
         return headers
 
     def validate_repo(self, canonical_url: str, token: str) -> RepoValidationResult:
-        """One GET /repos/{owner}/{repo} answers exists/private/access. GitHub returns
-        404 for both 'does not exist' and 'private, no access' — the reason text
-        carries that ambiguity instead of pretending to distinguish."""
+        """GET /repos/{owner}/{repo} answers exists/private (GitHub returns 404 for
+        both 'does not exist' and 'private, no access' — the reason text carries that
+        ambiguity instead of pretending to distinguish). When authenticated, push and
+        PR-create rights are independently confirmed with real (but side-effect-free)
+        write probes — see `_check_push_access` / `_check_pr_access`.
+
+        Push access is required and gates `ok` (no push, no usable repo, ever). PR
+        access is reported (`can_create_pr`) but never affects `ok` here — whether a
+        missing PR permission should block anything depends on
+        Settings.defaults.auto_create_pr, which this module deliberately doesn't know
+        about (ADR 0012, stays Settings-free); the caller (Service) decides."""
         owner, repo = parse_owner_repo(canonical_url)
         started = time.monotonic()
         try:
@@ -89,21 +102,48 @@ class GitHubRepoClient:
             return RepoValidationResult(ok=False, kind=RepoValidationKind.UNREACHABLE,
                                         reason=f"GitHub unreachable: {exc.__class__.__name__}")
         latency_ms = int((time.monotonic() - started) * 1000)
-        result = self._classify(resp, authed=bool(token), latency_ms=latency_ms)
+        result = self._classify(resp, authed=bool(token), latency_ms=latency_ms,
+                                token=token, owner=owner, repo=repo)
         _log.info("gitops.repo_validated", repo=f"{owner}/{repo}", kind=str(result.kind),
-                  ok=result.ok, latency_ms=latency_ms)
+                  ok=result.ok, can_push=result.can_push, can_create_pr=result.can_create_pr,
+                  latency_ms=latency_ms)
         return result
 
-    def _classify(self, resp: requests.Response, *, authed: bool, latency_ms: int) -> RepoValidationResult:
+    def _classify(self, resp: requests.Response, *, authed: bool, latency_ms: int,
+                  token: str, owner: str, repo: str) -> RepoValidationResult:
         if resp.status_code == 200:
             body = resp.json()
             private = bool(body.get("private"))
+            default_branch = body.get("default_branch")
+
+            # Anonymous (empty-token) requests never get a push/PR verdict — that's
+            # the documented, long-standing public-repo-without-a-token path, not a
+            # permission failure. `permissions.push` from this GET is deliberately
+            # NOT used for that verdict: it reflects the AUTHENTICATED USER's role on
+            # the repo (e.g. an owning/admin account), not a fine-grained PAT's
+            # narrower granted scope — an admin holding a read-only fine-grained
+            # token still gets `permissions.push=true` here, a false positive we
+            # can't afford on a check that gates whether a run is even allowed to
+            # start. `_check_push_access` probes the real write path instead.
+            can_push = self._check_push_access(owner, repo, token) if authed else None
+
+            if authed and not can_push:
+                # More fundamental blocker than PR access — every run needs push
+                # regardless of auto_create_pr. Skip the PR probe entirely: saves a
+                # call, and keeps one unambiguous failure reason instead of stacking two.
+                return RepoValidationResult(
+                    ok=False, kind=RepoValidationKind.NO_PUSH_ACCESS,
+                    reason="token does not have push access to this repository",
+                    default_branch=default_branch, latency_ms=latency_ms, can_push=False,
+                )
+
+            can_create_pr = self._check_pr_access(owner, repo, token, default_branch=default_branch) if authed else None
             return RepoValidationResult(
                 ok=True,
                 kind=RepoValidationKind.OK_PRIVATE if private else RepoValidationKind.OK_PUBLIC,
                 reason="private repo, token has access" if private else "public repo",
-                default_branch=body.get("default_branch"),
-                latency_ms=latency_ms,
+                default_branch=default_branch, latency_ms=latency_ms,
+                can_push=can_push if authed else None, can_create_pr=can_create_pr,
             )
         if resp.status_code == 404:
             reason = ("repository not found, or the token lacks access to it" if authed
@@ -117,6 +157,75 @@ class GitHubRepoClient:
         return RepoValidationResult(ok=False, kind=RepoValidationKind.UNEXPECTED,
                                     reason=f"unexpected GitHub response (HTTP {resp.status_code})",
                                     latency_ms=latency_ms)
+
+    def _check_push_access(self, owner: str, repo: str, token: str) -> bool:
+        """Does this token actually have write (push/Contents) access? Probes the
+        real write path rather than trusting a GET: attempts to create a git ref
+        pointing at a SHA that cannot possibly exist (40 zeros). GitHub authorizes a
+        write BEFORE validating its payload, so the response cleanly distinguishes
+        the two:
+          - 403/404 → no write access — nothing is created
+          - 422     → write access confirmed; rejected only because the SHA doesn't
+                      exist — nothing is created
+          - 201     → shouldn't happen (the SHA is bogus), but if GitHub ever did
+                      create it, delete the ref immediately so the probe leaves zero
+                      footprint
+        Fails closed (False) on network errors."""
+        probe_branch = f"agenticdevops-access-probe-{uuid.uuid4().hex[:10]}"
+        try:
+            resp = requests.post(
+                f"{_API_BASE}/repos/{owner}/{repo}/git/refs",
+                json={"ref": f"refs/heads/{probe_branch}", "sha": "0" * 40},
+                headers=self._headers(token), timeout=_TIMEOUT_S,
+            )
+        except requests.RequestException:
+            return False
+        if resp.status_code == 201:
+            try:
+                requests.delete(f"{_API_BASE}/repos/{owner}/{repo}/git/refs/heads/{probe_branch}",
+                                headers=self._headers(token), timeout=_TIMEOUT_S)
+            except requests.RequestException:
+                pass
+            return True
+        return resp.status_code == 422
+
+    def _check_pr_access(self, owner: str, repo: str, token: str, *,
+                         default_branch: Optional[str]) -> bool:
+        """Does this token have write access to open pull requests? A plain GET on
+        .../pulls only proves READ access (a read-only fine-grained PAT passes that
+        too) — not enough to promise the deploy flow can actually open one. Probe the
+        real write path instead: attempt to open a PR from a head branch that cannot
+        exist. Same authorize-before-validate ordering as the push probe:
+          - 403     → no write access — nothing is opened
+          - 422     → write access confirmed; rejected only because the head branch
+                      doesn't exist — nothing is opened
+          - 201     → shouldn't happen (the branch doesn't exist), but if GitHub ever
+                      did open it, close it immediately (PRs can't be deleted)
+        Fails closed (False) on network errors, and when there's no default branch to
+        target (brand-new/empty repo)."""
+        if not default_branch:
+            return False
+        probe_branch = f"agenticdevops-access-probe-{uuid.uuid4().hex[:10]}"
+        try:
+            resp = requests.post(
+                f"{_API_BASE}/repos/{owner}/{repo}/pulls",
+                json={"title": "AgenticDevOps access probe (safe to ignore)",
+                      "head": probe_branch, "base": default_branch,
+                      "body": "Permission probe — the head branch does not exist, so this can never actually open."},
+                headers=self._headers(token), timeout=_TIMEOUT_S,
+            )
+        except requests.RequestException:
+            return False
+        if resp.status_code == 201:
+            pr_number = resp.json().get("number")
+            try:
+                requests.patch(f"{_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}",
+                              json={"state": "closed"}, headers=self._headers(token),
+                              timeout=_TIMEOUT_S)
+            except requests.RequestException:
+                pass
+            return True
+        return resp.status_code == 422
 
     def list_branches(self, canonical_url: str, token: str) -> List[str]:
         """Live branch names (first 100). Never cached in the DB — branches move."""

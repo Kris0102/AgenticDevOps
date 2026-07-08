@@ -113,3 +113,44 @@ Known gaps: no live status-bar counter or runs-list badge yet (backend fields al
 adding them). Runs stalled before this shipped have no `kind` on their stall event, so their
 stalled-bar falls back to a plain "Continue run" no-op. `RunOverview`'s tile only refreshes
 its cap on an explicit raise (`capVersion` bump), not on every poll.
+
+## Amendment (2026-07-08): thousands-based input, incremental raise, M-suffix display
+Three usability changes to the pieces above, all UI/API-contract only — no change to how the
+cap is enforced (`token_budget_exceeded()`, §Decision 3) or captured (§Decision 1-2).
+
+1. **Settings input is now in thousands.** `defaults.max_total_tokens` is still stored and
+   enforced as a raw token count everywhere in the backend/DB (unchanged), but the Settings
+   field now reads/writes it scaled by 1,000: entering `200` means 200,000 tokens. Carried by
+   a new generic `scale` property on the schema-driven field descriptor
+   (`SETTINGS_SCHEMA` entry → `SchemaField.scale` → `SettingsPage.tsx`'s `renderField`),
+   rather than hardcoding the one field — any future thousands-scaled numeric setting can
+   reuse it. `renderField` also now rejects negative/non-numeric input inline (a
+   `fieldErrors` map + a `.fld-error` hint next to the input) instead of silently coercing to
+   `NaN`/a stale value.
+2. **Raising the cap on a token-budget stall is now an INCREMENT, not a new absolute cap.**
+   `ContinueRunRequest.max_total_tokens` → `additional_tokens`: `/continue` now ADDS the given
+   amount to `Constraints.max_total_tokens` (`Service.raise_token_budget`) instead of
+   replacing it. A run capped at 200k that stalls and gets `200` (→ 200,000) entered again
+   ends up with a 400k cap, not a 200k one. Rationale: the old absolute-cap input required the
+   human to remember (or go look up) the current cap and add to it mentally every time; an
+   increment is what the human actually means ("give it 200k more to work with") and removes a
+   footgun where entering the same number twice looked like a no-op cap-bump instead of
+   doubling it. Also entered in thousands, matching the Settings field's convention, and
+   validated the same way (positive-number check, inline error, `App.tsx`'s `addTokensValid`)
+   instead of the old bare `capValid` disable-with-no-explanation. The audit event
+   (`run.token_budget_raised`) keeps its `old_max_total_tokens`/`new_max_total_tokens` payload
+   shape (dashboard-compatible) and gains an `additional_tokens` field.
+3. **Display formatting gains an M suffix above 1,000,000.** `fmtTokens` (duplicated in
+   `RunOverview`, `TokensByAgent`, `MicrotasksPanel` — unchanged duplication, not
+   consolidated) now renders `n >= 1_000_000` as e.g. `1.0M` instead of `1000.0k`; everything
+   below that threshold is unchanged (`200.0k` still reads as `200.0k`). Purely a display
+   change — no stored value crosses the M/k boundary differently.
+
+Alternatives considered: converting the whole backend (DB column, `Constraints`,
+`RunResponse`) to thousands units — rejected, raw tokens are the correct unit for every
+non-human consumer (enforcement, usage summing, events) and scaling only at the two UI entry
+points keeps the blast radius to the settings form and the continue-bar input. Keeping the
+absolute-cap semantic for `/continue` and just showing the current cap next to the input for
+context — rejected in favor of the simpler increment, since showing "current cap" would have
+required threading `max_total_tokens` onto the base `RunResponse` (today only on
+`RunResponseWithDetails`) for no benefit once the input itself no longer needs that number.

@@ -19,8 +19,10 @@ from api.responses.responses import (
     HitlReviewContext,
     LessonView,
     LogView,
+    MicrotaskProgress,
     MicrotaskRow,
     MicrotaskView,
+    PipelineProgress,
     PlanView,
     RepoView,
     RunExportBundle,
@@ -50,6 +52,7 @@ from orchestrator.state import (
     AppSettings,
     BlackboardState,
     EventType,
+    MicrotaskStatus,
     RunConfig,
     RunStatus,
     Repo,
@@ -76,10 +79,10 @@ class RunAlreadyExistsError(RuntimeError):
 
 
 class InvalidTokenBudgetError(ValueError):
-    """A /continue request's `max_total_tokens` doesn't make sense against the run's
-    checkpointed state (ADR 0025) — no checkpointed Constraints to patch, or a cap at/below
-    tokens already spent (would just immediately re-trip `token_budget_exceeded` and
-    re-stall the instant the node re-enters)."""
+    """A /continue request's `additional_tokens` doesn't make sense against the run's
+    checkpointed state (ADR 0025) — no checkpointed Constraints to patch, a non-positive
+    amount, or a resulting cap at/below tokens already spent (would just immediately re-trip
+    `token_budget_exceeded` and re-stall the instant the node re-enters)."""
 
 
 class ProviderUnreachableError(RuntimeError):
@@ -207,18 +210,21 @@ class Service:
             self._active.discard(run_id)
             clear_context()
 
-    def raise_token_budget(self, run_id: str, new_max_total_tokens: int) -> None:
-        """Patch the checkpointed `Constraints.max_total_tokens` to a new (higher) cap
-        (ADR 0025): continuing a token-budget stall unchanged just immediately re-trips
-        `token_budget_exceeded` and re-stalls, so the human needs a way to actually raise
-        the cap before `/continue` re-drives. Called synchronously from the route BEFORE
-        `continue_run` is scheduled in the background, so a bad value 422s the HTTP request
-        instead of silently re-stalling inside the background task.
+    def raise_token_budget(self, run_id: str, additional_tokens: int) -> None:
+        """ADD `additional_tokens` to the checkpointed `Constraints.max_total_tokens` (ADR
+        0025 amendment — this is an INCREMENT, not a new absolute cap): continuing a
+        token-budget stall unchanged just immediately re-trips `token_budget_exceeded` and
+        re-stalls, so the human needs a way to actually raise the cap before `/continue`
+        re-drives. Called synchronously from the route BEFORE `continue_run` is scheduled in
+        the background, so a bad value 422s the HTTP request instead of silently re-stalling
+        inside the background task.
 
         Also mirrors the new cap onto the denormalized `runs.max_total_tokens` column (same
         precedent as `bootstrap_node._upsert_run_record` / `token_budget.record_usage`) so
         `RunResponseWithDetails`/the dashboard tile reflect it without waiting on another
         checkpoint write, and emits a durable audit event."""
+        if additional_tokens <= 0:
+            raise InvalidTokenBudgetError("additional_tokens must be a positive integer")
         snapshot = graph.get_state(self._config(run_id))
         values = snapshot.values or {}
         constraints = values.get("constraints")
@@ -226,11 +232,13 @@ class Service:
             raise InvalidTokenBudgetError(f"run {run_id} has no checkpointed constraints to patch")
         iteration = values.get("iteration")
         used = iteration.tokens_used_total if iteration else 0
+        old_max_total_tokens = constraints.max_total_tokens
+        new_max_total_tokens = (old_max_total_tokens or 0) + additional_tokens
         if new_max_total_tokens <= used:
             raise InvalidTokenBudgetError(
-                f"new cap ({new_max_total_tokens}) must be greater than tokens already used ({used})"
+                f"adding {additional_tokens} tokens brings the cap to {new_max_total_tokens}, "
+                f"still at/below tokens already used ({used}) — enter a larger amount"
             )
-        old_max_total_tokens = constraints.max_total_tokens
         patched = constraints.model_copy(update={"max_total_tokens": new_max_total_tokens})
         graph.update_state(self._config(run_id), {"constraints": patched})
         with db.session_scope() as session:
@@ -240,9 +248,11 @@ class Service:
             EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_TOKEN_BUDGET_RAISED, {
                 "old_max_total_tokens": old_max_total_tokens,
                 "new_max_total_tokens": new_max_total_tokens,
+                "additional_tokens": additional_tokens,
                 "tokens_used_total": used,
             })
-        _log.info("run.token_budget_raised", run_id=run_id, new_cap=new_max_total_tokens, used=used)
+        _log.info("run.token_budget_raised", run_id=run_id, new_cap=new_max_total_tokens,
+                  additional_tokens=additional_tokens, used=used)
 
     def continue_run(self, run_id: str) -> RunResponse:
         """Re-drive a STALLED run from its checkpoint. Used when the worker that was driving
@@ -506,7 +516,11 @@ class Service:
 
     def add_repo(self, req: RepoCreateRequest) -> RepoView:
         """Normalize → validate against GitHub → create only when validation passes.
-        The provided token (else the global one) must actually see the repo."""
+        The provided token (else the global one) must actually see the repo. Only
+        push access gates whether a repo can be added — missing PR access never
+        blocks adding (it's surfaced to the UI via `can_create_pr` as an informational
+        note; whether it blocks a *run* depends on Settings.defaults.auto_create_pr,
+        checked separately at run-start in `resolve_repo`)."""
         canonical = normalize_repo_url(req.repo_url)          # ValueError → 422
         token = req.token or SettingsStore.github_token()
         result = self._github.validate_repo(canonical, token)
@@ -542,6 +556,20 @@ class Service:
         RepoStore.record_validation(repo_id, result)
         return result
 
+    @staticmethod
+    def _require_run_rights(result: RepoValidationResult, *, auto_create_pr: bool) -> None:
+        """Run-start preflight (NOT the add-repo path): push access is always
+        required (already enforced by `result.ok`, since validate_repo fails closed
+        on NO_PUSH_ACCESS). PR access is only required when the deploy flow will
+        actually try to open one — i.e. when auto_create_pr is on."""
+        if auto_create_pr and not result.can_create_pr:
+            raise RepoValidationFailedError(
+                RepoValidationKind.NO_PR_ACCESS,
+                "auto-create-PR is enabled in Settings but the token has no "
+                "pull-request access to this repository — disable auto-create-PR "
+                "or use a token with pull-request permission",
+            )
+
     def repo_branches(self, repo_id: str) -> List[str]:
         """Live GitHub branch names for the picker — raises BranchListError with a
         validation-style kind on failure. Never cached in the DB."""
@@ -564,13 +592,17 @@ class Service:
         repo_id path: registry row + per-repo token, re-validated now (the snapshot is
         recorded either way so the repo list shows the red dot). Legacy raw-repo path:
         URL normalized, registry entry attached by canonical URL when one exists (so
-        its token applies), then validated the same way."""
+        its token applies), then validated the same way. Either path also checks PR
+        rights via `_require_run_rights` when auto_create_pr is on — unlike add_repo,
+        a run must not start without the rights it will actually need."""
+        auto_create_pr = SettingsStore.get().defaults.auto_create_pr
         if request.repo_id:
             entry = RepoStore.get(request.repo_id)            # RepoNotFoundError → 404
             result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(entry.repo_id))
             RepoStore.record_validation(entry.repo_id, result)
             if not result.ok:
                 raise RepoValidationFailedError(result.kind, result.reason)
+            self._require_run_rights(result, auto_create_pr=auto_create_pr)
             return Repo(
                 repo_url=entry.repo_url,
                 repo_id=entry.repo_id,
@@ -593,6 +625,7 @@ class Service:
             RepoStore.record_validation(repo_id, result)
         if not result.ok:
             raise RepoValidationFailedError(result.kind, result.reason)
+        self._require_run_rights(result, auto_create_pr=auto_create_pr)
         return legacy.model_copy(update={
             "repo_url": canonical,
             "repo_id": repo_id,
@@ -844,7 +877,8 @@ class Service:
 
     def _response(self, run_id: str) -> RunResponse:
         snapshot = graph.get_state(self._config(run_id))
-        status = snapshot.values.get("status") if snapshot.values else None
+        values = snapshot.values or {}
+        status = values.get("status")
         pending = self._pending_payload(run_id)
         state = self._derive_state(status, pending, self.is_active(run_id))
         if state == RunState.STALLED and self._db_status(run_id) == RunStatus.FAILED.value:
@@ -865,6 +899,47 @@ class Service:
             stalled_kind=stall_payload.get("kind") if stall_payload else None,
             # Only for a failed run: the run.failed reason — the dashboard's error banner.
             failure_reason=fail_payload.get("reason") if fail_payload else None,
+            progress=self._progress(values),
+        )
+
+    # `Microtask.status` values that mean "the coder/tester/reflector loop is actively
+    # working this one right now" — mirrors the fallback pick used by the reflector/
+    # tester nodes themselves (reflector_node.py:_select_microtask, tester_node.py).
+    _IN_FLIGHT_MICROTASK_STATUSES = (MicrotaskStatus.IN_PROGRESS, MicrotaskStatus.EXECUTING, MicrotaskStatus.VERIFYING)
+
+    @classmethod
+    def _progress(cls, state: dict) -> Optional[PipelineProgress]:
+        """Planner-loop / microtask-loop iteration counts read straight off the
+        checkpoint (ADR 0028) — no DB read, no new columns. None before the graph
+        has produced Iteration/Constraints state (e.g. mid-bootstrap)."""
+        iteration = state.get("iteration")
+        constraints = state.get("constraints")
+        if iteration is None or constraints is None:
+            return None
+        microtasks = state.get("microtasks") or []
+        current_id = state.get("current_microtask_id")
+        by_id = {mt.microtask_id: mt for mt in microtasks}
+        current = by_id.get(current_id) if current_id else None
+        if current is None:
+            current = next(
+                (mt for mt in sorted(microtasks, key=lambda m: m.idx)
+                 if mt.status in cls._IN_FLIGHT_MICROTASK_STATUSES),
+                None,
+            )
+        microtask_progress = None
+        if current is not None:
+            microtask_progress = MicrotaskProgress(
+                idx=current.idx,
+                total=len(microtasks),
+                title=current.title,
+                status=current.status.value,
+                attempts=current.attempts,
+                max_attempts=current.max_attempts or constraints.max_microtask_attempts,
+            )
+        return PipelineProgress(
+            planner_reviewer_iteration=iteration.planner_reviewer_iteration_current,
+            planner_reviewer_max=constraints.max_total_iterations,
+            microtask=microtask_progress,
         )
 
     @staticmethod

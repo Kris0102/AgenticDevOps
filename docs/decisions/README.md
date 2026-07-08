@@ -63,3 +63,4 @@ What this makes easier, harder, or newly possible. What it costs.
 | [0026](0026-stalled-time-excluded-from-duration.md) | Exclude STALLED time from the displayed run duration/Gantt via paired `run.stalled`/`run.resumed` events | accepted |
 | [0027](0027-deploy-commit-message-and-auto-pr.md) | Deploy commit message (gate › per-run › default) + `auto_create_pr` setting with real GitHub PR creation and deterministic PR body | accepted |
 | [0028](0028-pipeline-progress-visibility.md) | Dashboard: surface planner-loop and microtask-loop iteration progress via a new `RunResponse.progress` block | accepted |
+| [0029](0029-require-push-at-run-start-and-dry-run.md) | Require push access at run-start (a completing run auto-pushes); add a `skip_deploy` dry-run mode; register clone-only repos | accepted |

@@ -27,6 +27,11 @@ class RunRequest(BaseModel):
     # Optional commit message for the eventual deploy push. Overridable at the deploy
     # HITL gate; blank/None → "AgenticDevOps run <run_id>". ADR 0027.
     commit_message: Optional[str] = None
+    # Dry-run: the graph ends at DONE without deploying (no push, no PR). Relaxes the
+    # run-start push-access requirement — a token-less/read-only repo can run and
+    # propose nothing. Default False = a completing run deploys, so push access is
+    # required at run-start (ADR 0029).
+    skip_deploy: bool = False
 
     @model_validator(mode="after")
     def _exactly_one_repo_source(self) -> "RunRequest":

@@ -15,6 +15,7 @@ export interface NewRunOpts {
   maxMicrotaskAttempts?: number
   maxTotalTokens?: number | null
   commitMessage?: string | null          // deploy commit message; editable again at the deploy gate
+  skipDeploy?: boolean                   // dry-run: end at DONE, no push/PR (no push token needed)
 }
 
 export function buildRunRequest(opts: NewRunOpts) {
@@ -34,6 +35,7 @@ export function buildRunRequest(opts: NewRunOpts) {
     base_sha: opts.baseSha || null,
     llm: opts.llm ?? null,
     commit_message: opts.commitMessage ?? null,
+    skip_deploy: opts.skipDeploy ?? false,
     constraints: {
       time_budget_minutes: 60,
       cost_budget_usd: 10.0,

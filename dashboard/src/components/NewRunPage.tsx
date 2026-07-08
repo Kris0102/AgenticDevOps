@@ -21,6 +21,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   const [baseSha, setBaseSha] = useState('')
   const [task, setTask] = useState('')
   const [commitMessage, setCommitMessage] = useState('')
+  const [skipDeploy, setSkipDeploy] = useState(false)
   const [providerId, setProviderId] = useState('')
   const [model, setModel] = useState('')
   const [gates, setGates] = useState<Record<string, boolean>>({})
@@ -66,12 +67,13 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
         baseRef: baseRef || null,
         baseSha,
         task,
-        hitlCheckpoints: GATES.filter((g) => gates[g]),
+        hitlCheckpoints: GATES.filter((g) => gates[g] && !(g === 'deploy' && skipDeploy)),
         llm: { provider_id: providerId, model, temperature: settings.selected.temperature, max_retries: settings.selected.max_retries },
         maxTotalIterations: settings.defaults.max_total_iterations,
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
         maxTotalTokens: settings.defaults.max_total_tokens,
         commitMessage: commitMessage.trim() || null,
+        skipDeploy,
       })
       const r = await api.createRun(req)
       onRun(r.run_id)
@@ -124,7 +126,15 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
           <label className="fld span2"><span>task</span>
             <textarea placeholder="what should the agents implement?" value={task} onChange={(e) => setTask(e.target.value)} /></label>
           <label className="fld span2"><span>deploy commit message <em>optional — editable again at the deploy gate</em></span>
-            <input placeholder="AgenticDevOps run <run id>" value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} /></label>
+            <input placeholder="AgenticDevOps run <run id>" value={commitMessage} disabled={skipDeploy}
+              onChange={(e) => setCommitMessage(e.target.value)} /></label>
+          <div className="fld span2"><span>deployment</span>
+            <label className={`chip ${skipDeploy ? 'on' : ''}`}>
+              <input type="checkbox" checked={skipDeploy} onChange={(e) => setSkipDeploy(e.target.checked)} />
+              dry-run — end at DONE, no push or PR
+            </label>
+            {skipDeploy && <em className="np-hint">no result branch is pushed; a token with push access is not required.</em>}
+          </div>
 
           <label className="fld"><span>provider</span>
             <select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
@@ -137,11 +147,16 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
 
           <div className="fld span2"><span>human review gates</span>
             <div className="gatechips">
-              {GATES.map((g) => (
-                <label key={g} className={`chip ${gates[g] ? 'on' : ''}`}>
-                  <input type="checkbox" checked={!!gates[g]} onChange={(e) => setGates({ ...gates, [g]: e.target.checked })} />{g}
-                </label>
-              ))}
+              {GATES.map((g) => {
+                // the deploy gate is meaningless on a dry-run (deploy never runs)
+                const disabled = g === 'deploy' && skipDeploy
+                return (
+                  <label key={g} className={`chip ${gates[g] && !disabled ? 'on' : ''} ${disabled ? 'chip-disabled' : ''}`}>
+                    <input type="checkbox" disabled={disabled} checked={!!gates[g] && !disabled}
+                      onChange={(e) => setGates({ ...gates, [g]: e.target.checked })} />{g}
+                  </label>
+                )
+              })}
             </div>
           </div>
         </div>

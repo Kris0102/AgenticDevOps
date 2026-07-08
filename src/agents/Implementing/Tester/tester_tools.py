@@ -10,6 +10,25 @@ from sandbox.Tools import Tools
 # The repo is always cloned to <workdir>/repo by the bootstrapper.
 REPO_ROOT = "/workspace/repo"
 
+# Cap on LLM-facing tool output (command stdout/stderr, file reads). The synthesis
+# ReAct loop resends its whole message history to the model every step, so an uncapped
+# command output (a `npm test` trace, a lockfile `cat`, a big file) compounds quadratically
+# — one runaway read once cost a single tester call ~245k tokens. Keep head+tail (a test
+# run's signal is at the start/end) with a marker; the raw output still lives in the
+# durable event log. Only the LLM-facing wrappers cap — `run()` returns the raw dict the
+# deterministic phases parse programmatically.
+_MAX_TOOL_OUTPUT_CHARS = 6000
+_MAX_FILE_READ_CHARS = 8000
+
+
+def _truncate_for_llm(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
+    if not text or len(text) <= limit:
+        return text or ""
+    head = limit * 2 // 3
+    tail = limit - head
+    dropped = len(text) - head - tail
+    return f"{text[:head]}\n… [{dropped} chars truncated] …\n{text[-tail:]}"
+
 
 def to_sandbox_path(path: str) -> str:
     """Normalize a repo-relative path (how the Planner declares target_files)
@@ -72,7 +91,8 @@ class TesterTools:
         )
         if "error" in result:
             return result["error"]
-        return result.get("content", "Empty file or could not read.")
+        return _truncate_for_llm(result.get("content", "Empty file or could not read."),
+                                 limit=_MAX_FILE_READ_CHARS)
 
     def write_sandbox_file(self, filepath: str, content: str) -> str:
         result = self.gateway.execute_tool(
@@ -121,4 +141,6 @@ class TesterTools:
         )
         if "error" in result:
             return result["error"]
-        return f"Exit Code: {result.get('exit_code')}\nSTDOUT:\n{result.get('stdout')}\nSTDERR:\n{result.get('stderr')}"
+        stdout = _truncate_for_llm(result.get("stdout") or "")
+        stderr = _truncate_for_llm(result.get("stderr") or "")
+        return f"Exit Code: {result.get('exit_code')}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"

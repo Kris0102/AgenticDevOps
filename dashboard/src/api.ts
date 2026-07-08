@@ -106,6 +106,7 @@ export interface SchemaField {
   type: string
   group: 'basic' | 'expert'
   nullable?: boolean   // int/float only: blank input means "clear to null", not 0/NaN
+  scale?: number        // int/float only: the input shows/accepts value/scale (e.g. 1000 = "enter thousands")
 }
 
 export interface ProviderTestResult {
@@ -310,10 +311,10 @@ export const api = {
     http.post<RunResponse>(`/runs/${id}/resume`, { decision, note: note ?? null, commit_message: commitMessage ?? null }).then((r) => r.data),
 
   // Re-drive a stalled run (worker died mid-graph, or a token-budget stop) from its
-  // checkpoint. Not for HITL gates. Optional `maxTotalTokens` raises the checkpointed cap
-  // before resuming (ADR 0025) — for a token-budget stall.
-  continueRun: (id: string, maxTotalTokens?: number) =>
-    http.post<RunResponse>(`/runs/${id}/continue`, maxTotalTokens != null ? { max_total_tokens: maxTotalTokens } : undefined).then((r) => r.data),
+  // checkpoint. Not for HITL gates. Optional `additionalTokens` ADDS that many tokens to the
+  // checkpointed cap before resuming (ADR 0025 amendment) — for a token-budget stall.
+  continueRun: (id: string, additionalTokens?: number) =>
+    http.post<RunResponse>(`/runs/${id}/continue`, additionalTokens != null ? { additional_tokens: additionalTokens } : undefined).then((r) => r.data),
 
   // Human verdict on a stalled run: close the case as FAILED ('Mark as failed').
   failRun: (id: string, note?: string) =>

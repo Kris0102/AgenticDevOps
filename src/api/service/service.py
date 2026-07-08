@@ -79,10 +79,10 @@ class RunAlreadyExistsError(RuntimeError):
 
 
 class InvalidTokenBudgetError(ValueError):
-    """A /continue request's `max_total_tokens` doesn't make sense against the run's
-    checkpointed state (ADR 0025) — no checkpointed Constraints to patch, or a cap at/below
-    tokens already spent (would just immediately re-trip `token_budget_exceeded` and
-    re-stall the instant the node re-enters)."""
+    """A /continue request's `additional_tokens` doesn't make sense against the run's
+    checkpointed state (ADR 0025) — no checkpointed Constraints to patch, a non-positive
+    amount, or a resulting cap at/below tokens already spent (would just immediately re-trip
+    `token_budget_exceeded` and re-stall the instant the node re-enters)."""
 
 
 class ProviderUnreachableError(RuntimeError):
@@ -210,18 +210,21 @@ class Service:
             self._active.discard(run_id)
             clear_context()
 
-    def raise_token_budget(self, run_id: str, new_max_total_tokens: int) -> None:
-        """Patch the checkpointed `Constraints.max_total_tokens` to a new (higher) cap
-        (ADR 0025): continuing a token-budget stall unchanged just immediately re-trips
-        `token_budget_exceeded` and re-stalls, so the human needs a way to actually raise
-        the cap before `/continue` re-drives. Called synchronously from the route BEFORE
-        `continue_run` is scheduled in the background, so a bad value 422s the HTTP request
-        instead of silently re-stalling inside the background task.
+    def raise_token_budget(self, run_id: str, additional_tokens: int) -> None:
+        """ADD `additional_tokens` to the checkpointed `Constraints.max_total_tokens` (ADR
+        0025 amendment — this is an INCREMENT, not a new absolute cap): continuing a
+        token-budget stall unchanged just immediately re-trips `token_budget_exceeded` and
+        re-stalls, so the human needs a way to actually raise the cap before `/continue`
+        re-drives. Called synchronously from the route BEFORE `continue_run` is scheduled in
+        the background, so a bad value 422s the HTTP request instead of silently re-stalling
+        inside the background task.
 
         Also mirrors the new cap onto the denormalized `runs.max_total_tokens` column (same
         precedent as `bootstrap_node._upsert_run_record` / `token_budget.record_usage`) so
         `RunResponseWithDetails`/the dashboard tile reflect it without waiting on another
         checkpoint write, and emits a durable audit event."""
+        if additional_tokens <= 0:
+            raise InvalidTokenBudgetError("additional_tokens must be a positive integer")
         snapshot = graph.get_state(self._config(run_id))
         values = snapshot.values or {}
         constraints = values.get("constraints")
@@ -229,11 +232,13 @@ class Service:
             raise InvalidTokenBudgetError(f"run {run_id} has no checkpointed constraints to patch")
         iteration = values.get("iteration")
         used = iteration.tokens_used_total if iteration else 0
+        old_max_total_tokens = constraints.max_total_tokens
+        new_max_total_tokens = (old_max_total_tokens or 0) + additional_tokens
         if new_max_total_tokens <= used:
             raise InvalidTokenBudgetError(
-                f"new cap ({new_max_total_tokens}) must be greater than tokens already used ({used})"
+                f"adding {additional_tokens} tokens brings the cap to {new_max_total_tokens}, "
+                f"still at/below tokens already used ({used}) — enter a larger amount"
             )
-        old_max_total_tokens = constraints.max_total_tokens
         patched = constraints.model_copy(update={"max_total_tokens": new_max_total_tokens})
         graph.update_state(self._config(run_id), {"constraints": patched})
         with db.session_scope() as session:
@@ -243,9 +248,11 @@ class Service:
             EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_TOKEN_BUDGET_RAISED, {
                 "old_max_total_tokens": old_max_total_tokens,
                 "new_max_total_tokens": new_max_total_tokens,
+                "additional_tokens": additional_tokens,
                 "tokens_used_total": used,
             })
-        _log.info("run.token_budget_raised", run_id=run_id, new_cap=new_max_total_tokens, used=used)
+        _log.info("run.token_budget_raised", run_id=run_id, new_cap=new_max_total_tokens,
+                  additional_tokens=additional_tokens, used=used)
 
     def continue_run(self, run_id: str) -> RunResponse:
         """Re-drive a STALLED run from its checkpoint. Used when the worker that was driving

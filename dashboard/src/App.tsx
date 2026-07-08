@@ -24,26 +24,32 @@ export default function App() {
   const [view, setView] = useState<View>('home')
   const [tab, setTab] = useState<Tab>('activity')
   const [continuing, setContinuing] = useState(false)
-  const [newCap, setNewCap] = useState('')
+  // Entered in thousands, same convention as the Settings "max tokens per run" field —
+  // "200" here means "+200,000 tokens". This ADDS to the current cap, it does not replace
+  // it (ADR 0025 amendment): a run capped at 200k that stalls and gets "200" entered again
+  // ends up with a 400k cap.
+  const [addTokensK, setAddTokensK] = useState('')
   const [capVersion, setCapVersion] = useState(0)
   const { run, error } = useRunStatus(runId)
   const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
   // A token-budget stall can't usefully be retried unchanged — it just re-trips the same
-  // check and re-stalls — so the new cap is mandatory for this stall kind (not for a plain
-  // transient/crash stall, where blank = retry unchanged).
+  // check and re-stalls — so an amount to add is mandatory for this stall kind (not for a
+  // plain transient/crash stall, where blank = retry unchanged).
   const capRequired = run?.stalled_kind === 'token_budget'
-  const capValid = !capRequired || (newCap.trim() !== '' && Number(newCap) > 0)
+  const addTokensKNum = Number(addTokensK.trim())
+  const addTokensValid = addTokensK.trim() !== '' && Number.isFinite(addTokensKNum) && addTokensKNum > 0
+  const capValid = !capRequired || addTokensValid
 
   const onContinue = async () => {
     if (!runId || !capValid) return
     setContinuing(true)
     try {
-      // blank = today's plain retry (no override); a value raises the checkpointed cap
-      // before resuming (ADR 0025) — required for a token-budget stall.
-      const cap = newCap.trim() === '' ? undefined : parseInt(newCap, 10)
-      await api.continueRun(runId, cap)   // poll picks up the transition to running/paused
-      if (cap != null) setCapVersion((v) => v + 1)   // let RunOverview refetch its cap immediately
-      setNewCap('')
+      // blank = today's plain retry (no override); a value ADDS to the checkpointed cap
+      // before resuming (ADR 0025 amendment) — required for a token-budget stall.
+      const additionalTokens = addTokensK.trim() === '' ? undefined : Math.round(addTokensKNum * 1000)
+      await api.continueRun(runId, additionalTokens)   // poll picks up the transition to running/paused
+      if (additionalTokens != null) setCapVersion((v) => v + 1)   // let RunOverview refetch its cap immediately
+      setAddTokensK('')
     } catch (e) {
       alert(String(e))
     } finally {
@@ -120,16 +126,19 @@ export default function App() {
               {run.stalled_reason && <div className="cb-reason">{run.stalled_reason}</div>}
               {run.stalled_kind === 'token_budget' && (
                 <label className="cb-cap">
-                  new token cap (required)
+                  tokens to add, in thousands (required) — adds to the current cap, e.g. 200 = +200,000
                   <input
-                    type="number" min={1} placeholder="required — new token cap"
-                    value={newCap} onChange={(e) => setNewCap(e.target.value)}
+                    type="number" min={1} step="1" placeholder="e.g. 200 = +200,000 tokens"
+                    value={addTokensK} onChange={(e) => setAddTokensK(e.target.value)}
                   />
+                  {addTokensK.trim() !== '' && !addTokensValid && (
+                    <span className="fld-error">enter a positive number (thousands of tokens)</span>
+                  )}
                 </label>
               )}
               <div className="cb-actions">
                 <button className="continue" disabled={continuing || !capValid} onClick={onContinue}>
-                  {continuing ? 'continuing…' : capRequired ? 'Raise cap & continue' : newCap.trim() !== '' ? 'Raise cap & continue' : 'Continue run'}
+                  {continuing ? 'continuing…' : capRequired ? 'Add tokens & continue' : addTokensK.trim() !== '' ? 'Add tokens & continue' : 'Continue run'}
                 </button>
                 <button className="giveup" disabled={continuing} onClick={onGiveUp} title="close the case — the run becomes terminal FAILED and can no longer be continued">
                   Mark as failed

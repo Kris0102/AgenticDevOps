@@ -114,6 +114,10 @@ function Meter({ value, max }: { value: number; max: number }) {
 
 const MICROTASK_DONE = new Set(['COMPLETED', 'DONE'])
 
+// Nodes that only ever run after the plan was approved — reaching any of them live
+// (via activeNode) proves the coding cycle has begun, even before its own events commit.
+const POST_PLAN_NODES = new Set<NodeId>(['coder', 'tester', 'reflector', 'deploy', 'push'])
+
 export function PipelineGraph({ runId, run, live }: { runId: string; run: RunResponse | null; live: boolean }) {
   // The node trail, derived from the event ACTOR stream (deduped consecutive).
   const [trail, setTrail] = useState<NodeId[]>([])
@@ -190,9 +194,14 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
   const mt = progress?.microtask ?? null
   const mtTotal = tasks.length
   const mtDone = tasks.filter((t) => MICROTASK_DONE.has(t.status)).length
-  // The plan cycle is done once the coder has ever run — proof the reviewer approved a
-  // plan and the run moved on (a reject just loops planner→reviewer again, coder never runs).
-  const planDone = visited.has('coder')
+  // The plan cycle is done once we've moved past the reviewer — proof the plan was
+  // approved and the run moved on (a reject just loops planner→reviewer again). Checked
+  // two ways: `activeNode` reacts the instant `run.status` flips to NEEDS_CODE (committed
+  // in the reviewer's own short transaction), so it flags this the moment coding STARTS;
+  // `visited.has('coder')` is the fallback for when activeNode is null (run completed) or
+  // parked at the hitl node (paused for the code/deploy gate) — by then the coder's own
+  // events have long since committed (its node already finished), so the trail has caught up.
+  const planDone = (activeNode !== null && POST_PLAN_NODES.has(activeNode)) || visited.has('coder')
   // What the plan cycle is doing RIGHT NOW, shown permanently alongside the pass count
   // (not only while iteration > 0) — plus a small completion note once it's done.
   const planStatus =
@@ -217,7 +226,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
           <div className="pp-body">
             {progress ? (
               <>
-                <span className="pp-label">planner cycle {planIter}{planStatus ? ` · ${planStatus}` : ''}</span>
+                <span className="pp-label">planner cycle: iteration {planIter}{planStatus ? ` · ${planStatus}` : ''}</span>
                 <span className="pp-meterrow">
                   <Meter value={planIter} max={planMax ?? 0} />
                 </span>

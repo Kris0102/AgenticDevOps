@@ -44,6 +44,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [tests, setTests] = useState<Record<string, ProviderTestResult>>({})
   const [reveal, setReveal] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch((e) => setError(String(e)))
@@ -113,15 +114,31 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         </label>
       )
     }
+    const scale = f.scale ?? 1
+    const displayVal = val == null ? '' : val / scale
     return (
-      <input
-        type="number" step={f.type === 'float' ? '0.1' : '1'} value={val ?? ''}
-        onChange={(e) => {
-          const raw = e.target.value
-          if (f.nullable && raw === '') { set(f.key, null); return }
-          set(f.key, f.type === 'float' ? parseFloat(raw) : parseInt(raw, 10))
-        }}
-      />
+      <div className="fld-numwrap">
+        <input
+          type="number" step={f.type === 'float' ? '0.1' : '1'} min={0} value={displayVal}
+          onChange={(e) => {
+            const raw = e.target.value
+            if (f.nullable && raw === '') {
+              set(f.key, null)
+              setFieldErrors((fe) => ({ ...fe, [f.key]: '' }))
+              return
+            }
+            const parsed = f.type === 'float' ? parseFloat(raw) : parseInt(raw, 10)
+            if (raw.trim() === '' || !Number.isFinite(parsed) || parsed < 0) {
+              setFieldErrors((fe) => ({ ...fe, [f.key]: 'enter a positive number' }))
+              return
+            }
+            setFieldErrors((fe) => ({ ...fe, [f.key]: '' }))
+            set(f.key, Math.round(parsed * scale))
+          }}
+        />
+        {scale > 1 && <span className="fld-unit">× 1,000 tokens — e.g. 200 = 200,000</span>}
+        {fieldErrors[f.key] && <span className="fld-error">{fieldErrors[f.key]}</span>}
+      </div>
     )
   }
 

@@ -111,6 +111,7 @@ def build_diagnosis_prompt(
     test_passed: bool,
     rejection_note: Optional[str] = None,
     synth_test_source: str = "",
+    prior_diagnoses_block: str = "",
 ) -> str:
     sections: List[str] = []
 
@@ -119,6 +120,12 @@ def build_diagnosis_prompt(
             "RE-REFLECTION NOTE (human rejected previous assessment — incorporate this):\n"
             f"{rejection_note}"
         )
+
+    # The reflector's own earlier diagnoses for THIS microtask (GH #61) — lets it
+    # recognize oscillation (a fix that undoes the previous fix) instead of
+    # flip-flopping blind across attempts.
+    if prior_diagnoses_block:
+        sections.append(prior_diagnoses_block)
 
     sections.append(
         f"MODE: {'QUALITY REVIEW' if test_passed else 'FAILURE DIAGNOSIS'} "
@@ -188,14 +195,25 @@ def build_diagnosis_prompt(
             "      - broken assertion / bad setup / wrong import in the test.\n"
             "    A self-computed expected value the Planner never supplied is the classic wrong-test\n"
             "    signal — do not send the Coder to break spec-correct code to satisfy it.\n"
+            "  • decision = \"blocked\" — NO code change can succeed because the demands CONTRADICT\n"
+            "    each other. Signals:\n"
+            "      - two checks (e.g. the repo's existing suite and a synthesized acceptance test)\n"
+            "        require mutually exclusive behaviour for the same input — every fix that\n"
+            "        satisfies one breaks the other, OR\n"
+            "      - your OWN prior diagnoses above oscillate: the fix you are about to prescribe\n"
+            "        undoes a fix you prescribed in an earlier attempt.\n"
+            "    Do NOT keep bouncing the Coder between two states — that burns the attempt budget\n"
+            "    on an unwinnable loop. On \"blocked\", root_cause must state the conflict in plain\n"
+            "    language naming BOTH requirements and the input where they collide, so a human can\n"
+            "    decide which one wins.\n"
             "  Prefer \"code\" when genuinely unsure; the test-resynthesis budget is small.\n\n"
             "Respond ONLY with valid JSON (no markdown fences, no extra keys):\n"
             "{\n"
-            '  "decision": "improve",\n'
-            '  "fix_target": "code" or "test",\n'
-            '  "failure_type": "<import_error | assertion_error | missing_implementation | logic_error | type_error | other>",\n'
-            '  "root_cause": "<precise technical explanation — name file, function, line>",\n'
-            '  "fix_instructions": "<for fix_target=code: what the Coder must change; for fix_target=test: what the test asserted wrongly and the correct expectation>",\n'
+            '  "decision": "improve" or "blocked",\n'
+            '  "fix_target": "code" or "test" (ignored when decision="blocked"),\n'
+            '  "failure_type": "<import_error | assertion_error | missing_implementation | logic_error | type_error | requirements_conflict | other>",\n'
+            '  "root_cause": "<precise technical explanation — name file, function, line; for blocked: the conflicting requirements and the colliding input>",\n'
+            '  "fix_instructions": "<for fix_target=code: what the Coder must change; for fix_target=test: what the test asserted wrongly and the correct expectation; for blocked: the question a human must answer>",\n'
             '  "quality_notes": "",\n'
             '  "should_store_in_semantic_memory": <true if reusable anti-pattern>\n'
             "}"

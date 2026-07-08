@@ -69,6 +69,7 @@ class EventType(str, Enum):
     SANDBOX_CREATED = "sandbox.created"
     RUN_COMPLETED = "run.completed"
     GITOPS_PUSHED = "gitops.pushed"
+    GITOPS_PR_CREATED = "gitops.pr_created"
     GITOPS_SECRET_BLOCKED = "gitops.secret_blocked"
     RUN_FAILED = "run.failed"
     RUN_STALLED = "run.stalled"
@@ -193,6 +194,10 @@ class RunDefaults(BaseModel):
     # Destroy the run's Docker sandbox once it reaches a TERMINAL state (completed/failed).
     # Never fires for a stalled run — its container must survive for /continue.
     teardown_on_terminal: bool = False
+    # After a successful deploy push, open a GitHub PR (pushed branch → the run's base
+    # branch) with a deterministically generated description. Read live at deploy time
+    # (like teardown_on_terminal). A PR failure never fails a run whose push succeeded.
+    auto_create_pr: bool = False
 
 
 class AppSettings(BaseModel):
@@ -481,6 +486,11 @@ class BlackboardState(TypedDict):
     # REFLECTOR_MAX_TEST_RESYNTH the reflector forces the code path. Reset by the coder.
     test_resynth_count: int
 
+    # Commit message for the deploy push. Seeded from RunRequest.commit_message at run
+    # creation; overwritten by a message entered at the deploy HITL gate (approve
+    # payload). None/blank → "AgenticDevOps run <run_id>". Read by DeployRunner. ADR 0027.
+    deploy_commit_message: Optional[str]
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -497,6 +507,7 @@ def create_initial_blackboard_state(
     hitl: HITL,
     config: Optional[RunConfig] = None,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
+    deploy_commit_message: Optional[str] = None,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
     now = _utc_now_iso()
@@ -539,4 +550,5 @@ def create_initial_blackboard_state(
         test_rejection_note=None,
         last_test_output_path=None,
         test_resynth_count=0,
+        deploy_commit_message=deploy_commit_message,
     )

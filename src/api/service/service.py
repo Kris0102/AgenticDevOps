@@ -171,6 +171,7 @@ class Service:
                 hitl=request.hitl,
                 config=config or resolve_run_config(override=request.llm),
                 status=RunStatus.NEEDS_BOOTSTRAP,
+                deploy_commit_message=request.commit_message,
             )
             bootstrap = self._bootstrap(run_id, state)
             if bootstrap.get("status") == RunStatus.FAILED:
@@ -310,6 +311,12 @@ class Service:
             prompt=payload.get("prompt", ""),
             plan=self._plan_view(state) if phase == Phase.PLAN.value else None,
             diff=self._gate_diff(phase, state),
+            # Deploy gate: the message the push WOULD use (per-run value or default),
+            # so the UI can prefill its editable commit-message input (ADR 0027).
+            deploy_commit_message=(
+                (state.get("deploy_commit_message") or "").strip()
+                or f"AgenticDevOps run {run_id}"
+            ) if phase == Phase.DEPLOY.value else None,
         )
 
     def is_paused(self, run_id: str) -> bool:

@@ -61,3 +61,4 @@ What this makes easier, harder, or newly possible. What it costs.
 | [0013](0013-control-api-and-dashboard-backend.md) | Control API + dashboard backend: HITL over HTTP, review context (plan/diff), live logs via structlog→SSE, history via `events.seq`; right-sized to self-hosted single-user | accepted |
 | [0025](0025-token-limits-and-usage-tracking.md) | Token usage tracking, a global per-run token budget that stalls (not fails) the run on exhaustion, dashboard surfacing (`RunOverview` tile, raise-cap-and-continue), and per-agent/per-microtask token breakdowns | accepted |
 | [0026](0026-stalled-time-excluded-from-duration.md) | Exclude STALLED time from the displayed run duration/Gantt via paired `run.stalled`/`run.resumed` events | accepted |
+| [0027](0027-deploy-commit-message-and-auto-pr.md) | Deploy commit message (gate › per-run › default) + `auto_create_pr` setting with real GitHub PR creation and deterministic PR body | accepted |

@@ -24,6 +24,9 @@ class RunRequest(BaseModel):
     # Per-run LLM override (settings hub). None → the global selected model. Caps/gates are
     # already carried by `constraints`/`hitl`, pre-filled from global defaults by the UI.
     llm: Optional[LLMConfig] = None
+    # Optional commit message for the eventual deploy push. Overridable at the deploy
+    # HITL gate; blank/None → "AgenticDevOps run <run_id>". ADR 0027.
+    commit_message: Optional[str] = None
 
     @model_validator(mode="after")
     def _exactly_one_repo_source(self) -> "RunRequest":

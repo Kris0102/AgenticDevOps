@@ -56,4 +56,6 @@ SETTINGS_SCHEMA = [
      "description": "Which phases pause for human approval by default (plan / code / deploy). Overridable per run."},
     {"key": "defaults.teardown_on_terminal", "label": "Tear down sandbox when run ends", "type": "bool", "group": "expert",
      "description": "Destroy the run's Docker container once the run is terminal (completed or failed). A STALLED run always keeps its container so it can be continued."},
+    {"key": "defaults.auto_create_pr", "label": "Auto-create pull request", "type": "bool", "group": "expert",
+     "description": "After a successful deploy push, automatically open a GitHub pull request (pushed branch → the run's base branch) with a generated description (objective + microtasks + changed files). Needs a token with pull-request permission; a PR failure is logged in the run's events but never fails the run."},
 ]

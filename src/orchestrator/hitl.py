@@ -71,6 +71,9 @@ class HitlResume(BaseModel):
     decision: HitlDecision
     note: Optional[str] = None
     reviewer: str = "cli-user"
+    # Only meaningful on APPROVE of the deploy gate: overrides the run's commit
+    # message for the push (ADR 0027). Ignored on every other gate and on reject.
+    commit_message: Optional[str] = None
 
 class HitlGate:
     """Single code path for every mid-run Human-In-The-Loop checkpoint.
@@ -212,7 +215,11 @@ class HitlGate:
             if reflection_output_path:
                 prompt += f"\nReflection output file: {reflection_output_path}"
         elif phase == "deploy":
-            prompt = "Approve to push to the branch and create a PR. Reject to end the run without deploying (no note required)."
+            prompt = (
+                "Approve to push to the branch (a commit message may be supplied with the "
+                "approval — it overrides the run's default). Reject to end the run without "
+                "deploying (no note required)."
+            )
         else:
             prompt = f"Approve or reject the '{phase}' phase. Reject requires a note."
 
@@ -242,7 +249,7 @@ class HitlGate:
                 triggers = gate.trigger if isinstance(gate.trigger, tuple) else (gate.trigger,)
                 next_status = triggers[0]
             resolved = ApprovalStatus.APPROVED
-            feedback: Dict[str, Any] = {}
+            feedback = HitlGate._approve_payload(phase, decision)
         else:
             next_status = gate.reject
             resolved = ApprovalStatus.REJECTED
@@ -265,11 +272,21 @@ class HitlGate:
             "decision": decision.decision.value,
             "reviewer": decision.reviewer,
             "notes": decision.note,
+            "commit_message": decision.commit_message,
         })
 
         return {"status": next_status, "hitl": new_hitl, **feedback}
 
     # --------------------------------------------------------- feedback routing
+
+    @staticmethod
+    def _approve_payload(phase: Phase, decision: HitlResume) -> Dict[str, Any]:
+        """Approve-side state channel (mirror of _write_feedback on reject): the deploy
+        gate may carry a commit message for the push (ADR 0027). Other gates carry
+        nothing on approve."""
+        if phase == Phase.DEPLOY and decision.commit_message and decision.commit_message.strip():
+            return {"deploy_commit_message": decision.commit_message.strip()}
+        return {}
 
     @staticmethod
     def _plan_file_ref(state: BlackboardState) -> Optional[str]:

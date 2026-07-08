@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type EventView, type MicrotaskRow, type RunResponseWithDetails } from '../api'
+import { api, type EventView, type MicrotaskRow, type PipelineProgress, type RunResponseWithDetails } from '../api'
 
 // "What happened in this run" at a glance, built ONLY from durable tables (events +
 // microtasks) — so it's just as rich for a run finished last week as for a live one.
@@ -89,7 +89,7 @@ function buildPhases(events: EventView[]): PhaseSeg[] {
   return total > 0 ? raw.map((s) => ({ ...s, pct: (s.ms / total) * 100 })) : []
 }
 
-export function RunOverview({ runId, live, capVersion }: { runId: string; live: boolean; capVersion?: number }) {
+export function RunOverview({ runId, live, capVersion, progress }: { runId: string; live: boolean; capVersion?: number; progress?: PipelineProgress | null }) {
   const [events, setEvents] = useState<EventView[]>([])
   const [tasks, setTasks] = useState<MicrotaskRow[]>([])
   const [info, setInfo] = useState<RunResponseWithDetails | null>(null)
@@ -176,6 +176,9 @@ export function RunOverview({ runId, live, capVersion }: { runId: string; live: 
   // The microtask being worked RIGHT NOW (coder/tester/reflector loop) — most
   // recently-updated non-terminal task; the board is idx-ordered so pick IN_PROGRESS first.
   const current = live ? tasks.find((t) => t.status === 'IN_PROGRESS') ?? null : null
+  // Attempt cap for the "now working on" denominator — from the checkpoint-derived
+  // progress prop (ADR 0028), matched by idx in case it lags the durable board by a beat.
+  const maxAttempts = current && progress?.microtask?.idx === current.idx ? progress.microtask.max_attempts : null
   const planDrafts = stats.planDrafts
 
   return (
@@ -236,9 +239,9 @@ export function RunOverview({ runId, live, capVersion }: { runId: string; live: 
         <div className="nowworking">
           <span className="nw-pulse" aria-hidden>●</span>
           <span className="nw-label">working on</span>
-          <span className="nw-idx">#{current.idx}</span>
+          <span className="nw-idx">#{current.idx}{tasks.length ? `/${tasks.length}` : ''}</span>
           <span className="nw-title" title={current.title}>{current.title}</span>
-          <span className="nw-attempt">attempt {Math.max(current.attempts, 1)}</span>
+          <span className="nw-attempt">attempt {Math.max(current.attempts, 1)}{maxAttempts ? `/${maxAttempts}` : ''}</span>
         </div>
       )}
 

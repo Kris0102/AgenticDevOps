@@ -8,6 +8,25 @@ import axios, { AxiosError } from 'axios'
 
 export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'stalled'
 
+// One microtask's position + attempt count while the coder/tester/reflector loop is
+// actively working it. Mirrors responses.MicrotaskProgress (ADR 0028).
+export interface MicrotaskProgress {
+  idx: number
+  total: number
+  title: string
+  status: string
+  attempts: number
+  max_attempts: number
+}
+
+// Planner-loop / microtask-loop iteration counts read off the checkpoint. Mirrors
+// responses.PipelineProgress (ADR 0028).
+export interface PipelineProgress {
+  planner_reviewer_iteration: number
+  planner_reviewer_max: number
+  microtask?: MicrotaskProgress | null
+}
+
 export interface RunResponse {
   run_id: string
   run_state: RunState
@@ -17,6 +36,7 @@ export interface RunResponse {
   stalled_reason?: string | null   // transient-error / crash reason when run_state === 'stalled'
   stalled_kind?: 'token_budget' | 'transient' | string | null   // cause of the stall (ADR 0025)
   failure_reason?: string | null   // run.failed reason when run_state === 'failed'
+  progress?: PipelineProgress | null   // iteration/microtask-loop progress (ADR 0028)
 }
 
 // A run row for the previous-runs home list (GET /runs). Extra fields are the box's

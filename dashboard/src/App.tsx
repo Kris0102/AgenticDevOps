@@ -147,7 +147,7 @@ export default function App() {
             />
           )}
 
-          <RunOverview runId={runId} live={!terminal} capVersion={capVersion} />
+          <RunOverview runId={runId} live={!terminal} capVersion={capVersion} progress={run?.progress} />
 
           <TokensByAgent runId={runId} live={!terminal} />
 

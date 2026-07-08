@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type EventView, type RunResponse } from '../api'
+import { api, type EventView, type MicrotaskRow, type RunResponse } from '../api'
 
 // Live pipeline map: the real LangGraph topology with the CURRENT node pulsing and the
 // path the run has taken lit up. Derived from durable data only — `run.status` (polled)
@@ -93,9 +93,44 @@ function nodeOf(e: EventView): NodeId | null {
   return ACTOR_NODE[e.actor] ?? null   // orchestrator/db actors = routing noise, skipped
 }
 
+// Capacity meter: `max` segments, `value` of them lit. Reads as "how much headroom is
+// left before the cap", not a fraction/target — the ambiguity a plain "1 / 6" has (looks
+// like 6 is the goal, when it's actually the hard limit the run fails at). Falls back to
+// text for caps too large to render as dots (a user-configured Constraints value).
+function Meter({ value, max }: { value: number; max: number }) {
+  if (max <= 0 || max > 12) return <span className="pp-cap">max {max}</span>
+  const filled = Math.min(Math.max(value, 0), max)
+  return (
+    <>
+      <span className="pp-meter" aria-hidden>
+        {Array.from({ length: max }, (_, i) => (
+          <span key={i} className={`pp-seg ${i < filled ? 'on' : ''}`} />
+        ))}
+      </span>
+      <span className="pp-cap">max {max}</span>
+    </>
+  )
+}
+
+const MICROTASK_DONE = new Set(['COMPLETED', 'DONE'])
+
 export function PipelineGraph({ runId, run, live }: { runId: string; run: RunResponse | null; live: boolean }) {
   // The node trail, derived from the event ACTOR stream (deduped consecutive).
   const [trail, setTrail] = useState<NodeId[]>([])
+  // Durable microtask board (not the checkpoint) — the fallback source once no microtask
+  // is in-flight (`progress.microtask` is only ever the CURRENT one), so a finished run
+  // still shows "N/M microtasks completed" instead of a stale "in progress" placeholder.
+  const [tasks, setTasks] = useState<MicrotaskRow[]>([])
+
+  useEffect(() => {
+    let alive = true
+    const load = () => api.getMicrotasks(runId).then((mts) => { if (alive) setTasks(mts) }).catch(() => {})
+    setTasks([])
+    load()
+    if (!live) return () => { alive = false }
+    const t = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [runId, live])
 
   useEffect(() => {
     let alive = true
@@ -149,6 +184,24 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
     return 'idle'
   }
 
+  const progress = run?.progress ?? null
+  const planIter = progress?.planner_reviewer_iteration ?? 0
+  const planMax = progress?.planner_reviewer_max ?? null
+  const mt = progress?.microtask ?? null
+  const mtTotal = tasks.length
+  const mtDone = tasks.filter((t) => MICROTASK_DONE.has(t.status)).length
+  // The plan cycle is done once the coder has ever run — proof the reviewer approved a
+  // plan and the run moved on (a reject just loops planner→reviewer again, coder never runs).
+  const planDone = visited.has('coder')
+  // What the plan cycle is doing RIGHT NOW, shown permanently alongside the pass count
+  // (not only while iteration > 0) — plus a small completion note once it's done.
+  const planStatus =
+    activeNode === 'planner' ? 'planner drafting'
+    : activeNode === 'reviewer' ? 'reviewer reviewing'
+    : (run?.run_state === 'paused_hitl' && run.hitl_phase === 'plan') ? 'awaiting human review'
+    : planDone ? 'plan approved ✓'
+    : null
+
   return (
     <div className="panel pipeline">
       <div className="pl-head">
@@ -157,6 +210,48 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
           {done ? '✓ completed' : failed ? '✗ failed' : activeNode ? `● ${NODES.find((n) => n.id === activeNode)?.label ?? ''}` : ''}
         </span>
       </div>
+
+      <div className="pl-progress">
+        <div className="pp-item pp-plan" title="planner ⇄ reviewer passes — the cap is the hard limit the run fails at, not a target">
+          <span className="pp-ico" aria-hidden>▤</span>
+          <div className="pp-body">
+            {progress ? (
+              <>
+                <span className="pp-label">planner cycle {planIter}{planStatus ? ` · ${planStatus}` : ''}</span>
+                <span className="pp-meterrow">
+                  <Meter value={planIter} max={planMax ?? 0} />
+                </span>
+              </>
+            ) : (
+              <span className="pp-label pp-dim">plan cycle not started yet</span>
+            )}
+          </div>
+        </div>
+
+        <div className={`pp-item pp-microtask ${mt || mtTotal > 0 ? '' : 'pp-empty'}`} title="coder ⇄ tester ⇄ reflector loop">
+          <span className="pp-ico" aria-hidden>◧</span>
+          <div className="pp-body">
+            {mt ? (
+              <>
+                <span className="pp-label">microtask #{mt.idx} of {mt.total} — attempt {mt.attempts}</span>
+                <span className="pp-meterrow">
+                  <Meter value={mt.attempts} max={mt.max_attempts} />
+                </span>
+              </>
+            ) : mtTotal > 0 ? (
+              <>
+                <span className="pp-label">{mtDone}/{mtTotal} microtasks completed</span>
+                <span className="pp-subline">
+                  {tasks.map((t) => `#${t.idx} ${t.attempts} attempt${t.attempts === 1 ? '' : 's'}`).join('  ·  ')}
+                </span>
+              </>
+            ) : (
+              <span className="pp-label pp-dim">no microtasks have been created yet</span>
+            )}
+          </div>
+        </div>
+      </div>
+
       <svg viewBox="0 0 1020 300" className="plsvg" role="img" aria-label="run pipeline graph">
         <defs>
           <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">

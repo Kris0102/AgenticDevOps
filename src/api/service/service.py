@@ -19,8 +19,10 @@ from api.responses.responses import (
     HitlReviewContext,
     LessonView,
     LogView,
+    MicrotaskProgress,
     MicrotaskRow,
     MicrotaskView,
+    PipelineProgress,
     PlanView,
     RepoView,
     RunExportBundle,
@@ -50,6 +52,7 @@ from orchestrator.state import (
     AppSettings,
     BlackboardState,
     EventType,
+    MicrotaskStatus,
     RunConfig,
     RunStatus,
     Repo,
@@ -867,7 +870,8 @@ class Service:
 
     def _response(self, run_id: str) -> RunResponse:
         snapshot = graph.get_state(self._config(run_id))
-        status = snapshot.values.get("status") if snapshot.values else None
+        values = snapshot.values or {}
+        status = values.get("status")
         pending = self._pending_payload(run_id)
         state = self._derive_state(status, pending, self.is_active(run_id))
         if state == RunState.STALLED and self._db_status(run_id) == RunStatus.FAILED.value:
@@ -888,6 +892,47 @@ class Service:
             stalled_kind=stall_payload.get("kind") if stall_payload else None,
             # Only for a failed run: the run.failed reason — the dashboard's error banner.
             failure_reason=fail_payload.get("reason") if fail_payload else None,
+            progress=self._progress(values),
+        )
+
+    # `Microtask.status` values that mean "the coder/tester/reflector loop is actively
+    # working this one right now" — mirrors the fallback pick used by the reflector/
+    # tester nodes themselves (reflector_node.py:_select_microtask, tester_node.py).
+    _IN_FLIGHT_MICROTASK_STATUSES = (MicrotaskStatus.IN_PROGRESS, MicrotaskStatus.EXECUTING, MicrotaskStatus.VERIFYING)
+
+    @classmethod
+    def _progress(cls, state: dict) -> Optional[PipelineProgress]:
+        """Planner-loop / microtask-loop iteration counts read straight off the
+        checkpoint (ADR 0028) — no DB read, no new columns. None before the graph
+        has produced Iteration/Constraints state (e.g. mid-bootstrap)."""
+        iteration = state.get("iteration")
+        constraints = state.get("constraints")
+        if iteration is None or constraints is None:
+            return None
+        microtasks = state.get("microtasks") or []
+        current_id = state.get("current_microtask_id")
+        by_id = {mt.microtask_id: mt for mt in microtasks}
+        current = by_id.get(current_id) if current_id else None
+        if current is None:
+            current = next(
+                (mt for mt in sorted(microtasks, key=lambda m: m.idx)
+                 if mt.status in cls._IN_FLIGHT_MICROTASK_STATUSES),
+                None,
+            )
+        microtask_progress = None
+        if current is not None:
+            microtask_progress = MicrotaskProgress(
+                idx=current.idx,
+                total=len(microtasks),
+                title=current.title,
+                status=current.status.value,
+                attempts=current.attempts,
+                max_attempts=current.max_attempts or constraints.max_microtask_attempts,
+            )
+        return PipelineProgress(
+            planner_reviewer_iteration=iteration.planner_reviewer_iteration_current,
+            planner_reviewer_max=constraints.max_total_iterations,
+            microtask=microtask_progress,
         )
 
     @staticmethod

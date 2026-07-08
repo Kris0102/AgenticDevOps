@@ -63,6 +63,27 @@ class RunState(str, Enum):
     STALLED = "stalled"
 
 
+class MicrotaskProgress(BaseModel):
+    """The microtask currently being worked by the coder/tester/reflector loop —
+    its position among all microtasks and its attempt count against the cap. See
+    ADR 0028."""
+    idx: int
+    total: int
+    title: str
+    status: str
+    attempts: int
+    max_attempts: int
+
+
+class PipelineProgress(BaseModel):
+    """Iteration counters read straight off the checkpointed `Iteration`/`Microtask`
+    state (ADR 0028) — lets the dashboard show "review pass N" and "microtask #i/N,
+    attempt a/b" instead of guessing a coarse phase from the raw status string."""
+    planner_reviewer_iteration: int
+    planner_reviewer_max: int
+    microtask: Optional[MicrotaskProgress] = None
+
+
 class RunResponse(BaseModel):
     run_id: str
     run_state: RunState
@@ -82,6 +103,9 @@ class RunResponse(BaseModel):
     # set only when run_state == failed — the run.failed reason, so the dashboard can
     # say WHY instead of just showing a red badge.
     failure_reason: Optional[str] = None
+    # planner-loop / microtask-loop iteration counts, sourced from the checkpoint —
+    # None before the graph has produced any Iteration/Microtask state yet (ADR 0028).
+    progress: Optional[PipelineProgress] = None
 
 class RunResponseWithDetails(RunResponse):
     """A run row for the dashboard's previous-runs list. Everything the run-box needs as

@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -242,9 +242,11 @@ class Planner:
             )
             # Since we use `.with_structured_output`, we can just invoke it with the prompt.
             try:
-                raw = self.structured_llm.invoke(
+                # include_raw=True → invoke returns a {"raw","parsing_error","parsed"} dict at
+                # runtime; the Runnable stub types it as the model, so cast to what it actually is.
+                raw = cast(Dict[str, Any], self.structured_llm.invoke(
                     [HumanMessage(content=synthesis_prompt)],
-                )
+                ))
                 if raw.get("raw") is not None:
                     self.token_usage = self.token_usage + sum_usage([raw["raw"]])
                 if raw.get("parsing_error"):

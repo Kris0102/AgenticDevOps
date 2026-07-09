@@ -2,6 +2,11 @@ import shlex
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from agents.tool_output import (
+    MAX_FILE_READ_CHARS,
+    MAX_TOOL_OUTPUT_CHARS,
+    truncate_for_llm,
+)
 from tool_gateway.gateway import ToolGateway
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
@@ -48,7 +53,7 @@ class CoderTools:
         )
 
         diff_tool = StructuredTool.from_function(
-            func=self.get_repo_diff,
+            func=self.get_repo_diff_for_llm,
             name="get_repo_diff",
             description=(
                 "Return the git diff of all changes made so far in the repo "
@@ -77,7 +82,9 @@ class CoderTools:
         )
         if "error" in result:
             return result["error"]
-        return result.get("content", "Empty file or could not read.")
+        return truncate_for_llm(
+            result.get("content", "Empty file or could not read."), MAX_FILE_READ_CHARS
+        )
 
     def write_sandbox_file(self, filepath: str, content: str) -> str:
         result = self.gateway.execute_tool(
@@ -107,6 +114,12 @@ class CoderTools:
             return result["error"]
         return result.get("diff", "")
 
+    def get_repo_diff_for_llm(self) -> str:
+        """LLM-facing diff wrapper — capped so a large diff doesn't bloat the ReAct loop
+        (the model only needs to confirm its edits landed). The runner keeps calling the raw
+        `get_repo_diff` for deterministic emptiness/verification."""
+        return truncate_for_llm(self.get_repo_diff(), MAX_TOOL_OUTPUT_CHARS)
+
     def run(self, argv: list[str], timeout_s: int = 60) -> dict:
         """Raw allowlisted sandbox command — returns the gateway result dict
         (exit_code/stdout/stderr). Used by the deterministic compile gate; the
@@ -126,4 +139,6 @@ class CoderTools:
         )
         if "error" in result:
             return result["error"]
-        return f"Exit Code: {result.get('exit_code')}\nSTDOUT:\n{result.get('stdout')}\nSTDERR:\n{result.get('stderr')}"
+        stdout = truncate_for_llm(result.get("stdout") or "")
+        stderr = truncate_for_llm(result.get("stderr") or "")
+        return f"Exit Code: {result.get('exit_code')}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"

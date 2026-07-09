@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -233,7 +233,9 @@ class Reviewer:
             prompt = f"{lessons_block}\n\n{prompt}"
 
         try:
-            raw = self.structured_llm.invoke([HumanMessage(content=prompt)])
+            # include_raw=True → invoke returns a {"raw","parsing_error","parsed"} dict at
+            # runtime; the Runnable stub types it as the model, so cast to what it actually is.
+            raw = cast(Dict[str, Any], self.structured_llm.invoke([HumanMessage(content=prompt)]))
             if raw.get("raw") is not None:
                 self.token_usage = self.token_usage + sum_usage([raw["raw"]])
             if raw.get("parsing_error"):

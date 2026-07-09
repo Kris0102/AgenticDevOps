@@ -2,6 +2,10 @@ import shlex
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from agents.tool_output import (
+    MAX_FILE_READ_CHARS,
+    truncate_for_llm,
+)
 from tool_gateway.gateway import ToolGateway
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
@@ -60,7 +64,9 @@ class PlannerTools:
         )
         if "error" in result:
             return result["error"]
-        return f"Exit Code: {result.get('exit_code')}\nSTDOUT:\n{result.get('stdout')}\nSTDERR:\n{result.get('stderr')}"
+        stdout = truncate_for_llm(result.get("stdout") or "")
+        stderr = truncate_for_llm(result.get("stderr") or "")
+        return f"Exit Code: {result.get('exit_code')}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
 
     def read_sandbox_file(self, filepath: str) -> str:
         if not self.gateway:
@@ -76,7 +82,9 @@ class PlannerTools:
         if "error" in result:
             return result["error"]
 
-        return result.get("content", "Empty file or could not read.")
+        return truncate_for_llm(
+            result.get("content", "Empty file or could not read."), MAX_FILE_READ_CHARS
+        )
 
     def semantic_search(self, query: str, top_k: int = 8) -> str:
         if not self.gateway:

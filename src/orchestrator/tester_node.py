@@ -100,7 +100,7 @@ class TesterRunner:
             # never reach the graph's node-result dict
             token_usage = result.pop("_token_usage", None)
             updated_iteration = record_usage(
-                db_session, self.run_id, self.name, iteration, token_usage, config.llm.model,
+                db_session, self.run_id, self.name, iteration, token_usage, config.llm.tester.model,
                 microtask_id=microtask.microtask_id,
             ) if token_usage else iteration
 

@@ -114,8 +114,8 @@ class Planner:
         self.run_id = run_id
         self.tools = list(tools or [])
         # make run config mandatory. Fallback only in the nodes!
-        self.config = config 
-        knobs = self.config.knobs
+        self.llm_config = config.llm.planner 
+        knobs = config.knobs
         self.max_tool_steps = knobs.planner_max_tool_steps
         self.max_synthesis_attempts = knobs.planner_max_synthesis_attempts
         self.name = Roles.PLANNER.value
@@ -123,7 +123,7 @@ class Planner:
         self.token_usage = TokenUsage()
 
         try:
-            self.llm = build_chat_llm(self.config.provider, self.config.llm,
+            self.llm = build_chat_llm(config.provider_for(self.llm_config), self.llm_config,
                                       timeout_seconds=self.timeout_seconds)
 
             # Enforce structured output at the end of the pipeline. include_raw=True so the

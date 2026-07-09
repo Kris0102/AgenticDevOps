@@ -140,11 +140,24 @@ class Service:
         provider before anything starts. Raises ProviderUnreachableError on a dead/mis-keyed
         provider so the route can reject with the reason — no run is created. Fail fast."""
         config = resolve_run_config(override=request.llm)
-        result = health_check(config.provider, config.llm)
-        if not result.ok:
-            raise ProviderUnreachableError(result.kind or "unreachable", result.reason or "provider unreachable")
-        _log.info("run.preflight_ok", provider=config.provider.id, model=config.llm.model,
-                  latency_ms=result.latency_ms)
+        # Per-agent models (GH #71): probe every DISTINCT (provider, model) pair actually
+        # used, deduped — a mis-keyed provider on ANY agent must fail fast before a run
+        # is created, not mid-run on the first agent that touches it.
+        seen: set = set()
+        for agent in config.llm.agents():
+            key = (agent.provider_id, agent.model)
+            if key in seen:
+                continue
+            seen.add(key)
+            provider = config.provider_for(agent)
+            result = health_check(provider, agent)
+            if not result.ok:
+                raise ProviderUnreachableError(
+                    result.kind or "unreachable",
+                    f"{agent.name} provider '{agent.provider_id}' ({agent.model}): "
+                    f"{result.reason or 'provider unreachable'}")
+            _log.info("run.preflight_ok", agent=agent.name, provider=agent.provider_id,
+                      model=agent.model, latency_ms=result.latency_ms)
         return config
 
     # --------------------------------------------------------------- public API
@@ -473,9 +486,9 @@ class Service:
         provider = SettingsStore.provider(settings, provider_id)
         if provider is None:
             return {"ok": False, "reason": f"provider '{provider_id}' not found", "kind": "config"}
-        model = provider.models[0] if provider.models else settings.selected.model
-        from orchestrator.state import LLMConfig
-        llm = LLMConfig(provider_id=provider_id, model=model)
+        model = provider.models[0] if provider.models else settings.selected.planner.model
+        from orchestrator.state import ProbeLLMConfig
+        llm = ProbeLLMConfig(provider_id=provider_id, model=model)
         result = health_check(provider, llm)
         out = {"ok": result.ok, "latency_ms": result.latency_ms, "reason": result.reason, "kind": result.kind}
         if result.ok:

@@ -5,6 +5,9 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field, field_validator
 from langchain_core.messages import AnyMessage
+from abc import ABC 
+
+from tool_gateway.Roles import Roles
 
 
 class Phase(str, Enum):
@@ -152,15 +155,28 @@ class ProviderProfile(BaseModel):
     # unencrypted, returned unmasked). Unknown params 400 on strict endpoints —
     # verify via the provider's Test connection button.
     extra_request_params: Dict[str, Any] = Field(default_factory=dict)
-
-
-class LLMConfig(BaseModel):
-    """The selected model + generation knobs for a run. `provider_id` points at a
-    ProviderProfile that supplies base_url/api_key."""
+   
+class BaseLLMConfig(BaseModel, ABC):
+    name: str   
     provider_id: str
     model: str
     temperature: float = 0.0
-    max_retries: int = 3
+    max_retries: int = 3 
+    
+class PlannerLLMConfig(BaseLLMConfig):
+    name: str = Roles.PLANNER.value
+class ReviewerLLMConfig(BaseLLMConfig):
+    name: str = Roles.REVIEWER.value
+class CoderLLMConfig(BaseLLMConfig):
+    name: str = Roles.CODER.value
+class TesterLLMConfig(BaseLLMConfig):
+    name: str = Roles.TESTER.value
+class ReflectorLLMConfig(BaseLLMConfig):
+    name: str = Roles.REFLECTOR.value
+class ProbeLLMConfig(BaseLLMConfig):
+    # Not a graph agent — a concrete BaseLLMConfig for one-off provider probes
+    # (Settings 'Test connection', cache probe). Carries provider_id/model only.
+    name: str = "probe"
 
 
 class Knobs(BaseModel):
@@ -181,13 +197,38 @@ class Knobs(BaseModel):
     reflector_timeout_seconds: int = 120
     reflector_max_test_resynth: int = 2
 
+class LLMConfig(BaseModel):
+    """Per-agent model selection for a run (GH #71). Each agent carries its own
+    `provider_id` + `model`, so cheap models can run investigation (planner/reviewer/tester)
+    while the Coder gets a stronger one. Each `provider_id` references a ProviderProfile that
+    supplies base_url/api_key — many agents may point at the same provider (one key)."""
+    planner: PlannerLLMConfig
+    reviewer: ReviewerLLMConfig
+    coder: CoderLLMConfig
+    tester: TesterLLMConfig
+    reflector: ReflectorLLMConfig
+
+    def agents(self) -> List[BaseLLMConfig]:
+        """The five per-agent selections, in graph order."""
+        return [self.planner, self.reviewer, self.coder, self.tester, self.reflector]
 
 class RunConfig(BaseModel):
-    """The effective, resolved config a run executes under — llm (+ its provider) and knobs.
-    Built once at run creation and stored on the blackboard (`state["config"]`)."""
+    """The effective, resolved config a run executes under — per-agent `llm` selections, the
+    ProviderProfiles those selections reference (by id), and `knobs`. Built once at run
+    creation and stored on the blackboard (`state["config"]`). `providers` holds only the
+    DISTINCT providers actually referenced (one entry per id — shared providers aren't
+    duplicated); an agent resolves its own via `provider_for`."""
     llm: LLMConfig
-    provider: ProviderProfile        # resolved from llm.provider_id — carries base_url/key
+    providers: Dict[str, ProviderProfile]   # by provider id — carries base_url/key
     knobs: Knobs = Field(default_factory=Knobs)
+
+    def provider_for(self, llm: BaseLLMConfig) -> ProviderProfile:
+        """The ProviderProfile a given per-agent selection runs on. Raises if the run was
+        built without that provider (resolve_run_config validates this up front)."""
+        provider = self.providers.get(llm.provider_id)
+        if provider is None:
+            raise ValueError(f"provider '{llm.provider_id}' not resolved for this run")
+        return provider
 
 
 class RunDefaults(BaseModel):

@@ -19,14 +19,14 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
 from observability import Category, get_logger
-from orchestrator.state import LLMConfig, ProviderProfile, ProviderType
+from orchestrator.state import BaseLLMConfig, ProviderProfile, ProviderType
 
 _log = get_logger(Category.ORCHESTRATOR)
 
 
 def build_chat_llm(
     provider: ProviderProfile,
-    llm: LLMConfig,
+    llm: BaseLLMConfig,
     *,
     timeout_seconds: int = 120,
 ) -> BaseChatModel:
@@ -73,7 +73,7 @@ class HealthResult:
     kind: Optional[str] = None        # "auth" | "unreachable" | "timeout" | "config" when not ok
 
 
-def health_check(provider: ProviderProfile, llm: LLMConfig, *, timeout_seconds: int = 5) -> HealthResult:
+def health_check(provider: ProviderProfile, llm: BaseLLMConfig, *, timeout_seconds: int = 5) -> HealthResult:
     """Preflight probe: one 1-token completion. Classifies failure so the UI can tell the
     user whether to fix the key (auth, permanent) or the endpoint is down (unreachable)."""
     start = time.time()
@@ -98,7 +98,7 @@ def health_check(provider: ProviderProfile, llm: LLMConfig, *, timeout_seconds: 
 _CACHE_PROBE_SENTENCE = "The quick brown fox jumps over the lazy dog near the riverbank at dawn. "
 
 
-def probe_cache(provider: ProviderProfile, llm: LLMConfig, *,
+def probe_cache(provider: ProviderProfile, llm: BaseLLMConfig, *,
                 timeout_seconds: int = 30) -> Optional[dict]:
     """Settings 'Test connection' cache probe (GH #65): send the SAME padded prompt
     twice and read the second response's cache_read. Caching is a provider/server

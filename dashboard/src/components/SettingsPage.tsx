@@ -1,11 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   api,
+  LLM_AGENTS,
   type AppSettings,
+  type LLMAgent,
   type ProviderProfile,
   type ProviderTestResult,
   type SchemaField,
 } from '../api'
+import { ModelPicker } from './ModelPicker'
+
+const AGENT_LABELS: Record<LLMAgent, string> = {
+  planner: 'Planner',
+  reviewer: 'Reviewer',
+  coder: 'Coder',
+  tester: 'Tester',
+  reflector: 'Reflector',
+}
+const AGENT_HINTS: Record<LLMAgent, string> = {
+  planner: 'Investigates the repo, drafts the plan. A cheap/fast model is usually enough.',
+  reviewer: 'Independently investigates and approves/rejects the plan. Cheap/fast is fine.',
+  coder: 'Writes the actual code. The one agent that most wants your strongest model.',
+  tester: 'Synthesizes tests from the acceptance criteria. Cheap/fast is fine.',
+  reflector: 'Diagnoses a failed microtask and routes the fix. Mid-tier.',
+}
 
 // Global settings hub. Providers (endpoint+key), a Basic tier (default provider+model), and
 // a collapsed Expert tier rendered from the backend schema so every field carries its own
@@ -55,7 +73,6 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     api.getSettingsSchema().then(setSchema).catch(() => {})
   }, [])
 
-  const basic = useMemo(() => schema.filter((f) => f.group === 'basic'), [schema])
   const expertFields = useMemo(() => schema.filter((f) => f.group === 'expert'), [schema])
 
   if (error) return <div className="settingspage"><div className="error">settings error: {error}</div></div>
@@ -63,7 +80,8 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
 
   const s = settings
   const set = (path: string, v: any) => { setSettings(setPath(s, path, v)); setDirty(true) }
-  const selectedProvider = s.providers.find((p) => p.id === s.selected.provider_id)
+  // Providers referenced by at least one agent's selection — drives the "in use" badge.
+  const usedProviderIds = new Set(LLM_AGENTS.map((a) => s.selected[a]?.provider_id))
 
   const save = async () => {
     setSaving(true)
@@ -174,10 +192,10 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         {s.providers.map((p, i) => {
           const res = tests[p.id]
           return (
-            <div key={i} className={`provcard type-${p.type} ${p.id === s.selected.provider_id ? 'is-selected' : ''}`}>
+            <div key={i} className={`provcard type-${p.type} ${usedProviderIds.has(p.id) ? 'is-selected' : ''}`}>
               <div className="provcard-head">
                 <span className="provbadge">{p.type === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible'}</span>
-                {p.id === s.selected.provider_id && <span className="provdefault">● default</span>}
+                {usedProviderIds.has(p.id) && <span className="provdefault">● in use</span>}
                 <div className="provcard-actions">
                   <button className="ghost sm" onClick={() => test(p.id)}>Test connection</button>
                   {s.providers.length > 1 && <button className="ghost sm danger" onClick={() => removeProvider(i)}>remove</button>}
@@ -207,9 +225,25 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                   <label className="fld span2"><span>base url</span>
                     <input value={p.base_url ?? ''} onChange={(e) => updateProvider(i, { base_url: e.target.value })} /></label>
                 )}
-                <label className="fld span2"><span>models <em>comma-separated</em></span>
-                  <input value={p.models.join(', ')} onChange={(e) => updateProvider(i, { models: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) })} />
-                </label>
+                <div className="fld span2"><span>suggested models <em>optional — populate the model dropdowns</em></span>
+                  <div className="modeltags">
+                    {p.models.map((m, mi) => (
+                      <span key={mi} className="modeltag">{m}
+                        <button type="button" title="remove"
+                          onClick={() => updateProvider(i, { models: p.models.filter((_, k) => k !== mi) })}>✕</button>
+                      </span>
+                    ))}
+                    <input className="modeltag-add" placeholder="add a model, press Enter"
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return
+                        e.preventDefault()
+                        const el = e.target as HTMLInputElement
+                        const v = el.value.trim()
+                        if (v && !p.models.includes(v)) updateProvider(i, { models: [...p.models, v] })
+                        el.value = ''
+                      }} />
+                  </div>
+                </div>
                 <label className="fld span2"><span>extra request params <em>optional JSON, e.g. {'{"prompt_cache_key": "agentic"}'} — never secrets</em></span>
                   <input
                     className={extraParamsError[p.id] ? 'input-invalid' : ''}
@@ -293,28 +327,36 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      {/* Default model — the primary control */}
+      {/* Default model — per agent (GH #71) */}
       <div className="sp-section">
         <div className="sp-section-head">
-          <h3>Default model</h3>
-          <p>What new runs use unless overridden on the run page.</p>
+          <h3>Default model per agent</h3>
+          <p>What new runs use unless overridden on the run page. Point cheap/fast models at the
+            investigation agents (planner / reviewer / tester) and your strongest at the Coder to
+            cut cost without hurting code quality.</p>
         </div>
-        <div className="modelcard">
-          {basic.map((f) => (
-            <label key={f.key} className="fld setfld">
-              <span>{f.label} <Info text={f.description} /></span>
-              {f.key === 'selected.provider_id' ? (
-                <select value={s.selected.provider_id} onChange={(e) => set(f.key, e.target.value)}>
-                  {s.providers.map((p) => <option key={p.id} value={p.id}>{p.label} ({p.id})</option>)}
-                </select>
-              ) : (
-                <input list="model-suggestions" placeholder="model id…" value={getPath(s, f.key) ?? ''} onChange={(e) => set(f.key, e.target.value)} />
-              )}
-            </label>
-          ))}
-          <datalist id="model-suggestions">
-            {(selectedProvider?.models ?? []).map((m) => <option key={m} value={m} />)}
-          </datalist>
+        <div className="agentmodels">
+          {LLM_AGENTS.map((agent) => {
+            const sel = s.selected[agent]
+            const prov = s.providers.find((p) => p.id === sel.provider_id)
+            return (
+              <div key={agent} className="agentmodel-row">
+                <div className="agentmodel-name">
+                  {AGENT_LABELS[agent]} <Info text={AGENT_HINTS[agent]} />
+                </div>
+                <label className="fld"><span>provider</span>
+                  <select value={sel.provider_id}
+                    onChange={(e) => set(`selected.${agent}.provider_id`, e.target.value)}>
+                    {s.providers.map((p) => <option key={p.id} value={p.id}>{p.label} ({p.id})</option>)}
+                  </select>
+                </label>
+                <label className="fld"><span>model</span>
+                  <ModelPicker models={prov?.models ?? []} value={sel.model}
+                    onChange={(v) => set(`selected.${agent}.model`, v)} />
+                </label>
+              </div>
+            )
+          })}
         </div>
       </div>
 

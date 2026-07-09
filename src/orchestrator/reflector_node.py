@@ -109,7 +109,7 @@ class ReflectorRunner:
             fix_target = raw.pop("_fix_target", "code")
             blocked = bool(raw.pop("_reflector_blocked", False))
             updated_iteration = record_usage(
-                db_session, self.run_id, self.name, iteration, reflector.token_usage, config.llm.model,
+                db_session, self.run_id, self.name, iteration, reflector.token_usage, config.llm.reflector.model,
                 microtask_id=microtask.microtask_id,
             )
 

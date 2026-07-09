@@ -126,8 +126,11 @@ class BootStrapper:
                     base_sha=repo.base_sha,
                     status=status.value,
                     task_description=task,
-                    llm_provider=config.provider.id if config else None,
-                    llm_model=config.llm.model if config else None,
+                    # Denormalized headline model for the run list — the Coder is the
+                    # headline agent (code gen). Per-agent models (GH #71) live on the
+                    # checkpointed RunConfig; this column is display-only.
+                    llm_provider=config.llm.coder.provider_id if config else None,
+                    llm_model=config.llm.coder.model if config else None,
                     max_total_tokens=constraints.max_total_tokens if constraints else None,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),

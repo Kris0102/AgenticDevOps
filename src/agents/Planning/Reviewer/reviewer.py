@@ -109,14 +109,14 @@ class Reviewer:
         """
         self.run_id = run_id
         self.tools = list(tools or [])
-        self.config = config  
-        self.max_tool_steps = self.config.knobs.reviewer_max_tool_steps
+        self.llm_config = config.llm.reviewer
+        self.max_tool_steps = config.knobs.reviewer_max_tool_steps
         self.name = Roles.REVIEWER.value
-        self.timeout_seconds = self.config.knobs.reviewer_timeout_seconds
+        self.timeout_seconds = config.knobs.reviewer_timeout_seconds
         self.token_usage = TokenUsage()
 
         try:
-            self.llm = build_chat_llm(self.config.provider, self.config.llm,
+            self.llm = build_chat_llm(config.provider_for(self.llm_config), self.llm_config,
                                       timeout_seconds=self.timeout_seconds)
 
             # Enforce structured output. include_raw=True keeps the underlying AIMessage

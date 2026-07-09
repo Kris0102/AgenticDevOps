@@ -114,7 +114,7 @@ class ReviewerRunner:
 
             next_iteration = record_usage(
                 db_session, self.run_id, self.name, next_iteration,
-                reviewer_agent.token_usage, config.llm.model,
+                reviewer_agent.token_usage, config.llm.reviewer.model,
             )
             result["iteration"] = next_iteration
             self._persist_results(db_session, result)

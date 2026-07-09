@@ -61,7 +61,7 @@ class PlannerRunner:
                 self._teardown_sandbox()
 
             result["iteration"] = record_usage(
-                db_session, self.run_id, self.name, iteration, self.token_usage, self._config.llm.model
+                db_session, self.run_id, self.name, iteration, self.token_usage, self._config.llm.planner.model
             )
             self._persist_results(db_session, result)
             return result

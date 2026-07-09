@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, cast
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -161,10 +161,11 @@ class Reflector:
         self.gateway = reflector_tools.gateway
         self.name = Roles.REFLECTOR.value
         self.config = config   # mandatory — the node supplies the fallback
+        self.llm_config = config.llm.reflector
         self.max_tool_steps = self.config.knobs.reflector_max_tool_steps
         self.token_usage = TokenUsage()
 
-        self.llm = build_chat_llm(self.config.provider, self.config.llm,
+        self.llm = build_chat_llm(self.config.provider_for(self.llm_config), self.llm_config,
                                   timeout_seconds=self.config.knobs.reflector_timeout_seconds)
         # include_raw=True keeps the underlying AIMessage (and its usage_metadata) accessible
         # for token accounting (ADR 0025).
@@ -386,7 +387,9 @@ class Reflector:
         if lessons_block:
             prompt = f"{lessons_block}\n\n{prompt}"
         try:
-            raw = self.structured_llm.invoke([HumanMessage(content=prompt)])
+            # include_raw=True → invoke returns a {"raw","parsing_error","parsed"} dict at
+            # runtime; the Runnable stub types it as the model, so cast to what it actually is.
+            raw = cast(Dict[str, Any], self.structured_llm.invoke([HumanMessage(content=prompt)]))
             if raw.get("raw") is not None:
                 self.token_usage = self.token_usage + sum_usage([raw["raw"]])
             if raw.get("parsing_error"):

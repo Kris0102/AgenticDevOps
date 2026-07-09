@@ -3,17 +3,11 @@ descriptions (what each setting does). Served by GET /settings/schema; the form 
 it. Keys are dotted paths into AppSettings. `group` drives the Basic / Expert split."""
 
 SETTINGS_SCHEMA = [
-    # ── Basic ──────────────────────────────────────────────────────────────────
-    {"key": "selected.provider_id", "label": "Provider", "type": "provider", "group": "basic",
-     "description": "Which configured provider (endpoint + key) new runs use by default."},
-    {"key": "selected.model", "label": "Model", "type": "string", "group": "basic",
-     "description": "Default model id, e.g. google/gemma-4-31B-it or claude-sonnet-4. Pick from the provider's suggestions or type your own."},
-
-    # ── Expert · generation ────────────────────────────────────────────────────
-    {"key": "selected.temperature", "label": "Temperature", "type": "float", "group": "expert",
-     "description": "Sampling randomness (0 = deterministic). The agents run at 0 for reproducible plans/code; raise only to explore."},
-    {"key": "selected.max_retries", "label": "LLM retries", "type": "int", "group": "expert",
-     "description": "How many times a single LLM call is retried on a transient error before it bubbles up (and stalls the run for /continue)."},
+    # ── Basic: per-agent model (GH #71) ─────────────────────────────────────────
+    # The per-agent provider+model pickers are rendered directly by the Settings page
+    # (selected.<agent>.provider_id / .model), not from this schema — there is no generic
+    # dotted-field row for them. temperature/max_retries stay at their model defaults
+    # (the agents run deterministic at 0); expose per-agent later if needed.
 
     # ── Expert · agent tuning (knobs.*) ─────────────────────────────────────────
     {"key": "knobs.planner_max_tool_steps", "label": "Planner tool steps", "type": "int", "group": "expert",

@@ -99,5 +99,5 @@ class TestPipeline:
         return ctx.to_result()
 
     def _build_llm(self) -> BaseChatModel:
-        return build_chat_llm(self.config.provider, self.config.llm,
+        return build_chat_llm(self.config.provider_for(self.config.llm.tester), self.config.llm.tester,
                               timeout_seconds=self.config.knobs.tester_timeout_seconds)

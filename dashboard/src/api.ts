@@ -70,11 +70,26 @@ export interface ProviderProfile {
   extra_request_params?: Record<string, unknown>
 }
 
-export interface LLMConfig {
+// One agent's model selection (GH #71). temperature/max_retries default server-side.
+export interface AgentLLMConfig {
   provider_id: string
   model: string
-  temperature: number
-  max_retries: number
+  temperature?: number
+  max_retries?: number
+  name?: string
+}
+
+// Per-agent model selection. Each agent references a provider by id; many agents may
+// share one provider (one key). Order mirrors the graph.
+export const LLM_AGENTS = ['planner', 'reviewer', 'coder', 'tester', 'reflector'] as const
+export type LLMAgent = (typeof LLM_AGENTS)[number]
+
+export interface LLMConfig {
+  planner: AgentLLMConfig
+  reviewer: AgentLLMConfig
+  coder: AgentLLMConfig
+  tester: AgentLLMConfig
+  reflector: AgentLLMConfig
 }
 
 export interface Knobs {

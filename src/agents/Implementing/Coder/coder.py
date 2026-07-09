@@ -86,7 +86,8 @@ class Coder:
         self.run_id = run_id
         self.coder_tools = coder_tools
         self.name = Roles.CODER.value
-        self.config = config  
+        self.config = config
+        self.llm_config = config.llm.coder
         knobs = self.config.knobs
         self.max_tool_steps = knobs.coder_max_tool_steps
         self.max_empty_diff_retries = knobs.coder_max_empty_diff_retries
@@ -95,7 +96,7 @@ class Coder:
         self.token_usage = TokenUsage()
 
         try:
-            self.llm = build_chat_llm(self.config.provider, self.config.llm,
+            self.llm = build_chat_llm(self.config.provider_for(self.llm_config), self.llm_config,
                                       timeout_seconds=self.timeout_seconds)
             self.coding_agent = create_agent(
                 self.llm,

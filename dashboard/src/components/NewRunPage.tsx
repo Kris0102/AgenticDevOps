@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { api, type AppSettings, type RepoView } from '../api'
+import { api, LLM_AGENTS, type AppSettings, type LLMConfig, type RepoView } from '../api'
 import { buildRunRequest } from '../defaultRunRequest'
+import { ModelPicker } from './ModelPicker'
 
 const GATES = ['plan', 'code', 'test', 'deploy'] as const
+const AGENT_LABELS = { planner: 'Planner', reviewer: 'Reviewer', coder: 'Coder', tester: 'Tester', reflector: 'Reflector' } as const
 
 // Per-run settings page: a registered-repo picker (GH #41) + task, with a model/gates
 // override pre-filled from the global settings. Starting the run preflights the repo
@@ -22,8 +24,9 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   const [task, setTask] = useState('')
   const [commitMessage, setCommitMessage] = useState('')
   const [skipDeploy, setSkipDeploy] = useState(false)
-  const [providerId, setProviderId] = useState('')
-  const [model, setModel] = useState('')
+  // Per-run, per-agent model override (GH #71), seeded from the global default.
+  const [llm, setLlm] = useState<LLMConfig | null>(null)
+  const [showModels, setShowModels] = useState(false)
   const [gates, setGates] = useState<Record<string, boolean>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,15 +34,17 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   useEffect(() => {
     api.getSettings().then((s) => {
       setSettings(s)
-      setProviderId(s.selected.provider_id)
-      setModel(s.selected.model)
+      setLlm(s.selected)
       setGates(Object.fromEntries(GATES.map((g) => [g, s.defaults.hitl_checkpoints.includes(g)])))
     }).catch((e) => setError(String(e)))
     api.listRepos().then(setRepos).catch((e) => setError(String(e)))
   }, [])
 
-  const provider = settings?.providers.find((p) => p.id === providerId)
   const repo = repos?.find((r) => r.repo_id === repoId)
+  // Summary shown on the collapsed model row: one entry per distinct model.
+  const modelSummary = llm
+    ? [...new Set(LLM_AGENTS.map((a) => llm[a].model).filter(Boolean))].join(', ') || '—'
+    : '…'
 
   // Live branch list per selected repo; a fetch failure only degrades to "default
   // branch" (base_ref = null) with a warning — the run can still start.
@@ -59,7 +64,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   }, [repoId, repos])
 
   const start = async () => {
-    if (!settings || !repoId) return
+    if (!settings || !repoId || !llm) return
     setBusy(true); setError(null)
     try {
       const req = buildRunRequest({
@@ -68,7 +73,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
         baseSha,
         task,
         hitlCheckpoints: GATES.filter((g) => gates[g] && !(g === 'deploy' && skipDeploy)),
-        llm: { provider_id: providerId, model, temperature: settings.selected.temperature, max_retries: settings.selected.max_retries },
+        llm,
         maxTotalIterations: settings.defaults.max_total_iterations,
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
         maxTotalTokens: settings.defaults.max_total_tokens,
@@ -136,14 +141,33 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
             {skipDeploy && <em className="np-hint">no result branch is pushed; a token with push access is not required.</em>}
           </div>
 
-          <label className="fld"><span>provider</span>
-            <select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
-              {(settings?.providers ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select></label>
-          <label className="fld"><span>model</span>
-            <input list="np-models" value={model} onChange={(e) => setModel(e.target.value)} />
-            <datalist id="np-models">{(provider?.models ?? []).map((m) => <option key={m} value={m} />)}</datalist>
-          </label>
+          <div className="fld span2"><span>model per agent <em>overrides the default for this run</em></span>
+            <button type="button" className="expert-toggle" onClick={() => setShowModels((v) => !v)}>
+              <span className="chev">{showModels ? '▾' : '▸'}</span> {modelSummary}
+            </button>
+            {showModels && llm && (
+              <div className="agentmodels">
+                {LLM_AGENTS.map((agent) => {
+                  const sel = llm[agent]
+                  const prov = settings?.providers.find((p) => p.id === sel.provider_id)
+                  const patch = (p: Partial<typeof sel>) =>
+                    setLlm({ ...llm, [agent]: { ...sel, ...p } })
+                  return (
+                    <div key={agent} className="agentmodel-row">
+                      <div className="agentmodel-name">{AGENT_LABELS[agent]}</div>
+                      <label className="fld"><span>provider</span>
+                        <select value={sel.provider_id} onChange={(e) => patch({ provider_id: e.target.value })}>
+                          {(settings?.providers ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                        </select></label>
+                      <label className="fld"><span>model</span>
+                        <ModelPicker models={prov?.models ?? []} value={sel.model} onChange={(v) => patch({ model: v })} />
+                      </label>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
 
           <div className="fld span2"><span>human review gates</span>
             <div className="gatechips">

@@ -336,6 +336,46 @@ button.danger:hover { border-color: var(--red); }
 }
 .modelcard .setfld { max-width: none; }
 
+/* model picker — dropdown of suggested models + free-text fallback (GH #71) */
+.modelpick { display: flex; flex-direction: column; gap: 6px; }
+.modelpick select { width: 100%; }
+
+/* provider suggested-models chip editor */
+.modeltags {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px; background: var(--bg);
+}
+.modeltag {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--border); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12.5px;
+}
+.modeltag button {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 2px 4px; border-radius: 999px;
+}
+.modeltag button:hover { color: var(--fg); background: rgba(0,0,0,0.12); }
+.modeltag-add {
+  flex: 1; min-width: 140px; border: 0; background: transparent; padding: 4px 6px; font-size: 13px;
+}
+.modeltag-add:focus { outline: none; }
+
+/* per-agent model grid (GH #71) */
+.agentmodels {
+  display: flex; flex-direction: column; gap: 10px; margin-top: 8px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; background: var(--panel);
+}
+.agentmodel-row {
+  display: grid; grid-template-columns: 120px 1fr 1fr; gap: 12px; align-items: end;
+}
+.agentmodel-row + .agentmodel-row { border-top: 1px solid var(--border); padding-top: 10px; }
+.agentmodel-name {
+  display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; padding-bottom: 7px;
+}
+@media (max-width: 640px) {
+  .agentmodel-row { grid-template-columns: 1fr; gap: 6px; }
+  .agentmodel-name { padding-bottom: 0; }
+}
+
 /* expert */
 .expert-toggle {
   display: inline-flex; align-items: center; gap: 8px;

@@ -16,13 +16,19 @@ from db.secrets import decrypt, encrypt
 from observability import Category, get_logger
 from orchestrator.state import (
     AppSettings,
+    CoderLLMConfig,
     Knobs,
     LLMConfig,
+    PlannerLLMConfig,
     ProviderProfile,
     ProviderType,
+    ReflectorLLMConfig,
+    ReviewerLLMConfig,
     RunConfig,
     RunDefaults,
+    TesterLLMConfig,
 )
+from tool_gateway.Roles import Roles
 
 _log = get_logger(Category.ORCHESTRATOR)
 
@@ -34,18 +40,22 @@ def _env_seed() -> AppSettings:
     """Build the initial settings from env — the current cluster provider + the old knob
     defaults — so a fresh DB behaves exactly like the pre-settings deployment."""
     model = os.getenv("LLM_MODEL", "google/gemma-4-31B-it")
-    provider = ProviderProfile(
-        id=_CLUSTER_PROVIDER_ID,
-        label="Inference cluster",
-        type=ProviderType.OPENAI_COMPATIBLE,
-        base_url=os.getenv("LLM_BASE_URL", "http://131.159.60.153:3000/inference"),
-        api_key=os.getenv("CLUSTER_API_KEY") or os.getenv("OPENAI_API_KEY"),
-        models=[model],
-    )
+    providers = ProviderProfile.model_validate(dict(
+            id=_CLUSTER_PROVIDER_ID,
+            label="Cluster",
+            type=ProviderType.OPENAI_COMPATIBLE,
+            base_url=os.getenv("LLM_BASE_URL"),
+            api_key=os.getenv("LLM_API_KEY"),
+        ))
     return AppSettings(
-        providers=[provider],
-        selected=LLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model,
-                           max_retries=int(os.getenv("LLM_RETRIES", "3"))),
+        providers=[providers],
+        selected=LLMConfig(
+            planner=PlannerLLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model),
+            reviewer=ReviewerLLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model),
+            coder=CoderLLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model),
+            tester=TesterLLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model),
+            reflector=ReflectorLLMConfig(provider_id=_CLUSTER_PROVIDER_ID, model=model),
+        ),
         knobs=Knobs(),          # field defaults already mirror the old env defaults
         defaults=RunDefaults(),
         github_token=os.getenv("GITHUB_TOKEN") or None,
@@ -68,6 +78,33 @@ def _decrypt_secrets(s: AppSettings) -> AppSettings:
     })
 
 
+_AGENTS = ("planner", "reviewer", "coder", "tester", "reflector")
+
+
+def _migrate_blob(raw: dict) -> dict:
+    """Upgrade an older stored `AppSettings` JSON in place-of-read to the current shape (GH
+    #71). The pre-#71 `selected` was ONE flat LLMConfig (`{provider_id, model, temperature,
+    max_retries}`); it is now a per-agent map. Fan the old flat selection out to all five
+    agents so an existing DB keeps working (behaviour unchanged — every agent on the same
+    model). Also drops the removed `role` field off stored providers. Idempotent."""
+    if not isinstance(raw, dict):
+        return raw
+    raw = dict(raw)
+    selected = raw.get("selected")
+    if isinstance(selected, dict) and "provider_id" in selected:
+        base = {k: selected[k] for k in ("provider_id", "model", "temperature", "max_retries")
+                if k in selected}
+        raw["selected"] = {a: {**base, "name": a} for a in _AGENTS}
+    elif isinstance(selected, dict) and "reflector" not in selected and "coder" in selected:
+        # Migrated to per-agent before Reflector existed — clone the Coder's selection.
+        raw["selected"] = {**selected, "reflector": {**selected["coder"], "name": "reflector"}}
+    providers = raw.get("providers")
+    if isinstance(providers, list):
+        raw["providers"] = [{k: v for k, v in p.items() if k != "role"} if isinstance(p, dict) else p
+                            for p in providers]
+    return raw
+
+
 class SettingsStore:
     @staticmethod
     def get() -> AppSettings:
@@ -80,7 +117,7 @@ class SettingsStore:
                 session.add(AppSettingsRow(id=1, config=_encrypt_secrets(seed).model_dump(mode="json")))
                 _log.info("settings.seeded_from_env", providers=len(seed.providers))
                 return seed
-            return _decrypt_secrets(AppSettings.model_validate(row.config))
+            return _decrypt_secrets(AppSettings.model_validate(_migrate_blob(row.config)))
 
     @staticmethod
     def get_public() -> AppSettings:
@@ -133,11 +170,19 @@ class SettingsStore:
 def resolve_run_config(override: Optional[LLMConfig] = None,
                        knobs_override: Optional[Knobs] = None) -> RunConfig:
     """The effective config a run executes under: per-run override › global (DB) › env seed.
-    Resolves the selected LLMConfig to its ProviderProfile (carrying base_url/key). Raises
-    if the selected provider is missing (caller surfaces it before starting the run)."""
+    Collects the DISTINCT ProviderProfiles referenced across the five per-agent selections
+    (GH #71) — one entry per id, shared providers not duplicated — and validates every one
+    exists. Raises on the first missing provider so the caller surfaces it before the run
+    starts."""
     settings = SettingsStore.get()
     llm = override or settings.selected
-    provider = SettingsStore.provider(settings, llm.provider_id)
-    if provider is None:
-        raise ValueError(f"selected provider '{llm.provider_id}' not found in settings")
-    return RunConfig(llm=llm, provider=provider, knobs=knobs_override or settings.knobs)
+    providers: dict[str, ProviderProfile] = {}
+    for agent in llm.agents():
+        if agent.provider_id in providers:
+            continue
+        provider = SettingsStore.provider(settings, agent.provider_id)
+        if provider is None:
+            raise ValueError(
+                f"provider '{agent.provider_id}' selected for {agent.name} not found in settings")
+        providers[agent.provider_id] = provider
+    return RunConfig(llm=llm, providers=providers, knobs=knobs_override or settings.knobs)

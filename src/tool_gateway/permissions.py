@@ -35,7 +35,7 @@ class CoderPermissions(RolePermissions):
     could self-report a pass the Tester never confirmed."""
 
     role = Roles.CODER
-    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN]
+    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]
     allowed_commands = ["git", "python", "grep", "ls", "cat", "find", "mkdir", "rm", "touch", "node"]
 
 
@@ -44,7 +44,7 @@ class TesterPermissions(RolePermissions):
     but the Tester should never edit existing code."""
 
     role = Roles.TESTER
-    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN]
+    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]
     allowed_commands = ["git", "python", "pip", "pytest", "node", "npm", "npx", "apt-get", "grep", "ls", "cat", "find", "mkdir"]
 
 
@@ -60,7 +60,7 @@ class ReflectorPermissions(RolePermissions):
     """Diagnoses failures by reading source files, test files, and diffs. No writes."""
 
     role = Roles.REFLECTOR
-    tools = [Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN]
+    tools = [Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]
     allowed_commands = ["git", "grep", "ls", "cat", "find", "node"]
 
 

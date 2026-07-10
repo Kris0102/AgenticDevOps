@@ -33,6 +33,7 @@ from api.responses.responses import (
 from db.db import db
 from db.event_log import EventLogger
 from db.lessons import LessonStore
+from db.semanticMemory.semantic_store import SemanticStore
 from db.models import Artifact as ArtifactRow, MicrotaskRecord, Run
 from db.models import Event as EventRow
 from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
@@ -1128,7 +1129,22 @@ class Service:
         # transient error → status still mid-pipeline) keeps its container so /continue
         # can pick the work back up. Settings-driven (defaults.teardown_on_terminal).
         if status in (RunStatus.DONE, RunStatus.FAILED):
+            self._purge_semantic(run_id)
             self._teardown_sandbox(run_id)
+
+    def _purge_semantic(self, run_id: str) -> None:
+        """Drop this terminal run's workspace index (dead weight once the run is done —
+        decoupled from teardown_on_terminal, which governs the Docker container, not the
+        index) and opportunistically sweep orphaned chunks left by earlier stalled/crashed
+        runs or de-registered repos (context-engine #6). Best-effort — a housekeeping
+        failure must never mask the run's outcome."""
+        try:
+            store = SemanticStore()
+            store.delete_workspace(run_id)
+            pruned = store.prune_orphans()
+            _log.info("semantic.pruned", run_id=run_id, **pruned)
+        except Exception as exc:
+            _log.warning("semantic.prune_failed", run_id=run_id, error=str(exc))
 
     def _teardown_sandbox(self, run_id: str) -> None:
         """Destroy the run's Docker sandbox if settings ask for it. Best-effort — a

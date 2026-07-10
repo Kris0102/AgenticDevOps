@@ -24,6 +24,7 @@ from orchestrator.state import (
     RunStatus,
 )
 from sandbox.sandbox_tools import DockerSandboxTools
+from context_engine.engine import ContextEngine
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 
@@ -70,7 +71,7 @@ class ReflectorRunner:
                 _log.warning("reflector.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
                 raise TokenBudgetExceededError(
-                    phase="reflect", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
+                    phase="reflect", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
             try:
@@ -113,11 +114,23 @@ class ReflectorRunner:
                 microtask_id=microtask.microtask_id,
             )
 
+            # Are we about to route this to the TESTER to re-synthesize the test (the
+            # diagnosis blamed the synthesized test, not the code, and there's resynth budget
+            # left)? If so, the Coder legitimately made NO code change — the code is fine, the
+            # TEST is wrong. That is NOT stagnation, so the no-progress backstop below must not
+            # fire on it, or a fixable bad-test case gets BLOCKED instead of re-synthesized
+            # (GH #44/#61 interaction — the weather `findCity` value tests). Once resynth
+            # budget is exhausted the route falls back to code, and the backstop applies again.
+            will_resynth_test = (
+                fix_target == "test"
+                and int(self.state.get("test_resynth_count") or 0) < self._max_test_resynth()
+            )
+
             # Deterministic loop backstop (GH #61, layer 3): a revert cycle (A→B→A) or
-            # stagnation (…B→B) in the per-attempt diffs is provably unwinnable — force
-            # the blocked path even if the LLM diagnosis missed it.
+            # stagnation (…B→B) in the per-attempt diffs is provably unwinnable ON THE CODE
+            # PATH — force the blocked path even if the LLM diagnosis missed it.
             cycle_kind = None
-            if not blocked:
+            if not blocked and not will_resynth_test:
                 cycle_kind = self._diff_cycle_kind(db_session, microtask)
                 if cycle_kind:
                     blocked = True
@@ -302,7 +315,13 @@ class ReflectorRunner:
 
     def _init_gateway(self, db_session) -> ToolGateway:
         sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
-        return ToolGateway(db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools)
+        repo = self.state.get("repo")
+        # Search-only ContextEngine so the Reflector can locate related code while diagnosing
+        # a failure via the semantic index (GH #71 follow-up).
+        return ToolGateway(
+            db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools,
+            context_engine=ContextEngine(), repo_url=repo.repo_url if repo else "",
+        )
 
     # Every check kind whose detail the reflector may want (one Checks field each).
     _CHECK_LABELS = ("unit_tests", "integration_tests", "build", "typecheck", "lint")

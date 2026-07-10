@@ -7,6 +7,7 @@ from agents.tool_output import (
     MAX_TOOL_OUTPUT_CHARS,
     truncate_for_llm,
 )
+from agents.semantic_search import SEMANTIC_SEARCH_DESCRIPTION, run_semantic_search
 from tool_gateway.gateway import ToolGateway
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
@@ -72,7 +73,16 @@ class CoderTools:
             ),
         )
 
-        return [read_tool, write_tool, diff_tool, execute_tool]
+        semantic_search_tool = StructuredTool.from_function(
+            func=self.semantic_search,
+            name="semantic_search",
+            description=SEMANTIC_SEARCH_DESCRIPTION,
+        )
+
+        return [read_tool, write_tool, diff_tool, execute_tool, semantic_search_tool]
+
+    def semantic_search(self, query: str, top_k: int = 8) -> str:
+        return run_semantic_search(self.gateway, self.role, query, top_k)
 
     def read_sandbox_file(self, filepath: str) -> str:
         result = self.gateway.execute_tool(

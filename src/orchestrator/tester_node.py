@@ -28,6 +28,7 @@ from orchestrator.state import (
     RunStatus,
 )
 from sandbox.sandbox_tools import DockerSandboxTools
+from context_engine.engine import ContextEngine
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 
@@ -147,7 +148,13 @@ class TesterRunner:
 
     def _init_gateway(self, db_session) -> ToolGateway:
         sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
-        return ToolGateway(db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools)
+        repo = self.state.get("repo")
+        # Search-only ContextEngine so the test-writer can locate the code under test via the
+        # semantic index instead of blind file reads (GH #71 follow-up).
+        return ToolGateway(
+            db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools,
+            context_engine=ContextEngine(), repo_url=repo.repo_url if repo else "",
+        )
 
     def _persist_results(
         self,

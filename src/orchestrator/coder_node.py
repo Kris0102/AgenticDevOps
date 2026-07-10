@@ -53,7 +53,7 @@ class CoderRunner:
                 _log.warning("coder.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
                 raise TokenBudgetExceededError(
-                    phase="code", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
+                    phase="code", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
             try:
@@ -124,7 +124,13 @@ class CoderRunner:
 
     def _init_gateway(self, db_session) -> ToolGateway:
         sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
-        return ToolGateway(db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools)
+        repo = self.state.get("repo")
+        # Search-only ContextEngine (reads the index, not the repo) so the Coder can query
+        # the semantic code memory while editing — "where is X / what calls Y" (GH #71 follow-up).
+        return ToolGateway(
+            db_session=db_session, run_id=self.run_id, sandbox_tools=sandbox_tools,
+            context_engine=ContextEngine(), repo_url=repo.repo_url if repo else "",
+        )
 
     def _gather_file_context(self, gateway: ToolGateway, microtask: Microtask) -> Dict[str, str]:
         """Pre-read every target/context file through the gateway (each read is

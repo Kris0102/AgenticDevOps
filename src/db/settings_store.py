@@ -28,7 +28,6 @@ from orchestrator.state import (
     RunDefaults,
     TesterLLMConfig,
 )
-from tool_gateway.Roles import Roles
 
 _log = get_logger(Category.ORCHESTRATOR)
 

@@ -6,6 +6,7 @@ from agents.tool_output import (
     MAX_FILE_READ_CHARS,
     truncate_for_llm,
 )
+from agents.semantic_search import SEMANTIC_SEARCH_DESCRIPTION, run_semantic_search
 from tool_gateway.gateway import ToolGateway
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
@@ -39,14 +40,7 @@ class PlannerTools:
         semantic_search_tool = StructuredTool.from_function(
             func=self.semantic_search,
             name="semantic_search",
-            description=(
-                "Semantically search the indexed repository for code relevant to a "
-                "natural-language query (e.g. 'where are HTTP routes defined', "
-                "'authentication middleware'). Returns the most relevant functions/"
-                "classes with their file paths. Prefer this over grepping or reading "
-                "whole files to locate WHERE something lives, then read_sandbox_file "
-                "for full detail."
-            ),
+            description=SEMANTIC_SEARCH_DESCRIPTION,
         )
 
         return [execute_tool, read_tool, semantic_search_tool]
@@ -87,23 +81,4 @@ class PlannerTools:
         )
 
     def semantic_search(self, query: str, top_k: int = 8) -> str:
-        if not self.gateway:
-            raise RuntimeError("Sandbox tools are not available. Docker initialization failed.")
-
-        result = self.gateway.execute_tool(
-            actor_role=self.role,
-            tool_name=Tools.SEMANTIC_SEARCH,
-            args={"query": query, "top_k": top_k},
-        )
-        if "error" in result:
-            return result["error"]
-
-        hits = result.get("hits", [])
-        if not hits:
-            return "No relevant code found in the semantic index for that query."
-
-        lines = [f"Top {len(hits)} semantic matches:"]
-        for h in hits:
-            symbol = h.get("symbol") or h.get("chunk_type")
-            lines.append(f"- {h['filepath']} :: {symbol} (score {h['score']})")
-        return "\n".join(lines)
+        return run_semantic_search(self.gateway, self.role, query, top_k)

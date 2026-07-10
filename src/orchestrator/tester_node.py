@@ -68,7 +68,7 @@ class TesterRunner:
                 _log.warning("tester.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
                 raise TokenBudgetExceededError(
-                    phase="test", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
+                    phase="test", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
             try:
@@ -292,6 +292,10 @@ class TesterRunner:
             "last_test_output_path": result.get("last_test_output_path"),
             "test_rejection_note": result.get("test_rejection_note"),  # None clears it
             "evidence": new_evidence,
+            # Run-level existing-suite baseline = pristine failing-test count (GH #28/#72),
+            # established on the first Tester run then fixed; carried on every exit so it
+            # survives to the next microtask.
+            "suite_baseline_failures": result.get("suite_baseline_failures"),
         }
 
         if not passed:

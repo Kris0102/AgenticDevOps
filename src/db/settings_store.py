@@ -185,3 +185,21 @@ def resolve_run_config(override: Optional[LLMConfig] = None,
                 f"provider '{agent.provider_id}' selected for {agent.name} not found in settings")
         providers[agent.provider_id] = provider
     return RunConfig(llm=llm, providers=providers, knobs=knobs_override or settings.knobs)
+
+
+
+def check_for_updated_models() -> LLMConfig :
+    """Check the DB for any model changes during this run. Returns a new LLMConfig if
+    any agent's model changed, else None. The caller can then prompt the user to confirm
+    the change before starting the run."""
+    settings = SettingsStore.get()
+    return LLMConfig(
+        planner=settings.selected.planner,
+        reviewer=settings.selected.reviewer,
+        coder=settings.selected.coder,
+        tester=settings.selected.tester,
+        reflector=settings.selected.reflector,
+   )
+    
+    
+    

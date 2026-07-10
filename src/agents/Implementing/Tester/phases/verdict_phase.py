@@ -39,6 +39,8 @@ class VerdictPhase(TestPhase):
         self.tools = tools
 
     def run(self, ctx: TestContext) -> TestContext:
+        # `ctx.suite_baseline_failures` (the pristine existing-suite failing COUNT) was
+        # established by DeterministicChecksPhase (GH #28/#72); gating here is on the DELTA.
         unit = self._combined_unit_check(ctx)
         # Emit the canonical verdict + every raw Track-A check (separate evidence fields).
         ctx.checks = [unit, *ctx.track_a_checks]
@@ -56,8 +58,24 @@ class VerdictPhase(TestPhase):
         return ctx
 
     def _combined_unit_check(self, ctx: TestContext) -> CheckResult:
+        # Existing-suite gating is on the DELTA vs the pristine baseline (GH #28/#72): a FAILING
+        # `integration_tests` is inherited breakage ONLY while its failing count is at or below
+        # the baseline — those failures were already in the repo. The moment the count exceeds
+        # the baseline, the Coder introduced a NEW regression → gate. A PASSING existing suite
+        # still counts; build/typecheck + the grounded synthesized tests always gate.
+        baseline = ctx.suite_baseline_failures or 0
+        new_regression = ctx.suite_current_failures > baseline
+
+        def is_inherited_suite_failure(c: CheckResult) -> bool:
+            return (c.label == "integration_tests"
+                    and c.status == CheckStatus.FAILED
+                    and not new_regression)
+
         # Gating inputs: Track-A correctness checks (suite/typecheck/build) + Track-B exec.
-        gating: List[CheckResult] = [c for c in ctx.track_a_checks if c.label in self.GATING_LABELS]
+        gating: List[CheckResult] = [
+            c for c in ctx.track_a_checks
+            if c.label in self.GATING_LABELS and not is_inherited_suite_failure(c)
+        ]
         if ctx.synth_exec_check:
             gating.append(ctx.synth_exec_check)
         deciding = [c for c in gating if c.decides_verdict]  # PASSED/FAILED only
@@ -97,8 +115,16 @@ class VerdictPhase(TestPhase):
     def _artifact_text(ctx: TestContext, status: CheckStatus, reason: str, subs: List[CheckResult]) -> str:
         lines = [f"VERDICT: {status} — {reason}", ""]
         if ctx.track_a_checks:
+            baseline = ctx.suite_baseline_failures or 0
+            inherited_suite = ctx.suite_current_failures <= baseline
             for c in ctx.track_a_checks:
-                gate = "" if c.label in VerdictPhase.GATING_LABELS else " (advisory)"
+                if c.label == "integration_tests" and c.status == CheckStatus.FAILED and inherited_suite:
+                    gate = (f" (advisory — {ctx.suite_current_failures} failing ≤ pristine baseline "
+                            f"{baseline}, GH #72)")
+                elif c.label in VerdictPhase.GATING_LABELS:
+                    gate = ""
+                else:
+                    gate = " (advisory)"
                 lines.append(f"Track A · {c.label}{gate}: {c.status}")
         else:
             lines.append("Track A: not run")

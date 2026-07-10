@@ -532,6 +532,14 @@ class BlackboardState(TypedDict):
     # Reflector increments it on each fix_target="test" decision; once it hits
     # REFLECTOR_MAX_TEST_RESYNTH the reflector forces the code path. Reset by the coder.
     test_resynth_count: int
+    # Run-level baseline for the existing test suite (GH #28/#72): the NUMBER of failing tests
+    # in the repo's own suite on the pristine tree, captured once at the first Tester run
+    # (None until then) and fixed for the run. The `integration_tests` check gates only on the
+    # DELTA — a NEW failure beyond this baseline (current_failures > baseline) is a real
+    # regression and fails; failures at or below the baseline are pre-existing and advisory. So
+    # a repo that ships a red test doesn't fail every microtask, yet the Coder breaking OTHER
+    # existing tests is still caught.
+    suite_baseline_failures: Optional[int]
 
     # Commit message for the deploy push. Seeded from RunRequest.commit_message at run
     # creation; overwritten by a message entered at the deploy HITL gate (approve
@@ -603,6 +611,7 @@ def create_initial_blackboard_state(
         test_rejection_note=None,
         last_test_output_path=None,
         test_resynth_count=0,
+        suite_baseline_failures=None,
         deploy_commit_message=deploy_commit_message,
         skip_deploy=skip_deploy,
     )

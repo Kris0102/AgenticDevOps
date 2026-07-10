@@ -48,6 +48,12 @@ class TestContext:
     output_path: Optional[str] = None
     repo_diff: str = ""
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    # Existing-suite baseline = failing-test count on the pristine tree (GH #28/#72), persisted
+    # to the blackboard; None until the first Tester run establishes it, then fixed.
+    suite_baseline_failures: Optional[int] = None
+    # This run's current existing-suite failing count (transient — set by DeterministicChecks,
+    # read by Verdict to gate on the delta vs the baseline).
+    suite_current_failures: int = 0
 
     def to_result(self) -> Dict[str, Any]:
         """The dict TesterRunner consumes. `check_results` feeds evidence.checks; the
@@ -58,6 +64,8 @@ class TestContext:
             "final_validation": self.final_validation,
             "last_test_output_path": self.output_path or None,
             "repo_diff": self.repo_diff,
+            # Run-level existing-suite baseline (GH #28/#72) — carried back to the blackboard.
+            "suite_baseline_failures": self.suite_baseline_failures,
             # Clear the rejection note after use so it doesn't leak to the next microtask.
             "test_rejection_note": None,
             # _INTERNAL_: consumed by TesterRunner (token accounting, ADR 0025), not a

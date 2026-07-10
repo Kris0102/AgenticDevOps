@@ -12,11 +12,12 @@ into the canonical `unit_tests` verdict.
 """
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from agents.Implementing.Tester.context import TestContext
 from agents.Implementing.Tester.phases.base import TestPhase
-from agents.Implementing.Tester.results import CheckResult, make_check, skipped_check
+from agents.Implementing.Tester.results import CheckResult, CheckStatus, make_check, skipped_check
 from agents.Implementing.Tester.tester_tools import TesterTools
 from observability import Category, get_logger
 
@@ -24,6 +25,19 @@ _log = get_logger(Category.TESTER)
 
 # pytest exit codes: 0 = passed, 1 = failures, 5 = no tests collected.
 _PYTEST_NO_TESTS = 5
+
+# jest prints two "N failed" lines ("Test Suites:" and "Tests:") — prefer the test-level one;
+# pytest's summary has a bare "N failed". Used to baseline + gate on the failure-count DELTA
+# (GH #72) so a pre-existing red test doesn't hide later regressions.
+_JEST_FAILED_RE = re.compile(r"Tests:.*?(\d+)\s+failed")
+_FAILED_RE = re.compile(r"(\d+)\s+failed")
+
+
+def _parse_failing_count(stdout: str) -> int:
+    if not stdout:
+        return 0
+    m = _JEST_FAILED_RE.search(stdout) or _FAILED_RE.search(stdout)
+    return int(m.group(1)) if m else 0
 
 
 class DeterministicChecksPhase(TestPhase):
@@ -38,6 +52,7 @@ class DeterministicChecksPhase(TestPhase):
     def run(self, ctx: TestContext) -> TestContext:
         if ctx.project_type == "python":
             self._install_python_deps()
+            self._establish_baseline(ctx, "python")   # pristine suite (first run) — deps present
             ctx.track_a_checks = self._compact([
                 self._py_suite(),
                 self._py_build(ctx),     # compile the microtask's target files (gating)
@@ -46,15 +61,69 @@ class DeterministicChecksPhase(TestPhase):
             ])
         elif ctx.project_type == "javascript":
             self._install_js_deps()
+            self._establish_baseline(ctx, "javascript")
             ctx.track_a_checks = self._compact([
                 self._js_suite(),
                 self._js_build(),        # npm run build, if a build script exists (gating)
                 self._js_typecheck(),    # tsc --noEmit, if tsconfig.json (gating)
                 self._js_lint(),         # eslint, if configured (advisory)
             ])
+        ctx.suite_current_failures = self._current_suite_failures(ctx)
         for c in ctx.track_a_checks:
             _log.info("tester.track_a.check", run_id=ctx.run_id, label=c.label, status=str(c.status))
         return ctx
+
+    @staticmethod
+    def _current_suite_failures(ctx: TestContext) -> int:
+        """Failing-test count in THIS run's existing suite (GH #72). 0 unless the suite FAILED;
+        a FAILED-but-unparseable suite is forced above the baseline so it still gates."""
+        suite = next((c for c in ctx.track_a_checks if c.label == "integration_tests"), None)
+        if not suite or suite.status != CheckStatus.FAILED:
+            return 0
+        n = _parse_failing_count(suite.stdout)
+        return n if n > 0 else (ctx.suite_baseline_failures or 0) + 1
+
+    # ---- existing-suite baseline (GH #28/#72) -------------------------------
+    def _establish_baseline(self, ctx: TestContext, lang: str) -> None:
+        """Set `ctx.suite_baseline_failures` — the failing-test COUNT of the repo's OWN suite,
+        captured ONCE on the first Tester run and fixed for the rest of the run. Established on
+        the PRISTINE tree (before any Coder change) so a green repo the Coder breaks is still
+        gated (no false negative). Downstream, `integration_tests` gates only on the delta —
+        NEW failures beyond this count (GH #72), so a pre-existing red test doesn't hide later
+        regressions."""
+        prev = ctx.state.get("suite_baseline_failures")
+        if prev is not None:
+            ctx.suite_baseline_failures = prev
+            return
+        ctx.suite_baseline_failures = self._pristine_suite_failures(lang)
+        _log.info("tester.baseline.established", run_id=ctx.run_id,
+                  suite_baseline_failures=ctx.suite_baseline_failures)
+
+    def _pristine_suite_failures(self, lang: str) -> int:
+        """Failing-test count of the repo's existing suite on the PRISTINE tree (HEAD): stash
+        the Coder's uncommitted changes, run the suite, restore. Deps (node_modules / installed
+        packages) are git-ignored so they survive the stash. On any git error, degrade to 0
+        (gate normally) rather than a false 'inherited failures' that would hide regressions."""
+        push = self.tools.run(["git", "stash", "push", "-u", "-m", "agentic-suite-baseline"], timeout_s=60)
+        push_out = (push.get("stdout") or "") + (push.get("stderr") or "")
+        if int(push.get("exit_code", 1)) != 0:
+            _log.warning("tester.baseline.stash_failed", detail=push_out[:200])
+            return 0
+        stashed = "No local changes to save" not in push_out
+        try:
+            suite = self._py_suite() if lang == "python" else self._js_suite()
+            return _parse_failing_count(suite.stdout) if suite.status == CheckStatus.FAILED else 0
+        finally:
+            if stashed:
+                # Discard anything the pristine suite run touched (git-ignored deps are left
+                # alone by checkout/clean), then restore the Coder's changes onto clean HEAD —
+                # no conflict is possible since the tree is pristine before the pop.
+                self.tools.run(["git", "checkout", "--", "."], timeout_s=30)
+                self.tools.run(["git", "clean", "-fd", "--", "."], timeout_s=30)
+                pop = self.tools.run(["git", "stash", "pop"], timeout_s=60)
+                if int(pop.get("exit_code", 1)) != 0:
+                    _log.error("tester.baseline.stash_pop_failed",
+                               detail=(pop.get("stderr") or "")[:300])
 
     @staticmethod
     def _compact(items: List[Optional[CheckResult]]) -> List[CheckResult]:

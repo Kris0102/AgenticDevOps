@@ -11,6 +11,7 @@ import { ReposPage } from './components/ReposPage'
 import { SettingsPage } from './components/SettingsPage'
 import { RunOverview } from './components/RunOverview'
 import { RunSettingsPanel } from './components/RunSettingsPanel'
+import { ResizableCols } from './components/ResizableCols'
 import { RunsHome } from './components/RunsHome'
 import { StatusBar } from './components/StatusBar'
 import { LogPanel } from './components/LogPanel'
@@ -176,12 +177,16 @@ export default function App() {
           </nav>
 
           {tab === 'activity' && (
-            <div className="cols">
-              {/* live log is in-memory only — for a finished run it's empty noise, so the
-                  durable history takes the full width instead */}
-              {!terminal && <LogPanel runId={runId} active={!terminal} />}
+            // live log is in-memory only — for a finished run it's empty noise, so the durable
+            // history takes the full width; otherwise the two boxes share a drag-resizable split.
+            terminal ? (
               <EventTimeline runId={runId} stop={terminal} />
-            </div>
+            ) : (
+              <ResizableCols
+                left={<LogPanel runId={runId} active={!terminal} />}
+                right={<EventTimeline runId={runId} stop={terminal} />}
+              />
+            )
           )}
           {tab === 'artifacts' && <ArtifactsPanel runId={runId} />}
           {tab === 'microtasks' && <MicrotasksPanel runId={runId} />}

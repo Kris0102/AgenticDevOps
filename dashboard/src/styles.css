@@ -189,6 +189,26 @@ button.giveup:hover { border-color: var(--red); background: #f851490f; }
 
 /* ---- panels ---- */
 .cols { display: grid; grid-template-columns: 1fr 360px; gap: 12px; }
+
+/* Drag-resizable two-panel split (Activity: live logs | history). The divider sets the
+   right panel's width; each panel is also vertically resizable via its native bottom handle. */
+.rcols { display: flex; align-items: flex-start; }
+.rcols-left { flex: 1 1 auto; min-width: 0; }
+.rcols-right { flex: 0 0 auto; min-width: 0; }
+.rcols-left > .panel, .rcols-right > .panel {
+  resize: vertical; overflow: auto; min-height: 220px; max-height: 85vh;
+}
+.rcols-handle { flex: 0 0 12px; align-self: stretch; cursor: col-resize; position: relative; }
+.rcols-handle::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px;
+  border-radius: 2px; background: var(--border); transition: background 0.12s;
+}
+.rcols-handle:hover::before { background: var(--accent); }
+@media (max-width: 900px) {
+  .rcols { flex-direction: column; }
+  .rcols-right { width: auto !important; align-self: stretch; }
+  .rcols-handle { display: none; }
+}
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
 .panel h3 { margin: 0 0 8px; font-size: 14px; }
 

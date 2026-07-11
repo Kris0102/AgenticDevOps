@@ -234,7 +234,10 @@ def resume_run(run_id: str, decision: HitlResume, background: BackgroundTasks) -
         raise HTTPException(status.HTTP_409_CONFLICT, "run is not paused at a HITL gate")
     if decision.decision == HitlDecision.REJECT and not decision.note:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "reject requires a note")
-    service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
+    # Atomic claim: refuse if a worker is already driving this run (a second concurrent driver
+    # on the same thread_id would corrupt the checkpoint). Also closes the is_paused TOCTOU.
+    if not service.mark_active(run_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "run is already being driven")
     background.add_task(service.resume, run_id, decision)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
 
@@ -261,12 +264,17 @@ def continue_run(run_id: str, background: BackgroundTasks, body: Optional[Contin
     if current.stalled_kind == "token_budget" and (body is None or body.additional_tokens is None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                              "additional_tokens is required to continue a token-budget stall")
+    # Claim the run BEFORE touching its checkpoint (raise_token_budget patches it) so two
+    # concurrent /continue can't both mutate + drive the same thread_id. The RUNNING check above
+    # is a fast racy pre-filter; this atomic claim is the authoritative guard.
+    if not service.mark_active(run_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "run is already being driven")
     if body and body.additional_tokens is not None:
         try:
             service.raise_token_budget(run_id, body.additional_tokens)
         except InvalidTokenBudgetError as e:
+            service.mark_inactive(run_id)   # release the claim — no worker will run
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
-    service.mark_active(run_id)   # sync, before the task starts → poll never sees STALLED
     background.add_task(service.continue_run, run_id)
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
 

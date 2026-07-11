@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import uuid
 from typing import AsyncIterator, List, Optional
 
@@ -121,9 +122,14 @@ class Service:
     All durable state lives in the LangGraph checkpoint, keyed by thread_id=run_id;
     this class holds no per-run state and is safe to construct once at app startup.
 
-    NOTE (concurrency): the module-global `graph`/`checkpointer` share one psycopg
-    connection. Running multiple runs truly in parallel needs a connection pool —
-    fine for the single-user dashboard MVP, harden before multi-tenant. See ADR 0012.
+    CONCURRENCY (ADR 0032): multiple runs can execute at once. Each run drives the graph in
+    its own BackgroundTask thread; the checkpointer is backed by a psycopg CONNECTION POOL
+    (orchestrator/checkpointer.py) so concurrent `graph.invoke`s — and a `get_state` poll
+    racing a run's superstep write — each borrow their own connection instead of colliding on
+    one. SQLAlchemy already pools; `log_bus` is per-run + locked; structlog run_id binding is a
+    per-task contextvar; `_active` is lock-guarded; each run owns its own sandbox container.
+    A run's work is single-threaded (one worker per run_id, enforced by `_active`) — we
+    parallelize ACROSS runs, never within one thread_id.
     """
 
     def __init__(self) -> None:
@@ -133,17 +139,34 @@ class Service:
         # tell a genuinely-RUNNING run from a STALLED one (checkpoint non-terminal but no
         # worker driving it — the process died before the _drive guard could FAIL it). The
         # set is empty after a restart, so every previously-running run reads as STALLED and
-        # becomes continuable. Single-worker assumption (see class note + ADR 0019).
+        # becomes continuable (ADR 0019). Guarded by a lock: with concurrent runs it's
+        # mutated from several background-worker threads and read from the API event loop.
         self._active: set[str] = set()
+        self._active_lock = threading.Lock()
         self._github = GitHubRepoClient()
 
-    def mark_active(self, run_id: str) -> None:
-        """Register a run as being driven NOW. Called synchronously from the route handler
-        before the BackgroundTask starts, so the 202 response never briefly reports STALLED."""
-        self._active.add(run_id)
+    def mark_active(self, run_id: str) -> bool:
+        """Atomically CLAIM the run for driving. Returns True if the caller now owns it, False if
+        a worker is ALREADY driving it — the caller must then refuse (a second concurrent driver
+        on the same thread_id would run two `graph.invoke`s over one checkpoint and corrupt it).
+        Test-and-set under the lock. Called synchronously from the route before the BackgroundTask
+        starts, so the 202 response never briefly reports STALLED."""
+        with self._active_lock:
+            if run_id in self._active:
+                return False
+            self._active.add(run_id)
+            return True
+
+    def mark_inactive(self, run_id: str) -> None:
+        """Release a run's active claim. Called from each drive's `finally`, and by a route
+        that claimed the run but then bailed before scheduling the worker (so it doesn't stay
+        stuck reading RUNNING with no driver)."""
+        with self._active_lock:
+            self._active.discard(run_id)
 
     def is_active(self, run_id: str) -> bool:
-        return run_id in self._active
+        with self._active_lock:
+            return run_id in self._active
 
     def resolve_and_preflight(self, request: RunRequest) -> RunConfig:
         """Resolve the run's effective config (per-run override › global › env) and PROBE the
@@ -208,7 +231,7 @@ class Service:
             self._finalize(run_id)
             return self._response(run_id)
         finally:
-            self._active.discard(run_id)
+            self.mark_inactive(run_id)
             clear_context()
 
     def resume(self, run_id: str, decision: HitlResume) -> RunResponse:
@@ -231,7 +254,7 @@ class Service:
             self._finalize(run_id)
             return self._response(run_id)
         finally:
-            self._active.discard(run_id)
+            self.mark_inactive(run_id)
             clear_context()
 
     def raise_token_budget(self, run_id: str, additional_tokens: int) -> None:
@@ -489,7 +512,7 @@ class Service:
             self._finalize(run_id)
             return self._response(run_id)
         finally:
-            self._active.discard(run_id)
+            self.mark_inactive(run_id)
             clear_context()
 
     def status(self, run_id: str) -> RunResponse:

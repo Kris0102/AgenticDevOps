@@ -20,7 +20,7 @@ from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from db.lessons import LessonStore
 from observability import Category, get_logger
 from orchestrator.state import BlackboardState, Microtask, Reflection, RunConfig, RunStatus
-from providers import TokenUsage, build_chat_llm, sum_usage
+from providers import TokenUsage, build_chat_llm, structured_output_method, sum_usage
 from tool_gateway.Roles import Roles
 
 load_dotenv()
@@ -165,12 +165,14 @@ class Reflector:
         self.max_tool_steps = self.config.knobs.reflector_max_tool_steps
         self.token_usage = TokenUsage()
 
-        self.llm = build_chat_llm(self.config.provider_for(self.llm_config), self.llm_config,
+        provider = self.config.provider_for(self.llm_config)
+        self.llm = build_chat_llm(provider, self.llm_config,
                                   timeout_seconds=self.config.knobs.reflector_timeout_seconds)
         # include_raw=True keeps the underlying AIMessage (and its usage_metadata) accessible
-        # for token accounting (ADR 0025).
+        # for token accounting (ADR 0025). Method is provider-aware: Anthropic → function_calling
+        # (json_mode there yields unparseable JSON from cheaper models); cluster → json_mode.
         self.structured_llm = self.llm.with_structured_output(
-            ReflectionOutput, method="json_mode", include_raw=True
+            ReflectionOutput, method=structured_output_method(provider), include_raw=True
         )
         self.investigator = create_agent(
             self.llm,

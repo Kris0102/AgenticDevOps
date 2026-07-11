@@ -8,7 +8,12 @@ INVESTIGATOR_SYSTEM_PROMPT = (
     "Commands must be simple argv lists (e.g. ls, find, grep, cat) with no pipes or redirects. "
     "Start with: ls -la /workspace. "
     "If files exist, use find and grep to map structure or if the repository is huge use semantic search, then read_sandbox_file for key files. "
-    "End with a concise summary: greenfield vs existing repo, concrete file paths, "
+    "READ THE EXISTING TEST FILES (test/spec/__tests__ dirs, *.test.*, *.spec.*, test_*.py). "
+    "They encode the CURRENT expected behaviour AND they gate the run — a change that breaks a "
+    "shipped test's asserted value without updating that test is unwinnable. Note any existing "
+    "assertion your objective would change, and its exact expected value. "
+    "End with a concise summary: greenfield vs existing repo, concrete file paths, the existing "
+    "tests that assert behaviour the objective touches (with their expected values), "
     "and what must change to satisfy the objective."
 )
 

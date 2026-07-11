@@ -19,6 +19,9 @@ function fmtTokens(n: number): string {
 }
 
 const DONE = new Set(['COMPLETED', 'DONE'])
+// Statuses that mean the coder/tester/reflector loop is actively working this microtask
+// (mirrors the backend's _IN_FLIGHT_MICROTASK_STATUSES) — the row to light up.
+const IN_FLIGHT = new Set(['IN_PROGRESS', 'EXECUTING', 'VERIFYING'])
 
 // Blackboard status → coarse phase for the Gantt strip.
 function phaseOf(status: string): string {
@@ -174,9 +177,14 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
   const phases = useMemo(() => buildPhases(events), [events])
 
   const done = tasks.filter((t) => DONE.has(t.status)).length
-  // The microtask being worked RIGHT NOW (coder/tester/reflector loop) — most
-  // recently-updated non-terminal task; the board is idx-ordered so pick IN_PROGRESS first.
-  const current = live ? tasks.find((t) => t.status === 'IN_PROGRESS') ?? null : null
+  // The microtask being worked RIGHT NOW (coder/tester/reflector loop). Prefer the
+  // checkpoint-derived progress idx (authoritative — it uses current_microtask_id), else fall
+  // back to any in-flight status on the durable board. Only while live.
+  const current = live
+    ? (progress?.microtask ? tasks.find((t) => t.idx === progress.microtask!.idx) : undefined)
+      ?? tasks.find((t) => IN_FLIGHT.has(t.status))
+      ?? null
+    : null
   // Attempt cap for the "now working on" denominator — from the checkpoint-derived
   // progress prop (ADR 0028), matched by idx in case it lags the durable board by a beat.
   const maxAttempts = current && progress?.microtask?.idx === current.idx ? progress.microtask.max_attempts : null

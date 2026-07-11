@@ -549,7 +549,15 @@ a.export:hover { border-color: var(--accent); }
 .mtrow { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #0d1117; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 6px; font-size: 13px; }
 .mtrow.ok { border-left-color: var(--green); }
 .mtrow.bad { border-left-color: var(--red); }
-.mtrow.now { border-left-color: var(--accent); background: #1f6feb10; }
+/* The microtask being worked right now — pulse so it "lights up" on the live board. */
+.mtrow.now { border-left-color: var(--accent); animation: mtnow-pulse 1.6s ease-in-out infinite; }
+@keyframes mtnow-pulse {
+  0%, 100% { background: #1f6feb10; box-shadow: inset 3px 0 0 -1px var(--accent); }
+  50%      { background: #1f6feb2e; box-shadow: inset 3px 0 0 -1px var(--accent), 0 0 12px -2px var(--accent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mtrow.now { animation: none; background: #1f6feb1f; }
+}
 .mtidx { color: var(--muted); font-family: var(--mono); min-width: 16px; }
 .mttitle { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .mtfiles { color: var(--muted); font-size: 12px; white-space: nowrap; }

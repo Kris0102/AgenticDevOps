@@ -3,7 +3,19 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, WithJsonSchema, field_validator
+
+# A permissive "any JSON value" that STILL emits a schema Anthropic accepts. A bare `Any`
+# serializes to an empty `{}` schema, which Anthropic's structured-output/tool converter
+# rejects with "Schema must have a 'type', 'anyOf', 'oneOf', or 'allOf' field" (the cluster's
+# OpenAI-compat endpoint tolerated it; Anthropic does not). `anyOf` satisfies that requirement
+# while keeping the field genuinely any-typed. See ADR/problems-log 2026-07-11.
+JSONValue = Annotated[Any, WithJsonSchema({
+    "anyOf": [
+        {"type": "string"}, {"type": "number"}, {"type": "boolean"},
+        {"type": "object"}, {"type": "array"}, {"type": "null"},
+    ]
+})]
 from langchain_core.messages import AnyMessage
 from abc import ABC 
 
@@ -333,8 +345,8 @@ class IOExample(BaseModel):
     Tester writes assertions directly from this planner-supplied data (deterministic,
     no LLM re-interpretation of prose) — the strongest grounding against tautological
     tests. `expect` is the expected return/result for the given inputs."""
-    given: Dict[str, Any] = Field(default_factory=dict)
-    expect: Any = None
+    given: Dict[str, JSONValue] = Field(default_factory=dict)
+    expect: JSONValue = None
 
 
 class AcceptanceCriterion(BaseModel):

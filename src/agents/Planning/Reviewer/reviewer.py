@@ -21,7 +21,7 @@ from agents.Planning.Reviewer.reviewer_support import (
     _last_ai_text,
     _log_investigation_steps,
 )
-from providers import TokenUsage, build_chat_llm, sum_usage
+from providers import TokenUsage, build_chat_llm, structured_output_method, sum_usage
 
 from agents.Planning.Reviewer.prompts.reviewer_prompt import build_investigation_prompt, build_review_prompt
 from db.lessons import LessonStore
@@ -116,13 +116,16 @@ class Reviewer:
         self.token_usage = TokenUsage()
 
         try:
-            self.llm = build_chat_llm(config.provider_for(self.llm_config), self.llm_config,
+            provider = config.provider_for(self.llm_config)
+            self.llm = build_chat_llm(provider, self.llm_config,
                                       timeout_seconds=self.timeout_seconds)
 
             # Enforce structured output. include_raw=True keeps the underlying AIMessage
-            # (and its usage_metadata) accessible for token accounting (ADR 0025).
+            # (and its usage_metadata) accessible for token accounting (ADR 0025). Method is
+            # provider-aware: Anthropic → function_calling (json_mode there yields unparseable
+            # JSON from cheaper models); cluster → json_mode.
             self.structured_llm = self.llm.with_structured_output(
-                ReviewerOutput, method="json_mode", include_raw=True
+                ReviewerOutput, method=structured_output_method(provider), include_raw=True
             )
 
             if self.tools:

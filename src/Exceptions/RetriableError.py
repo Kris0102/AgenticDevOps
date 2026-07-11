@@ -1,3 +1,4 @@
+import anthropic
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -28,10 +29,18 @@ class RetriableError(Exception):
 # "model overloaded", and 5xx from the cluster. Deterministic failures (bad structured
 # output, recursion-budget exhaustion, a code bug) are NOT here — retrying them just loops.
 TRANSIENT_LLM_ERRORS = (
+    # openai SDK (the cluster / any OpenAI-compatible endpoint)
     APITimeoutError,
     APIConnectionError,
     RateLimitError,       # HTTP 429 — includes the cluster's "model overloaded" response
     InternalServerError,  # HTTP 5xx
+    # anthropic SDK — SAME names, DIFFERENT classes; isinstance on the openai types misses
+    # them (an Anthropic "Request timed out" also slips past the message sniff below).
+    # Covers timeout, connection drop, 429 rate-limit, 5xx, and the 529 overloaded_error.
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
 )
 
 

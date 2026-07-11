@@ -74,6 +74,16 @@ class CoderRunner:
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, e)
             except Exception as e:
                 _log.error("coder.unexpected_error", error=str(e))
+                # Persist the audit rows already added this node — the grounding pre-reads
+                # (fs.read_file → tool.executed) really happened. Without this, the exception
+                # unwinds `session_scope` into a rollback that DISCARDS them, so a run that
+                # stalled on a transient LLM failure lost its coder audit trail entirely.
+                # Commit here (a no-op rollback then runs on the empty tx); never mask the
+                # original error if the commit itself fails.
+                try:
+                    db_session.commit()
+                except Exception:
+                    db_session.rollback()
                 raise
 
             # internal hand-off from Coder — not a BlackboardState channel, must

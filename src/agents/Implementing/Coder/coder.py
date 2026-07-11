@@ -200,7 +200,18 @@ class Coder:
                 recursion_exceeded = True
             except Exception as exception:
                 if is_transient_llm_error(exception):
-                    _log.error("coder.cluster_unreachable", phase="coding", error=str(exception))
+                    # Transient LLM failure (timeout / 429 / 5xx). The client already re-sent the
+                    # SAME prompt up to max_retries before surfacing this; we now stall the run so
+                    # the human can /continue, which re-drives the coder with the SAME prompt
+                    # again. Logged loudly so the retry isn't a silent multi-minute hang.
+                    _log.error(
+                        "coder.llm_attempt_failed",
+                        microtask_id=microtask.microtask_id,
+                        attempt=attempt,
+                        prompt_chars=len(prompt),
+                        error=str(exception),
+                        retry="same prompt is re-sent (client max_retries, then again on /continue)",
+                    )
                     raise RetriableError(f"coder LLM call failed: {exception}", phase="coder")
                 raise
 

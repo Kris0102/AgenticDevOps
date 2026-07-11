@@ -20,7 +20,7 @@ from agents.Planning.Planner.investigation_support import (
     _last_ai_text,
     _log_investigation_steps,
 )
-from providers import TokenUsage, build_chat_llm, sum_usage
+from providers import TokenUsage, build_chat_llm, structured_output_method, sum_usage
 from agents.Planning.Planner.plan_output import create_plan_file_as_output
 from agents.Planning.Planner.prompts.investigator import (
     INVESTIGATOR_SYSTEM_PROMPT,
@@ -123,14 +123,18 @@ class Planner:
         self.token_usage = TokenUsage()
 
         try:
-            self.llm = build_chat_llm(config.provider_for(self.llm_config), self.llm_config,
+            provider = config.provider_for(self.llm_config)
+            self.llm = build_chat_llm(provider, self.llm_config,
                                       timeout_seconds=self.timeout_seconds)
 
             # Enforce structured output at the end of the pipeline. include_raw=True so the
             # underlying AIMessage (and its usage_metadata) stays accessible for token
             # accounting (ADR 0025) — see the parsing_error handling in invoke() below.
+            # Method is provider-aware: Anthropic → function_calling (schema-enforced tool use);
+            # cluster → json_mode. json_mode on Anthropic yields unparseable JSON from cheaper
+            # models (OutputParserException).
             self.structured_llm = self.llm.with_structured_output(
-                PlannerDraft, method="json_mode", include_raw=True
+                PlannerDraft, method=structured_output_method(provider), include_raw=True
             )
 
             # Setup the investigator ReAct agent if tools are available

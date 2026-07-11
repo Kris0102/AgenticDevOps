@@ -107,6 +107,21 @@ For EACH microtask you MUST provide:
    BAD:  {{"text": "server/index.js exists", "examples": []}}
    BAD:  {{"text": "throws the right error near the threshold", "examples": []}}  (a precise boundary → MUST give the input + exact expected output)
 
+   RECONCILE WITH THE EXISTING TESTS — the repo already ships a suite that GATES the run.
+   Before writing a criterion/example, check the investigation for an existing test that already
+   asserts the behaviour you are changing. If a microtask changes a value an existing test
+   asserts (e.g. a repo test expects `corrected: true` but your criterion needs `corrected:
+   false`), you MUST do ONE of:
+     (a) add that test file to THIS microtask's target_files, so the Coder updates it to the new
+         expectation — a behaviour change owns its test change; OR
+     (b) if the existing expectation genuinely CONTRADICTS the objective and both cannot hold,
+         DO NOT silently pick a side: record it in the plan's `open_questions` as a conflict for
+         a human ("existing test tests/x.test.js asserts A for input I; the objective implies
+         not-A — needs a decision"), and do not emit the contradicting criterion.
+   NEVER emit a criterion whose value contradicts a shipped test without doing (a) or (b). A
+   change that breaks an existing test without updating it is an UNWINNABLE microtask — the
+   Coder oscillates between the two expectations and the run is BLOCKED.
+
 5. context_files — existing files the Coder should READ (not edit) to match this repo's
    conventions: a sibling file showing established patterns, a shared types/schema file,
    a config file whose values the new code must match. Use exact absolute sandbox paths,

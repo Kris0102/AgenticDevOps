@@ -24,6 +24,18 @@ from orchestrator.state import BaseLLMConfig, ProviderProfile, ProviderType
 _log = get_logger(Category.ORCHESTRATOR)
 
 
+def structured_output_method(provider: ProviderProfile) -> str:
+    """Which `with_structured_output` method reliably yields schema-valid JSON on this provider.
+
+    Anthropic → `function_calling` (native tool use — the model is constrained to the schema).
+    Anthropic has NO real JSON mode: `method="json_mode"` there just prompts "output JSON" and
+    parses whatever comes back, so a cheaper model (Haiku) emits prose / markdown-fenced /
+    malformed JSON and the parser raises OutputParserException. Tool use is Anthropic's
+    schema-enforced path. OpenAI-compatible endpoints (the cluster) → `json_mode`, which is what
+    works there (their tool-calling support is uneven)."""
+    return "function_calling" if provider.type == ProviderType.ANTHROPIC else "json_mode"
+
+
 def build_chat_llm(
     provider: ProviderProfile,
     llm: BaseLLMConfig,
@@ -32,10 +44,19 @@ def build_chat_llm(
 ) -> BaseChatModel:
     """Construct the chat model for `provider`+`llm`. Never logs the api_key."""
     if provider.type == ProviderType.ANTHROPIC:
+        # Do NOT send `temperature`: the current Claude models (Sonnet 5, Opus 4.8/4.7, Fable 5)
+        # REJECT it with a 400 ("`temperature` is deprecated for this model") — steer via
+        # prompting instead. Omitting it is safe on the older models too (they use their
+        # default). `temperature=None` keeps langchain from putting it in the request body.
         return ChatAnthropic(
             model_name=llm.model,
             api_key=provider.api_key,  # type: ignore[arg-type]
-            temperature=llm.temperature,
+            temperature=None,
+            # Explicit output ceiling: langchain's unset default resolves to 4096, which
+            # TRUNCATES a Coder writing a whole file in one write_sandbox_file call (cluster
+            # runs have produced 17k-token outputs). 16k is the safe non-streaming maximum
+            # (the SDK refuses much larger without streaming) and ample for one file.
+            max_tokens_to_sample=16_000,   # field alias for max_tokens (pydantic alias)
             max_retries=llm.max_retries,
             timeout=timeout_seconds,
             stop=None,

@@ -64,6 +64,23 @@ class AgentModelPatch(BaseModel):
     model: str
 
 
+class RunConfigPatch(BaseModel):
+    """Body for PATCH /runs/{id}/config — edit ONE knob or loop-cap on a STALLED or paused
+    run (the recovery console, GH #64 follow-up). `field` is 'knobs.<name>' (any Knobs field)
+    or 'constraints.max_planner_reviewer_iterations' | 'constraints.max_microtask_attempts'. Every
+    editable field is a positive int — the change is checkpointed and read by the relevant
+    agent on its next node. `max_total_tokens` is NOT edited here: it has its own additive
+    path on /continue (ADR 0025)."""
+    field: str
+    value: int
+
+    @model_validator(mode="after")
+    def _positive(self) -> "RunConfigPatch":
+        if self.value <= 0:
+            raise ValueError("value must be a positive integer")
+        return self
+
+
 class RepoCreateRequest(BaseModel):
     """Register a repo. `repo_url` is canonicalized server-side; label defaults to
     owner/repo. `token` is an optional per-repo PAT (falls back to the global

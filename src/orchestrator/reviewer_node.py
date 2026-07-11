@@ -67,17 +67,17 @@ class ReviewerRunner:
                 _log.warning("reviewer.token_budget_exceeded",
                              used=iteration.tokens_used_total, limit=constraints.max_total_tokens)
                 raise TokenBudgetExceededError(
-                    phase="plan_review", used=iteration.tokens_used_total, limit=constraints.max_total_tokens,
+                    phase="plan_review", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
             # Runaway planner↔reviewer guard. Cap the planning loop at
-            # max_total_iterations; on exhaustion fail the run (and persist it)
+            # max_planner_reviewer_iterations; on exhaustion fail the run (and persist it)
             # rather than re-invoking the LLM forever.
-            if iteration.planner_reviewer_iteration_current >= constraints.max_total_iterations:
+            if iteration.planner_reviewer_iteration_current >= constraints.max_planner_reviewer_iterations:
                 _log.warning(
                     "reviewer.max_iterations_exceeded",
                     current=iteration.planner_reviewer_iteration_current,
-                    limit=constraints.max_total_iterations,
+                    limit=constraints.max_planner_reviewer_iterations,
                     recovery="setting status to FAILED",
                 )
                 result = {"status": RunStatus.FAILED}
@@ -86,7 +86,7 @@ class ReviewerRunner:
                 EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_FAILED, {
                     "reason": "planner-reviewer iteration cap exceeded",
                     "iterations": iteration.planner_reviewer_iteration_current,
-                    "limit": constraints.max_total_iterations,
+                    "limit": constraints.max_planner_reviewer_iterations,
                 })
                 return result
 

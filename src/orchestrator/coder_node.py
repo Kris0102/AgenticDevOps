@@ -108,9 +108,9 @@ class CoderRunner:
         return None
 
     def _check_stop_limit(self, microtask: Microtask) -> None:
-        """Minimal stop-condition enforcement (audit #1, coder half): refuse a
-        microtask that already burned its attempt budget — kills the runaway
-        coder↔reflector loop. Router-level max_total_iterations is a separate TODO."""
+        """Per-microtask stop condition (audit #1, coder half): refuse a microtask that already
+        burned its attempt budget — bounds the coder↔tester↔reflector cycle PER microtask
+        (`max_microtask_attempts`); a stuck microtask fails the run."""
         constraints = self.state.get("constraints")
         limit = microtask.max_attempts or (constraints.max_microtask_attempts if constraints else None)
         if limit is not None and microtask.attempts >= limit:

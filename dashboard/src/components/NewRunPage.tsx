@@ -74,7 +74,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
         task,
         hitlCheckpoints: GATES.filter((g) => gates[g] && !(g === 'deploy' && skipDeploy)),
         llm,
-        maxTotalIterations: settings.defaults.max_total_iterations,
+        maxPlannerReviewerIterations: settings.defaults.max_planner_reviewer_iterations,
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
         maxTotalTokens: settings.defaults.max_total_tokens,
         commitMessage: commitMessage.trim() || null,

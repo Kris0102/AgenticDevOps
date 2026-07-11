@@ -56,6 +56,7 @@ from orchestrator.state import (
     AppSettings,
     BlackboardState,
     EventType,
+    Iteration,
     MicrotaskStatus,
     RunConfig,
     RunStatus,
@@ -289,6 +290,14 @@ class Service:
         if raw is None:
             return None
         return raw if isinstance(raw, RunConfig) else RunConfig.model_validate(raw)
+    
+    def _run_iteration(self, run_id: str) -> Optional[Iteration]:
+        """The run's checkpointed Iteration (loop counters), coerced back to the model. None
+        before the graph has produced one (mid-bootstrap)."""
+        it = (graph.get_state(self._config(run_id)).values or {}).get("iteration")
+        if it is None:
+            return None
+        return it if isinstance(it, Iteration) else Iteration.model_validate(it)
 
     def run_config_view(self, run_id: str) -> RunConfigView:
         """The run-settings view: per-agent models (editable), providers for the pickers, and
@@ -300,7 +309,11 @@ class Service:
         constraints = values.get("constraints")
         hitl = values.get("hitl")
         settings = SettingsStore.get()  # backend-internal; providers listed WITHOUT secrets below
-        editable = self.status(run_id).run_state not in (RunState.COMPLETED, RunState.FAILED)
+        run_state = self.status(run_id).run_state
+        # Models: changeable any time the run isn't terminal (incl. while running — GH #64).
+        editable = run_state not in (RunState.COMPLETED, RunState.FAILED)
+        # Knobs + loop-caps: only when there's no live driver to race — a stalled or gated run.
+        expert_editable = run_state in (RunState.STALLED, RunState.PAUSED_HITL)
         return RunConfigView(
             models=[
                 AgentModelView(agent=a, provider_id=getattr(config.llm, a).provider_id,
@@ -311,13 +324,66 @@ class Service:
                        for p in settings.providers],
             knobs=config.knobs.model_dump(),
             constraints={
-                "max_total_iterations": constraints.max_total_iterations if constraints else None,
+                "max_planner_reviewer_iterations": constraints.max_planner_reviewer_iterations if constraints else None,
                 "max_microtask_attempts": constraints.max_microtask_attempts if constraints else None,
                 "max_total_tokens": constraints.max_total_tokens if constraints else None,
             },
             hitl_checkpoints=[str(c) for c in (hitl.hitl_checkpoints if hitl else [])],
             editable=editable,
+            expert_editable=expert_editable,
         )
+
+    # Loop-caps editable via the generic config patch (max_total_tokens has its own additive
+    # /continue path, ADR 0025 — deliberately excluded to keep one owner).
+    _EDITABLE_CONSTRAINTS = ("max_planner_reviewer_iterations", "max_microtask_attempts")
+    # Hard ceiling per editable cap so a fat-fingered value can't effectively disable the guard.
+    _CONSTRAINT_CEILINGS = {
+        "max_planner_reviewer_iterations": 100,
+        "max_microtask_attempts": 50,
+    }
+
+    def patch_run_config(self, run_id: str, field: str, value: int) -> None:
+        """Edit ONE knob or loop-cap on a STALLED/paused run (recovery console, GH #64
+        follow-up). Patches the checkpointed RunConfig.knobs or Constraints via
+        graph.update_state — read by the relevant agent on its next node, same mechanism as
+        set_agent_model. Refused while the run is actively RUNNING (the driver would race the
+        patch) or terminal (frozen). `field` = 'knobs.<name>' | 'constraints.<cap>'."""
+        if value <= 0:
+            raise InvalidModelChangeError("value must be a positive integer")
+        if self.status(run_id).run_state not in (RunState.STALLED, RunState.PAUSED_HITL):
+            raise InvalidModelChangeError(
+                "config can only be edited while the run is stalled or paused at a gate")
+
+        config = self._run_config(run_id)
+        if config is None:
+            raise InvalidModelChangeError(f"run {run_id} has no checkpointed config to patch")
+
+        group, _, name = field.partition(".")
+        if group == "knobs":
+            if name not in config.knobs.model_fields:
+                raise InvalidModelChangeError(f"unknown knob '{name}'")
+            old = getattr(config.knobs, name)
+            patched = config.model_copy(update={"knobs": config.knobs.model_copy(update={name: value})})
+            graph.update_state(self._config(run_id), {"config": patched})
+        elif group == "constraints":
+            if name not in self._EDITABLE_CONSTRAINTS:
+                raise InvalidModelChangeError(f"constraint '{name}' is not editable here")
+            constraints = graph.get_state(self._config(run_id)).values.get("constraints")
+            if constraints is None:
+                raise InvalidModelChangeError(f"run {run_id} has no checkpointed constraints to patch")
+            old = getattr(constraints, name)
+            self._verify_constraint_value(
+                name, value, self._run_iteration(run_id), self._current_microtask_attempts(run_id))
+            graph.update_state(self._config(run_id),
+                               {"constraints": constraints.model_copy(update={name: value})})
+        else:
+            raise InvalidModelChangeError(f"field '{field}' is not editable")
+
+        with db.session_scope() as session:
+            EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_CONFIG_CHANGED, {
+                "field": field, "old_value": old, "new_value": value,
+            })
+        _log.info("run.config_changed", run_id=run_id, field=field, old=old, new=value)
 
     def set_agent_model(self, run_id: str, agent: str, provider_id: str, model: str) -> None:
         """Change ONE agent's model mid-run (GH #64) by patching the checkpointed RunConfig —
@@ -360,7 +426,49 @@ class Service:
                 "new_provider_id": provider_id, "new_model": model,
             })
         _log.info("run.model_changed", run_id=run_id, agent=agent, provider=provider_id, model=model)
+    
+    
+    def _verify_constraint_value(
+        self, name: str, value: int, current_iteration: Optional[Iteration], current_microtask_attempts: int,
+    ) -> None:
+        """Guard a loop-cap patch on a stalled/paused run. A new cap must leave the run room to
+        continue — setting it at/below the count the run has ALREADY reached would just re-trip
+        the same guard on the next node (an instant re-stall/re-fail). Also enforce a per-cap
+        hard ceiling so a mistyped value can't effectively disable the guard."""
+        # The planner↔reviewer cap can't be dropped below where the planning loop already is.
+        if name == "max_planner_reviewer_iterations":
+            cur = current_iteration.planner_reviewer_iteration_current if current_iteration else 0
+            if value <= cur:
+                raise InvalidModelChangeError(
+                    f"{name} ({value}) must exceed the planner↔reviewer iterations already used ({cur})")
+        # The per-microtask cap can't be dropped at/below the attempts already spent on the
+        # in-flight microtask — the next coder cycle's `_check_stop_limit` (attempts >= limit)
+        # would fail the run instantly.
+        elif name == "max_microtask_attempts":
+            if value <= current_microtask_attempts:
+                raise InvalidModelChangeError(
+                    f"{name} ({value}) must exceed the attempts already spent on the current "
+                    f"microtask ({current_microtask_attempts})")
+        ceiling = self._CONSTRAINT_CEILINGS.get(name)
+        if ceiling is not None and value > ceiling:
+            raise InvalidModelChangeError(f"{name} cannot exceed {ceiling}")
 
+    def _current_microtask_attempts(self, run_id: str) -> int:
+        """Attempts already spent on the microtask the execution loop is working now (the one
+        `coder_node` would re-enter on /continue) — the in-flight microtask, else 0. Mirrors the
+        selection used by `_progress` / the coder-tester-reflector nodes."""
+        values = graph.get_state(self._config(run_id)).values or {}
+        microtasks = values.get("microtasks") or []
+        by_id = {mt.microtask_id: mt for mt in microtasks}
+        current = by_id.get(values.get("current_microtask_id"))
+        if current is None:
+            current = next(
+                (mt for mt in sorted(microtasks, key=lambda m: m.idx)
+                 if mt.status in self._IN_FLIGHT_MICROTASK_STATUSES),
+                None,
+            )
+        return current.attempts if current is not None else 0
+    
     def continue_run(self, run_id: str) -> RunResponse:
         """Re-drive a STALLED run from its checkpoint. Used when the worker that was driving
         the graph died (uvicorn crash/restart, OOM-kill) leaving a non-terminal checkpoint
@@ -966,7 +1074,7 @@ class Service:
             graph.invoke(graph_input, config=self._config(run_id))
         except TokenBudgetExceededError as exc:
             # Constraints.max_total_tokens reached (ADR 0025/0027). Deliberately NOT a
-            # terminal FAILED like the other deterministic caps (max_total_iterations,
+            # terminal FAILED like the other deterministic caps (max_planner_reviewer_iterations,
             # microtask attempts): a token cap is a policy knob the human can raise
             # out-of-band, so leave the run non-terminal — STALLED, checkpoint intact —
             # and recoverable via /continue (retries the same node) or /fail to close it.
@@ -1088,7 +1196,7 @@ class Service:
             )
         return PipelineProgress(
             planner_reviewer_iteration=iteration.planner_reviewer_iteration_current,
-            planner_reviewer_max=constraints.max_total_iterations,
+            planner_reviewer_max=constraints.max_planner_reviewer_iterations,
             microtask=microtask_progress,
         )
 

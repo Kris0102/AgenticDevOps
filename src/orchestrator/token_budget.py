@@ -1,6 +1,6 @@
 """Global token-budget accounting + enforcement (ADR 0025), shared by all 5 agent nodes.
 
-`token_budget_exceeded` mirrors the `max_total_iterations` guard in `reviewer_node.py`: each
+`token_budget_exceeded` mirrors the `max_planner_reviewer_iterations` guard in `reviewer_node.py`: each
 Runner checks this at the START of `invoke()`, before spending another LLM call, so a run
 stops cleanly the moment the accumulated `Iteration.tokens_used_total` reaches
 `Constraints.max_total_tokens` — never mid-call. Unlike that iteration cap, exceeding the

@@ -9,5 +9,5 @@ npx concurrently \
   --shell "bash" \
   --names "API,NPM" \
   --prefix-colors "blue,green" \
-  "source venv/bin/activate && export PYTHONPATH=src && uvicorn src.api.app:app --port 8000 --reload" \
+  "source venv/bin/activate && export PYTHONPATH=src && uvicorn src.api.app:app --port 8000" \
   "cd dashboard && npm run dev"

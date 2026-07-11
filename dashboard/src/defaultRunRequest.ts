@@ -11,7 +11,7 @@ export interface NewRunOpts {
   task: string
   hitlCheckpoints: string[] // subset of 'plan' | 'code' | 'test' | 'deploy'
   llm?: LLMConfig | null                 // per-run model override (settings hub)
-  maxTotalIterations?: number
+  maxPlannerReviewerIterations?: number
   maxMicrotaskAttempts?: number
   maxTotalTokens?: number | null
   commitMessage?: string | null          // deploy commit message; editable again at the deploy gate
@@ -39,7 +39,7 @@ export function buildRunRequest(opts: NewRunOpts) {
     constraints: {
       time_budget_minutes: 60,
       cost_budget_usd: 10.0,
-      max_total_iterations: opts.maxTotalIterations ?? 5,
+      max_planner_reviewer_iterations: opts.maxPlannerReviewerIterations ?? 5,
       max_microtask_attempts: opts.maxMicrotaskAttempts ?? 3,
       max_total_tokens: opts.maxTotalTokens ?? null,
       allowed_languages: ['python', 'javascript'],

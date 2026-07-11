@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from langchain_core.messages import AnyMessage
 from abc import ABC 
 
@@ -87,6 +87,7 @@ class EventType(str, Enum):
     LLM_USAGE_RECORDED = "llm.usage"
     RUN_TOKEN_BUDGET_RAISED = "run.token_budget_raised"
     RUN_MODEL_CHANGED = "run.model_changed"
+    RUN_CONFIG_CHANGED = "run.config_changed"
 
     def __str__(self) -> str:
         return self.value
@@ -234,7 +235,16 @@ class RunConfig(BaseModel):
 
 class RunDefaults(BaseModel):
     """Global defaults the per-run page pre-fills (all overridable per run)."""
-    max_total_iterations: int = 6
+    # Cap on the planner↔reviewer planning loop (NOT a whole-run iteration budget).
+    # BACKCOMPAT (remove after DB wipe): the alias + populate_by_name let a settings blob
+    # written before the `max_total_iterations` rename keep loading. Drop the alias/config
+    # once the DB is wiped → `max_planner_reviewer_iterations: int = 6`.
+    model_config = ConfigDict(populate_by_name=True)
+    max_planner_reviewer_iterations: int = Field(
+        default=6, validation_alias=AliasChoices("max_planner_reviewer_iterations", "max_total_iterations"))
+    # Per-microtask cap on the coder↔tester↔reflector cycle (how many times ONE microtask may
+    # be retried before the run FAILS). There is deliberately NO separate run-wide loop cap —
+    # this bounds each microtask, and a stuck one fails the run.
     max_microtask_attempts: int = 3
     # Default run-wide token budget (Constraints.max_total_tokens). None = no cap.
     max_total_tokens: Optional[int] = None
@@ -260,9 +270,17 @@ class AppSettings(BaseModel):
     github_token: Optional[str] = None
 
 class Constraints(BaseModel):
+    # BACKCOMPAT (remove after DB wipe): alias + populate_by_name so a checkpoint written
+    # before the `max_total_iterations` rename keeps loading. Drop once the DB is wiped →
+    # `max_planner_reviewer_iterations: int` (no Field/alias, no model_config).
+    model_config = ConfigDict(populate_by_name=True)
     time_budget_minutes: Optional[int] = None
     cost_budget_usd: Optional[float] = None
-    max_total_iterations: int
+    # Cap on the planner↔reviewer planning loop (enforced in reviewer_node → FAILED).
+    max_planner_reviewer_iterations: int = Field(
+        validation_alias=AliasChoices("max_planner_reviewer_iterations", "max_total_iterations"))
+    # Per-microtask cap on the coder↔tester↔reflector cycle (enforced in coder_node
+    # `_check_stop_limit` against `microtask.attempts` → FAILED). No separate run-wide loop cap.
     max_microtask_attempts: int
     # Hard cap on total tokens consumed across every agent in this run. None = no
     # budget. Enforced in each node (see orchestrator/token_budget.py, ADR 0025).

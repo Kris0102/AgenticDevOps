@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
-from api.requests.requests import AgentModelPatch, ContinueRunRequest, RepoCreateRequest, RepoUpdateRequest, RunRequest
+from api.requests.requests import AgentModelPatch, ContinueRunRequest, RepoCreateRequest, RepoUpdateRequest, RunConfigPatch, RunRequest
 from api.responses.responses import (
     ArtifactContent,
     ArtifactView,
@@ -200,6 +200,18 @@ def patch_run_model(run_id: str, patch: AgentModelPatch) -> RunConfigView:
     effect on that agent's next node. Returns the refreshed run-settings view."""
     try:
         service.set_agent_model(run_id, patch.agent, patch.provider_id, patch.model)
+        return service.run_config_view(run_id)
+    except InvalidModelChangeError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+
+
+@app.patch("/runs/{run_id}/config", response_model=RunConfigView)
+def patch_run_config(run_id: str, patch: RunConfigPatch) -> RunConfigView:
+    """Edit one knob or loop-cap on a stalled/paused run (recovery console, GH #64 follow-up).
+    Patches the checkpointed config; read by the relevant agent on its next node. 422 when the
+    run is running or terminal, or the field isn't editable. Returns the refreshed view."""
+    try:
+        service.patch_run_config(run_id, patch.field, patch.value)
         return service.run_config_view(run_id)
     except InvalidModelChangeError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))

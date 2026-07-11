@@ -40,10 +40,10 @@ SETTINGS_SCHEMA = [
      "description": "How many times the Reflector may send a wrong SYNTHESIZED test back to the Tester before forcing the code-fix path."},
 
     # ── Expert · run defaults (defaults.*) ──────────────────────────────────────
-    {"key": "defaults.max_total_iterations", "label": "Max planner↔reviewer loops", "type": "int", "group": "expert",
-     "description": "Hard cap on planning-loop iterations before a run is FAILED — stops a planner/reviewer that never converges."},
+    {"key": "defaults.max_planner_reviewer_iterations", "label": "Max planner↔reviewer loops", "type": "int", "group": "expert",
+     "description": "Hard cap on the planner↔reviewer PLANNING loop before a run is FAILED — stops a planner/reviewer that never converges. NOT a whole-run iteration budget; it only bounds the planning phase."},
     {"key": "defaults.max_microtask_attempts", "label": "Max microtask attempts", "type": "int", "group": "expert",
-     "description": "How many times one microtask may be retried (coder↔tester↔reflector) before the run is FAILED."},
+     "description": "How many coder↔tester↔reflector cycles ONE microtask may run before the run is FAILED — the per-microtask execution-loop cap. A microtask that can't pass its tests within this many attempts fails the run."},
     {"key": "defaults.max_total_tokens", "label": "Max tokens per run (thousands)", "type": "int", "group": "expert",
      "nullable": True, "scale": 1000,
      "description": "Hard cap on total tokens consumed across every agent in one run, entered in thousands "

@@ -101,7 +101,7 @@ export interface Knobs {
 }
 
 export interface RunDefaults {
-  max_total_iterations: number
+  max_planner_reviewer_iterations: number
   max_microtask_attempts: number
   max_total_tokens?: number | null
   hitl_checkpoints: string[]
@@ -127,9 +127,10 @@ export interface RunConfigView {
   models: AgentModelView[]
   providers: { id: string; label: string; models: string[] }[]
   knobs: Record<string, number>
-  constraints: Record<string, number | null>   // max_total_iterations / max_microtask_attempts / max_total_tokens
+  constraints: Record<string, number | null>   // max_planner_reviewer_iterations / max_microtask_attempts / max_total_tokens
   hitl_checkpoints: string[]
-  editable: boolean       // per-agent model can be changed now (run not terminal)
+  editable: boolean         // per-agent model can be changed now (run not terminal)
+  expert_editable: boolean  // knobs + loop-caps editable now (run stalled or paused at a gate)
 }
 
 export interface SchemaField {
@@ -343,6 +344,8 @@ export const api = {
     http.get<RunConfigView>(`/runs/${id}/config`).then((r) => r.data),
   patchRunModel: (id: string, agent: string, providerId: string, model: string) =>
     http.patch<RunConfigView>(`/runs/${id}/model`, { agent, provider_id: providerId, model }).then((r) => r.data),
+  patchRunConfig: (id: string, field: string, value: number) =>
+    http.patch<RunConfigView>(`/runs/${id}/config`, { field, value }).then((r) => r.data),
 
   getEvents: (id: string, after = 0) =>
     http.get<EventView[]>(`/runs/${id}/events`, { params: { after } }).then((r) => r.data),

@@ -244,7 +244,7 @@ class RunLauncher:
         constraints = Constraints(
             time_budget_minutes=60,
             cost_budget_usd=10.0,
-            max_total_iterations=5,
+            max_planner_reviewer_iterations=5,
             max_microtask_attempts=3,
             allowed_languages=["python", "javascript"],
             forbidden_paths=["src/secrets/"],

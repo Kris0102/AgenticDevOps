@@ -27,10 +27,15 @@ class RunConfigView(BaseModel):
     /runs/{id}/model while the run is not terminal."""
     models: List[AgentModelView]
     providers: List[ProviderOption]
-    knobs: Dict[str, Any]                       # per-agent tuning — read-only
-    constraints: Dict[str, Optional[int]]       # max_total_iterations / max_microtask_attempts / max_total_tokens
+    knobs: Dict[str, Any]                       # per-agent tuning — editable only when expert_editable
+    constraints: Dict[str, Optional[int]]       # max_planner_reviewer_iterations / max_microtask_attempts / max_total_tokens
     hitl_checkpoints: List[str]                 # active review gates — read-only
     editable: bool                              # models can be changed now (run not terminal)
+    # Knobs + loop-caps can be edited now — ONLY while the run is stalled or paused at a gate
+    # (a running run's checkpoint would race the driver; a terminal run is frozen). GH #64
+    # follow-up: the run-settings panel becomes a recovery console when this is true.
+    expert_editable: bool  # Important for the frontend to know whehter to grey out 
+    #the knobs/loop-caps or to allow editing. GH #64 follow-up.
 
 
 class RepoView(BaseModel):

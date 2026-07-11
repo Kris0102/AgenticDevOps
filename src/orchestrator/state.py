@@ -86,6 +86,7 @@ class EventType(str, Enum):
     SEMANTIC_WORKSPACE_SYNCED = "semantic.workspace_synced"
     LLM_USAGE_RECORDED = "llm.usage"
     RUN_TOKEN_BUDGET_RAISED = "run.token_budget_raised"
+    RUN_MODEL_CHANGED = "run.model_changed"
 
     def __str__(self) -> str:
         return self.value

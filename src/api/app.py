@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
-from api.requests.requests import ContinueRunRequest, RepoCreateRequest, RepoUpdateRequest, RunRequest
+from api.requests.requests import AgentModelPatch, ContinueRunRequest, RepoCreateRequest, RepoUpdateRequest, RunRequest
 from api.responses.responses import (
     ArtifactContent,
     ArtifactView,
@@ -15,12 +15,14 @@ from api.responses.responses import (
     LogView,
     MicrotaskRow,
     RepoView,
+    RunConfigView,
     RunExportBundle,
     RunResponse,
     RunResponseWithDetails,
     RunState,
 )
 from api.service.service import (
+    InvalidModelChangeError,
     InvalidTokenBudgetError,
     ProviderUnreachableError,
     RepoValidationFailedError,
@@ -179,6 +181,28 @@ def repo_branches(repo_id: str) -> BranchListResponse:
 def get_run(run_id: str) -> RunResponse:
     """Poll target: current lifecycle state + pending HITL payload (if any)."""  # We will run this method to check whether the run is paused at a HTIL gate!
     return service.status(run_id)
+
+
+@app.get("/runs/{run_id}/config", response_model=RunConfigView)
+def get_run_config(run_id: str) -> RunConfigView:
+    """Run-settings view (GH #64): the effective config the run is executing under — per-agent
+    models (editable while non-terminal), providers for the pickers, and the read-only
+    knobs / constraints / gates."""
+    try:
+        return service.run_config_view(run_id)
+    except InvalidModelChangeError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+
+
+@app.patch("/runs/{run_id}/model", response_model=RunConfigView)
+def patch_run_model(run_id: str, patch: AgentModelPatch) -> RunConfigView:
+    """Change one agent's model mid-run (GH #64). Patches the checkpointed RunConfig; takes
+    effect on that agent's next node. Returns the refreshed run-settings view."""
+    try:
+        service.set_agent_model(run_id, patch.agent, patch.provider_id, patch.model)
+        return service.run_config_view(run_id)
+    except InvalidModelChangeError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
 
 
 @app.get("/runs/{run_id}/hitl", response_model=HitlReviewContext)

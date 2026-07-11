@@ -7,6 +7,32 @@ from pydantic import BaseModel
 from gitops.github_api import RepoValidationResult
 
 
+class AgentModelView(BaseModel):
+    """One agent's model selection for a run (GH #64) — editable mid-run."""
+    agent: str          # planner | reviewer | coder | tester | reflector
+    provider_id: str
+    model: str
+
+
+class ProviderOption(BaseModel):
+    """A provider for the run-settings model pickers — no secrets."""
+    id: str
+    label: str
+    models: List[str]
+
+
+class RunConfigView(BaseModel):
+    """The effective config a run is executing under (run-settings view). Everything is
+    read-only EXCEPT `models` (per-agent), which can be changed mid-run via PATCH
+    /runs/{id}/model while the run is not terminal."""
+    models: List[AgentModelView]
+    providers: List[ProviderOption]
+    knobs: Dict[str, Any]                       # per-agent tuning — read-only
+    constraints: Dict[str, Optional[int]]       # max_total_iterations / max_microtask_attempts / max_total_tokens
+    hitl_checkpoints: List[str]                 # active review gates — read-only
+    editable: bool                              # models can be changed now (run not terminal)
+
+
 class RepoView(BaseModel):
     """One registered repo (GH #41). `token` is the mask when a per-repo token is
     stored, else None — raw tokens never cross the API."""

@@ -336,6 +336,22 @@ button.danger:hover { border-color: var(--red); }
 }
 .modelcard .setfld { max-width: none; }
 
+/* run-settings panel (GH #64) */
+.runsettings { }
+.rs-head { width: 100%; }
+.rs-sub { margin-left: 10px; font-weight: 400; font-size: 12.5px; color: var(--muted); }
+.rs-body { margin-top: 14px; display: flex; flex-direction: column; gap: 18px; }
+.rs-section-head h4 { margin: 0 0 2px; font-size: 14px; }
+.rs-section-head p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.rs-lock {
+  font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+  background: var(--border); border-radius: 999px; padding: 1px 8px; margin-left: 6px;
+}
+.rs-saving { font-size: 11.5px; color: var(--accent); font-weight: 400; }
+.runsettings .expert-grid input:disabled,
+.runsettings .agentmodel-row input:disabled,
+.runsettings .agentmodel-row select:disabled { opacity: 0.6; cursor: not-allowed; }
+
 /* model picker — dropdown of suggested models + free-text fallback (GH #71) */
 .modelpick { display: flex; flex-direction: column; gap: 6px; }
 .modelpick select { width: 100%; }

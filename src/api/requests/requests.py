@@ -56,6 +56,14 @@ class ContinueRunRequest(BaseModel):
         return self
 
 
+class AgentModelPatch(BaseModel):
+    """Body for PATCH /runs/{id}/model — change one agent's model mid-run (GH #64). Takes
+    effect on that agent's next node."""
+    agent: str          # planner | reviewer | coder | tester | reflector
+    provider_id: str
+    model: str
+
+
 class RepoCreateRequest(BaseModel):
     """Register a repo. `repo_url` is canonicalized server-side; label defaults to
     owner/repo. `token` is an optional per-repo PAT (falls back to the global

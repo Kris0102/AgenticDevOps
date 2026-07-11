@@ -12,6 +12,7 @@ from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunReque
 from datetime import datetime, timezone
 
 from api.responses.responses import (
+    AgentModelView,
     ArtifactContent,
     ArtifactView,
     DiffView,
@@ -24,7 +25,9 @@ from api.responses.responses import (
     MicrotaskView,
     PipelineProgress,
     PlanView,
+    ProviderOption,
     RepoView,
+    RunConfigView,
     RunExportBundle,
     RunResponse,
     RunResponseWithDetails,
@@ -77,6 +80,11 @@ class HitlNotPausedError(RuntimeError):
 
 class RunAlreadyExistsError(RuntimeError):
     """import_run() targeted a run_id that is already in this database."""
+
+
+class InvalidModelChangeError(ValueError):
+    """A PATCH /runs/{id}/model request is invalid — unknown agent, provider not in settings,
+    empty model, terminal run, or no checkpointed config to patch (GH #64)."""
 
 
 class InvalidTokenBudgetError(ValueError):
@@ -268,6 +276,90 @@ class Service:
             })
         _log.info("run.token_budget_raised", run_id=run_id, new_cap=new_max_total_tokens,
                   additional_tokens=additional_tokens, used=used)
+
+    # ------------------------------------------------------- run settings (GH #64)
+    _LLM_AGENTS = ("planner", "reviewer", "coder", "tester", "reflector")
+
+    def _run_config(self, run_id: str) -> Optional[RunConfig]:
+        """The run's effective RunConfig from the checkpoint, coerced back to the model (the
+        LangGraph serde usually re-hydrates it, but a legacy/stale blob can come back as a
+        dict — validate to be safe)."""
+        values = graph.get_state(self._config(run_id)).values or {}
+        raw = values.get("config")
+        if raw is None:
+            return None
+        return raw if isinstance(raw, RunConfig) else RunConfig.model_validate(raw)
+
+    def run_config_view(self, run_id: str) -> RunConfigView:
+        """The run-settings view: per-agent models (editable), providers for the pickers, and
+        the read-only knobs / constraints / gates the run is executing under."""
+        config = self._run_config(run_id)
+        if config is None:
+            raise InvalidModelChangeError(f"run {run_id} has no checkpointed config")
+        values = graph.get_state(self._config(run_id)).values or {}
+        constraints = values.get("constraints")
+        hitl = values.get("hitl")
+        settings = SettingsStore.get()  # backend-internal; providers listed WITHOUT secrets below
+        editable = self.status(run_id).run_state not in (RunState.COMPLETED, RunState.FAILED)
+        return RunConfigView(
+            models=[
+                AgentModelView(agent=a, provider_id=getattr(config.llm, a).provider_id,
+                               model=getattr(config.llm, a).model)
+                for a in self._LLM_AGENTS
+            ],
+            providers=[ProviderOption(id=p.id, label=p.label, models=list(p.models))
+                       for p in settings.providers],
+            knobs=config.knobs.model_dump(),
+            constraints={
+                "max_total_iterations": constraints.max_total_iterations if constraints else None,
+                "max_microtask_attempts": constraints.max_microtask_attempts if constraints else None,
+                "max_total_tokens": constraints.max_total_tokens if constraints else None,
+            },
+            hitl_checkpoints=[str(c) for c in (hitl.hitl_checkpoints if hitl else [])],
+            editable=editable,
+        )
+
+    def set_agent_model(self, run_id: str, agent: str, provider_id: str, model: str) -> None:
+        """Change ONE agent's model mid-run (GH #64) by patching the checkpointed RunConfig —
+        takes effect on that agent's next node (agents build their LLM from `config.llm.<agent>`
+        at the start of every invoke). Synchronous so a bad request 422s the HTTP call; no
+        re-drive (unlike /continue) — a running/next node just picks up the new selection."""
+        agent = agent.strip().lower()
+        if agent not in self._LLM_AGENTS:
+            raise InvalidModelChangeError(f"unknown agent '{agent}'")
+        if not model.strip():
+            raise InvalidModelChangeError("model must not be empty")
+        settings = SettingsStore.get()
+        provider = SettingsStore.provider(settings, provider_id)
+        if provider is None:
+            raise InvalidModelChangeError(f"provider '{provider_id}' not found in settings")
+        if self.status(run_id).run_state in (RunState.COMPLETED, RunState.FAILED):
+            raise InvalidModelChangeError("run is terminal — its model can't be changed")
+
+        config = self._run_config(run_id)
+        if config is None:
+            raise InvalidModelChangeError(f"run {run_id} has no checkpointed config to patch")
+
+        old = getattr(config.llm, agent)
+        new_sel = old.model_copy(update={"provider_id": provider_id, "model": model})
+        new_llm = config.llm.model_copy(update={agent: new_sel})
+        new_providers = {**config.providers, provider_id: provider}  # ensure the picked provider is resolvable
+        patched = config.model_copy(update={"llm": new_llm, "providers": new_providers})
+        graph.update_state(self._config(run_id), {"config": patched})
+
+        with db.session_scope() as session:
+            # The Coder is the headline model mirrored onto the runs row (bootstrap precedent).
+            if agent == "coder":
+                run_record = session.get(Run, run_id)
+                if run_record:
+                    run_record.llm_provider = provider_id
+                    run_record.llm_model = model
+            EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_MODEL_CHANGED, {
+                "agent": agent,
+                "old_provider_id": old.provider_id, "old_model": old.model,
+                "new_provider_id": provider_id, "new_model": model,
+            })
+        _log.info("run.model_changed", run_id=run_id, agent=agent, provider=provider_id, model=model)
 
     def continue_run(self, run_id: str) -> RunResponse:
         """Re-drive a STALLED run from its checkpoint. Used when the worker that was driving

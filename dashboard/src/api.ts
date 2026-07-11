@@ -117,6 +117,21 @@ export interface AppSettings {
   github_token?: string | null   // masked on read; leave masked to keep stored token
 }
 
+// Run-settings view (GH #64): the effective config a run is executing under.
+export interface AgentModelView {
+  agent: string          // planner | reviewer | coder | tester | reflector
+  provider_id: string
+  model: string
+}
+export interface RunConfigView {
+  models: AgentModelView[]
+  providers: { id: string; label: string; models: string[] }[]
+  knobs: Record<string, number>
+  constraints: Record<string, number | null>   // max_total_iterations / max_microtask_attempts / max_total_tokens
+  hitl_checkpoints: string[]
+  editable: boolean       // per-agent model can be changed now (run not terminal)
+}
+
 export interface SchemaField {
   key: string
   label: string
@@ -322,6 +337,12 @@ export const api = {
 
   getHitl: (id: string) =>
     http.get<HitlReviewContext>(`/runs/${id}/hitl`).then((r) => r.data),
+
+  // Run-settings view + mid-run per-agent model change (GH #64).
+  getRunConfig: (id: string) =>
+    http.get<RunConfigView>(`/runs/${id}/config`).then((r) => r.data),
+  patchRunModel: (id: string, agent: string, providerId: string, model: string) =>
+    http.patch<RunConfigView>(`/runs/${id}/model`, { agent, provider_id: providerId, model }).then((r) => r.data),
 
   getEvents: (id: string, after = 0) =>
     http.get<EventView[]>(`/runs/${id}/events`, { params: { after } }).then((r) => r.data),

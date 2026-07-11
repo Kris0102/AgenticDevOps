@@ -10,6 +10,7 @@ import { NewRunPage } from './components/NewRunPage'
 import { ReposPage } from './components/ReposPage'
 import { SettingsPage } from './components/SettingsPage'
 import { RunOverview } from './components/RunOverview'
+import { RunSettingsPanel } from './components/RunSettingsPanel'
 import { RunsHome } from './components/RunsHome'
 import { StatusBar } from './components/StatusBar'
 import { LogPanel } from './components/LogPanel'
@@ -157,6 +158,8 @@ export default function App() {
           )}
 
           <RunOverview runId={runId} live={!terminal} capVersion={capVersion} progress={run?.progress} />
+
+          <RunSettingsPanel runId={runId} live={!terminal} />
 
           <TokensByAgent runId={runId} live={!terminal} />
 

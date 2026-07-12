@@ -14,10 +14,11 @@ from orchestrator.state import (
     Iteration,
     Microtask,
     MicrotaskStatus,
+    RunConfig,
     RunStatus,
 )
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.token_budget import record_usage, token_budget_exceeded
+from orchestrator.token_budget import record_usage, record_usage_safe, token_budget_exceeded
 from agents.Implementing.Coder.coder import Coder
 from agents.Implementing.Coder.coder_tools import CoderTools, to_sandbox_path
 from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
@@ -56,6 +57,9 @@ class CoderRunner:
                     phase="code", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
+            coder: Optional[Coder] = None
+            config: Optional[RunConfig] = None
+            microtask: Optional[Microtask] = None
             try:
                 microtask = self._select_microtask()
                 if microtask is None:
@@ -71,9 +75,12 @@ class CoderRunner:
                 result = coder.invoke(self.state, microtask, file_contents)
             except RunExecutionError as e:
                 _log.error("coder.run_execution_error", error=str(e))
+                self._record_crash_usage(db_session, iteration, coder, config, microtask)
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, e)
             except Exception as e:
                 _log.error("coder.unexpected_error", error=str(e))
+                # Record tokens the coder already spent before crashing (LLM calls were billed).
+                self._record_crash_usage(db_session, iteration, coder, config, microtask)
                 # Persist the audit rows already added this node — the grounding pre-reads
                 # (fs.read_file → tool.executed) really happened. Without this, the exception
                 # unwinds `session_scope` into a rollback that DISCARDS them, so a run that
@@ -95,6 +102,16 @@ class CoderRunner:
             )
             self._persist_results(db_session, result, microtask, diff_text)
             return result
+
+    def _record_crash_usage(self, db_session, iteration: Iteration, coder: Optional[Coder],
+                            config: Optional[RunConfig], microtask: Optional[Microtask]) -> None:
+        """Record tokens the Coder spent this node even though it crashed. No-op if the coder
+        never constructed / never called the LLM (record_usage_safe guards the empty case)."""
+        if coder is None or config is None:
+            return
+        record_usage_safe(db_session, self.run_id, self.name, iteration, coder.token_usage,
+                          config.llm.coder.model,
+                          microtask.microtask_id if microtask else None)
 
     def _select_microtask(self) -> Optional[Microtask]:
         """Reuse the in-flight microtask (retry path from reflector) or pick the

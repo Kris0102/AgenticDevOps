@@ -58,6 +58,7 @@ from orchestrator.state import (
     BlackboardState,
     EventType,
     Iteration,
+    LLMConfig,
     MicrotaskStatus,
     RunConfig,
     RunStatus,
@@ -168,11 +169,11 @@ class Service:
         with self._active_lock:
             return run_id in self._active
 
-    def resolve_and_preflight(self, request: RunRequest) -> RunConfig:
+    def resolve_and_preflight(self, runRequest: RunRequest | None) -> RunConfig:
         """Resolve the run's effective config (per-run override › global › env) and PROBE the
         provider before anything starts. Raises ProviderUnreachableError on a dead/mis-keyed
         provider so the route can reject with the reason — no run is created. Fail fast."""
-        config = resolve_run_config(override=request.llm)
+        config = resolve_run_config(override=runRequest.llm)
         # Per-agent models (GH #71): probe every DISTINCT (provider, model) pair actually
         # used, deduped — a mis-keyed provider on ANY agent must fail fast before a run
         # is created, not mid-run on the first agent that touches it.
@@ -505,6 +506,26 @@ class Service:
         bind_run(run_id)
         try:
             log_bus.reset(run_id)   # stalled run is producing again — reopen its live stream
+            # A stalled run's work lives in its sandbox container. If the container is gone
+            # (host restart, `docker rm`, prune), the in-progress checkout/edits can't be
+            # recovered and continuing would re-enter a node that assumes the sandbox is there.
+            # Fail the run cleanly rather than crash mid-continue (GH #56). Skip the check for a
+            # run still at NEEDS_BOOTSTRAP — it never had a sandbox yet, so "missing" is expected.
+            snapshot: BlackboardState = graph.get_state(self._config(run_id)).values or {}  # type: ignore[assignment]
+            sandbox = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            if snapshot.get("status") is not RunStatus.NEEDS_BOOTSTRAP and not sandbox.sandbox_exists(
+                    sandbox_id=sandbox.get_sandbox_id(run_id=run_id, verify=False),
+                    start_if_created_but_not_running=True):
+                _log.error("run.continue_sandbox_missing", run_id=run_id)
+                with db.session_scope() as session:
+                    RunFailureHandler.handle(
+                        session, run_id, "system", snapshot,
+                        RunExecutionError(
+                            phase="run.continue",
+                            reason="sandbox container missing after crash/restart — the run's "
+                                   "in-progress work is unrecoverable"))
+                log_bus.mark_done(run_id)          # terminal now — close the live stream
+                return self._response(run_id)      # the DB FAILED row wins → RunState.FAILED
             _log.info("run.continue", run_id=run_id)
             with db.session_scope() as session:
                 EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_RESUMED, {})
@@ -1163,7 +1184,7 @@ class Service:
         pending = self._pending_payload(run_id)
         state = self._derive_state(status, pending, self.is_active(run_id))
         if state == RunState.STALLED and self._db_status(run_id) == RunStatus.FAILED.value:
-            # human closed the case (give_up): checkpoint stays non-terminal, but the
+            # human closed the case (give_up) or sandbox doesnt exists anymore: checkpoint stays non-terminal, but the
             # runs-table verdict is FAILED — the row wins over the orphaned checkpoint.
             state = RunState.FAILED
         stall_payload = self._last_event_payload(run_id, EventType.RUN_STALLED.value) if state == RunState.STALLED else None

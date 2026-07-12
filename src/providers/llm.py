@@ -24,16 +24,48 @@ from orchestrator.state import BaseLLMConfig, ProviderProfile, ProviderType
 _log = get_logger(Category.ORCHESTRATOR)
 
 
+def _anthropic_thinking_param(model: str, enabled: bool) -> Optional[dict]:
+    """The `thinking` value to send to ChatAnthropic for this model + the user's on/off toggle,
+    per Anthropic's per-model rules (which differ — you can't omit-and-assume). Returns None to
+    send NO thinking param.
+
+      · Haiku 4.5 / pre-4.6 tiers — adaptive thinking unavailable; `adaptive`/`disabled` 400.
+        → always None (the toggle is a no-op; the model's own default stands).
+      · Opus 4.8 / 4.7 — thinking is OFF unless you EXPLICITLY send `{adaptive}`.
+        → on: {adaptive}  off: {disabled}
+      · Opus 4.6 / Sonnet 4.6 — off unless `{adaptive}`; `{disabled}` also accepted.
+        → on: {adaptive}  off: {disabled}
+      · Sonnet 5 — on by DEFAULT; `{disabled}` turns it off.
+        → on: {adaptive}  off: {disabled}   (sending {adaptive} explicitly is harmless)
+      · Fable 5 / Mythos 5 — always on; `{disabled}` is NOT supported (400).
+        → on: {adaptive}  off: None (can't disable — leave on; documented)
+
+    A model string we don't recognise is treated as non-adaptive → None (safe: the toggle is
+    ignored and the model uses its own default, rather than risking a 400)."""
+    m = model.lower()
+    adaptive_capable = any(t in m for t in (
+        "opus-4-6", "opus-4-7", "opus-4-8", "sonnet-5", "sonnet-4-6", "fable-5", "mythos-5"))
+    if not adaptive_capable:
+        return None
+    if enabled:
+        return {"type": "adaptive"}
+    if "fable-5" in m or "mythos-5" in m:
+        return None                      # thinking can't be disabled on these — leave on
+    return {"type": "disabled"}
+
+
 def structured_output_method(provider: ProviderProfile) -> str:
     """Which `with_structured_output` method reliably yields schema-valid JSON on this provider.
 
-    Anthropic → `function_calling` (native tool use — the model is constrained to the schema).
-    Anthropic has NO real JSON mode: `method="json_mode"` there just prompts "output JSON" and
-    parses whatever comes back, so a cheaper model (Haiku) emits prose / markdown-fenced /
-    malformed JSON and the parser raises OutputParserException. Tool use is Anthropic's
-    schema-enforced path. OpenAI-compatible endpoints (the cluster) → `json_mode`, which is what
+    Anthropic → `json_schema`: the API's real structured-outputs mode (`output_config.format`,
+    GA on Haiku 4.5 / Sonnet 5 / Opus 4.8) — output is constrained to the schema SERVER-SIDE,
+    so required fields can't be omitted. The alternatives both failed in practice: `json_mode`
+    on Anthropic just prompts "output JSON" and parses (cheap models emit unparseable JSON →
+    OutputParserException); `function_calling` lets the model omit required fields (Haiku
+    dropped `microtasks` from PlannerDraft → ValidationError). Verified live with the real
+    PlannerDraft schema. OpenAI-compatible endpoints (the cluster) → `json_mode`, which is what
     works there (their tool-calling support is uneven)."""
-    return "function_calling" if provider.type == ProviderType.ANTHROPIC else "json_mode"
+    return "json_schema" if provider.type == ProviderType.ANTHROPIC else "json_mode"
 
 
 def build_chat_llm(
@@ -48,16 +80,21 @@ def build_chat_llm(
         # REJECT it with a 400 ("`temperature` is deprecated for this model") — steer via
         # prompting instead. Omitting it is safe on the older models too (they use their
         # default). `temperature=None` keeps langchain from putting it in the request body.
+        # Extended ("adaptive") thinking: the per-provider `thinking` toggle, mapped to the
+        # right param PER MODEL (they differ — Opus 4.8/4.7 need an explicit `{adaptive}` to
+        # turn ON, Sonnet 5 is on by default, Haiku has no adaptive mode, Fable 5 can't be
+        # turned off). See _anthropic_thinking_param.
         return ChatAnthropic(
             model_name=llm.model,
             api_key=provider.api_key,  # type: ignore[arg-type]
             temperature=None,
+            thinking=_anthropic_thinking_param(llm.model, provider.thinking),
             # Explicit output ceiling: langchain's unset default resolves to 4096, which
             # TRUNCATES a Coder writing a whole file in one write_sandbox_file call (cluster
             # runs have produced 17k-token outputs). 16k is the safe non-streaming maximum
             # (the SDK refuses much larger without streaming) and ample for one file.
             max_tokens_to_sample=16_000,   # field alias for max_tokens (pydantic alias)
-            max_retries=llm.max_retries,
+            max_retries=provider.max_retries,
             timeout=timeout_seconds,
             stop=None,
             # Prompt caching (GH #62): merged into the request body as the TOP-LEVEL
@@ -79,7 +116,7 @@ def build_chat_llm(
         api_key=provider.api_key,  # type: ignore[arg-type]
         base_url=provider.base_url,
         temperature=llm.temperature,
-        max_retries=llm.max_retries,
+        max_retries=provider.max_retries,
         timeout=timeout_seconds,
         # Vendor params (GH #65): prompt_cache_key, or anything the endpoint accepts.
         model_kwargs=dict(provider.extra_request_params),

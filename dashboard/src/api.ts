@@ -65,6 +65,13 @@ export interface ProviderProfile {
   base_url?: string | null
   api_key?: string | null            // masked ('••••••••') on read; leave as-is to keep stored key
   models: string[]
+  // Anthropic only: extended ("adaptive") thinking. true (default) = think before answering
+  // (better, slower, pricier); false = disabled (faster/cheaper/weaker). Ignored for
+  // openai_compatible.
+  thinking?: boolean
+  // SDK client retries on a failed request (timeout/429/5xx). Cluster: 2-3 (transient 429s);
+  // slow-thinking Claude: 1 (a timeout is deterministic — retrying just multiplies the wait).
+  max_retries?: number
   // Vendor-specific request params merged into every request body (GH #65),
   // e.g. {"prompt_cache_key": "agentic"}. NOT for secrets (stored/returned in plain).
   extra_request_params?: Record<string, unknown>

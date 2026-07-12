@@ -250,7 +250,7 @@ class Reviewer:
             raise
         except Exception as error:
             if is_transient_llm_error(error):
-                _log.error("reviewer.cluster_unreachable", error=str(error))
+                _log.error("reviewer.api_unreachable", error=str(error))
                 raise RetriableError(f"reviewer LLM call failed: {error}", phase="reviewer")
             _log.error("reviewer.review_failed", error=str(error))
             raise

@@ -70,7 +70,7 @@ def create_run(request: RunRequest, background: BackgroundTasks) -> RunResponse:
         raise _repo_validation_http(e)
     request = request.model_copy(update={"repo": resolved})
     try:
-        config = service.resolve_and_preflight(request)
+        config = service.resolve_and_preflight(request) if request else None
     except ProviderUnreachableError as e:
         code = status.HTTP_401_UNAUTHORIZED if e.kind == "auth" else status.HTTP_503_SERVICE_UNAVAILABLE
         raise HTTPException(code, f"LLM provider not usable ({e.kind}): {e.reason}")
@@ -242,6 +242,9 @@ def resume_run(run_id: str, decision: HitlResume, background: BackgroundTasks) -
     return RunResponse(run_id=run_id, run_state=RunState.RUNNING)
 
 
+
+# This is used for a stalled run due to exception OR a token-budget stop (ADR 0025). 
+# If from token, ContinueRunRequest.additional_tokens is required to raise the budget before re-driving.
 @app.post("/runs/{run_id}/continue", status_code=status.HTTP_202_ACCEPTED, response_model=RunResponse)
 def continue_run(run_id: str, background: BackgroundTasks, body: Optional[ContinueRunRequest] = None) -> RunResponse:
     """Re-drive a STALLED run (worker died mid-graph, checkpoint left non-terminal with no

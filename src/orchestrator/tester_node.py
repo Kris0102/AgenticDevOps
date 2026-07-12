@@ -14,7 +14,7 @@ from agents.Implementing.Tester.tester_tools import TesterTools
 from db.settings_store import resolve_run_config
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.token_budget import record_usage, token_budget_exceeded
+from orchestrator.token_budget import record_usage, record_usage_safe, token_budget_exceeded
 from orchestrator.state import (
     BlackboardState,
     CheckOutput,
@@ -25,6 +25,7 @@ from orchestrator.state import (
     Microtask,
     MicrotaskStatus,
     Reflection,
+    RunConfig,
     RunStatus,
 )
 from sandbox.sandbox_tools import DockerSandboxTools
@@ -71,6 +72,8 @@ class TesterRunner:
                     phase="test", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
+            pipeline: Optional[TestPipeline] = None
+            config: Optional[RunConfig] = None
             try:
                 gateway = self._init_gateway(db_session)
                 tester_tools = TesterTools(gateway=gateway)
@@ -79,23 +82,25 @@ class TesterRunner:
                 result = pipeline.run(self.state, microtask, final_validation=final_validation)
             except RunExecutionError as error:
                 _log.error("tester.run_execution_error", error=str(error))
+                self._record_crash_usage(db_session, iteration, pipeline, config, microtask)
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, error)
             except RetriableError:
+                self._record_crash_usage(db_session, iteration, pipeline, config, microtask)
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
+                self._record_crash_usage(db_session, iteration, pipeline, config, microtask)
                 # Backstop: a transient LLM failure (429 "overloaded" / timeout / 5xx) that
                 # escaped the tester's phases must STALL, not FAIL — the tester has no internal
                 # RetriableError handling, so classify it here (ADR 0023).
                 if is_transient_llm_error(error):
                     _log.error("tester.cluster_unreachable", error=str(error))
                     raise RetriableError(f"tester LLM call failed: {error}", phase="tester")
-                # Don't let a tester crash escape graph.invoke (→ ASGI 500 + stuck run).
-                # End the run cleanly as FAILED; the error is logged for debugging.
+                # A generic/unexpected crash is NOT proven unrecoverable — let it escape to
+                # `_drive`, which marks the run STALLED (recoverable, checkpoint intact, ADR
+                # 0021), NOT terminal FAILED. `handle()` (→ FAILED) is reserved for the
+                # deterministic RunExecutionError path above. Consistent with planner/coder.
                 _log.error("tester.unexpected_error", error=str(error))
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(phase="test", reason=f"Tester crashed: {error}"),
-                )
+                raise
 
             # internal hand-off from the pipeline — not a BlackboardState channel, must
             # never reach the graph's node-result dict
@@ -112,6 +117,18 @@ class TesterRunner:
                 microtask, result, new_microtasks, new_evidence, passed, final_validation)
             state_result["iteration"] = updated_iteration
             return state_result
+
+    def _record_crash_usage(self, db_session, iteration: Iteration, pipeline: Optional[TestPipeline],
+                            config: Optional[RunConfig], microtask: Optional[Microtask]) -> None:
+        """Record tokens the Tester pipeline spent this node even though a phase crashed. The
+        pipeline exposes `token_usage` as a live attribute for exactly this (its result dict,
+        which normally carries usage, is never built on a crash). record_usage_safe no-ops on
+        empty usage."""
+        if pipeline is None or config is None:
+            return
+        record_usage_safe(db_session, self.run_id, self.name, iteration, pipeline.token_usage,
+                          config.llm.tester.model,
+                          microtask.microtask_id if microtask else None)
 
     @staticmethod
     def _verdict_passed(result: Dict[str, Any]) -> bool:

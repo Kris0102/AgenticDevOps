@@ -20,6 +20,8 @@ returns.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from db.event_log import EventLogger
 from db.models import Run
 from observability import Category, get_logger
@@ -78,3 +80,28 @@ def record_usage(
         "microtask_id": microtask_id,
     })
     return updated
+
+
+def record_usage_safe(
+    db_session,
+    run_id: str,
+    actor: str,
+    iteration: Iteration,
+    usage: Optional[TokenUsage],
+    model: str,
+    microtask_id: str | None = None,
+) -> Iteration:
+    """`record_usage`, guarded to be a NO-OP when nothing was spent.
+
+    Call this on an agent node's CRASH path (its `except` block, before re-raising or handing to
+    RunFailureHandler): the LLM calls the agent already made hit the provider and were BILLED, so
+    losing them just because the node then failed understates the run cost, the token budget, and
+    the dashboard (which showed 0 while the Claude console billed). Every phase uses this so
+    usage is tracked whether or not the agent crashed — not only on the happy path.
+
+    On the success path use `record_usage` directly (you need its returned Iteration on the result
+    dict). Empty/None usage (the agent never reached an LLM call) → returns `iteration` unchanged,
+    with no event and no DB write."""
+    if usage is None or usage.total_tokens == 0:
+        return iteration
+    return record_usage(db_session, run_id, actor, iteration, usage, model, microtask_id)

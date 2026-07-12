@@ -225,6 +225,18 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                   <label className="fld span2"><span>base url</span>
                     <input value={p.base_url ?? ''} onChange={(e) => updateProvider(i, { base_url: e.target.value })} /></label>
                 )}
+                {p.type === 'anthropic' && (
+                  <label className="fld span2 checkfld" title="Extended (adaptive) thinking. On: the model reasons before answering — better plans/code, but slower and pricier per call. Off: faster and cheaper, weaker reasoning. Note: cannot be turned off on Fable 5.">
+                    <input type="checkbox" checked={p.thinking !== false}
+                      onChange={(e) => updateProvider(i, { thinking: e.target.checked })} />
+                    <span>extended thinking <em>on = better reasoning, slower/pricier · off = faster/cheaper</em></span>
+                  </label>
+                )}
+                <label className="fld" title="How many times the client retries a failed request (timeout / 429 / 5xx). Cluster: 2-3 (transient overloads). Slow-thinking Claude: 1 — a timeout there is deterministic, so extra retries just multiply the wait.">
+                  <span>max retries</span>
+                  <input type="number" min={0} max={5} value={p.max_retries ?? 2}
+                    onChange={(e) => updateProvider(i, { max_retries: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} />
+                </label>
                 <div className="fld span2"><span>suggested models <em>optional — populate the model dropdowns</em></span>
                   <div className="modeltags">
                     {p.models.map((m, mi) => (

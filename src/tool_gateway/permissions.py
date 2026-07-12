@@ -26,7 +26,7 @@ class PlannerPermissions(RolePermissions):
 
     role = Roles.PLANNER
     tools = [Tools.SANDBOX_RUN, Tools.FS_READ_FILE, Tools.SEMANTIC_SEARCH]
-    allowed_commands = ["git", "python", "grep", "ls", "cat", "find","node"]
+    allowed_commands = ["git", "python", "grep", "ls", "cat", "find","node", "cd"]
 
 
 class CoderPermissions(RolePermissions):

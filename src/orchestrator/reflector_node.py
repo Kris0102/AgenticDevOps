@@ -12,7 +12,7 @@ from agents.Implementing.Reflector.reflector import Reflector
 from agents.Implementing.Reflector.reflector_tools import ReflectorTools
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.token_budget import record_usage, token_budget_exceeded
+from orchestrator.token_budget import record_usage, record_usage_safe, token_budget_exceeded
 from orchestrator.state import (
     BlackboardState,
     Constraints,
@@ -21,6 +21,7 @@ from orchestrator.state import (
     Microtask,
     MicrotaskStatus,
     Reflection,
+    RunConfig,
     RunStatus,
 )
 from sandbox.sandbox_tools import DockerSandboxTools
@@ -74,6 +75,8 @@ class ReflectorRunner:
                     phase="reflect", used=iteration.tokens_used_total, limit=constraints.max_total_tokens or -1,
                 )
 
+            reflector: Optional[Reflector] = None
+            config: Optional[RunConfig] = None
             try:
                 gateway = self._init_gateway(db_session)
                 reflector_tools = ReflectorTools(gateway=gateway)
@@ -86,24 +89,26 @@ class ReflectorRunner:
                 raw = reflector.invoke(self.state, microtask, test_passed=False, test_output=test_output)
             except RunExecutionError as error:
                 _log.error("reflector.run_execution_error", error=str(error))
+                self._record_crash_usage(db_session, iteration, reflector, config, microtask)
                 return RunFailureHandler.handle(
                     db_session, self.run_id, self.name, self.state, error
                 )
             except RetriableError:
+                self._record_crash_usage(db_session, iteration, reflector, config, microtask)
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
+                self._record_crash_usage(db_session, iteration, reflector, config, microtask)
                 # Backstop: a transient LLM failure (429 / timeout / 5xx) that escaped the
                 # reflector must STALL, not FAIL (ADR 0023).
                 if is_transient_llm_error(error):
                     _log.error("reflector.cluster_unreachable", error=str(error))
                     raise RetriableError(f"reflector LLM call failed: {error}", phase="reflector")
-                # Convert to a clean FAILED (phase-attributed) instead of unwinding into
-                # graph.invoke. The _drive guard is the net; this gives the better label.
+                # A generic/unexpected crash is NOT proven unrecoverable — let it escape to
+                # `_drive`, which marks the run STALLED (recoverable, ADR 0021), NOT terminal
+                # FAILED. `handle()` (→ FAILED) is reserved for the deterministic
+                # RunExecutionError path above. Consistent with planner/coder.
                 _log.error("reflector.unexpected_error", error=str(error))
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(phase="reflect", reason=f"Reflector crashed: {error}"),
-                )
+                raise
 
             # Drop the approve signal (failure-only) and read the fix target.
             raw.pop("_reflector_approved", None)
@@ -293,6 +298,16 @@ class ReflectorRunner:
     # ------------------------------------------------------------------ #
     # Helpers                                                               #
     # ------------------------------------------------------------------ #
+
+    def _record_crash_usage(self, db_session, iteration: Iteration, reflector: Optional[Reflector],
+                            config: Optional[RunConfig], microtask: Optional[Microtask]) -> None:
+        """Record tokens the Reflector spent this node even though it crashed (record_usage_safe
+        no-ops if it never called the LLM)."""
+        if reflector is None or config is None:
+            return
+        record_usage_safe(db_session, self.run_id, self.name, iteration, reflector.token_usage,
+                          config.llm.reflector.model,
+                          microtask.microtask_id if microtask else None)
 
     def _select_microtask(self, current_id: Optional[str]) -> Optional[Microtask]:
         """Pick the in-flight microtask: current_microtask_id first, then first

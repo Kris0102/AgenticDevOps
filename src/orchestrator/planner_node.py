@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import os
 
 from langchain_core.tools import BaseTool
@@ -10,9 +10,10 @@ from db.event_log import EventLogger
 from db.models import Artifact, MicrotaskRecord, Run
 from Exceptions.RunExecutionError import RunExecutionError
 from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
-from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunStatus
+from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunConfig, RunStatus
+from providers import TokenUsage
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.token_budget import record_usage, token_budget_exceeded
+from orchestrator.token_budget import record_usage, record_usage_safe, token_budget_exceeded
 from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
 from context_engine.engine import ContextEngine
@@ -32,6 +33,8 @@ class PlannerRunner:
         self.run_id = state.get("run_id")
         self.name = Roles.PLANNER.value
         self.sandbox_tools: DockerSandboxTools | None = None
+        self._config: Optional[RunConfig] = None
+        self.token_usage: TokenUsage = TokenUsage()
 
     def invoke(self) -> Dict[str, Any]:
         with db.session_scope() as db_session:
@@ -53,13 +56,19 @@ class PlannerRunner:
                 result = self._run_planner(tools)
             except RunExecutionError as e:
                 _log.error("planner.run_execution_error", error=str(e))
+                self._record_crash_usage(db_session, iteration)
                 return RunFailureHandler.handle(db_session, self.run_id, self.name, self.state, e)
             except Exception as e:
                 _log.error("planner.unexpected_error", error=str(e))
+                # Record tokens the agent ALREADY spent before crashing — the LLM calls hit the
+                # provider (Anthropic billed them), so losing them understates the run cost, the
+                # token budget, and the dashboard (which showed 0 while the console billed).
+                self._record_crash_usage(db_session, iteration)
                 raise
             finally:
                 self._teardown_sandbox()
 
+            assert self._config is not None   # set in _run_planner before it returned
             result["iteration"] = record_usage(
                 db_session, self.run_id, self.name, iteration, self.token_usage, self._config.llm.planner.model
             )
@@ -87,13 +96,25 @@ class PlannerRunner:
             self.sandbox_tools = None
             return []
 
+    def _record_crash_usage(self, db_session, iteration: Iteration) -> None:
+        """Record tokens the Planner spent this node even though it crashed. `self.token_usage`
+        is captured in `_run_planner`'s finally, so it holds the spend even on a mid-invoke
+        crash. record_usage_safe no-ops if nothing was spent."""
+        if self._config is None:
+            return
+        record_usage_safe(db_session, self.run_id, self.name, iteration,
+                          self.token_usage, self._config.llm.planner.model)
+
     def _run_planner(self, tools: list[BaseTool]) -> Dict[str, Any]:
         config = self.state.get("config") or resolve_run_config()
         self._config = config
         planner = Planner(run_id=self.run_id, tools=tools, config=config)
-        result = planner.invoke(self.state)
-        self.token_usage = planner.token_usage
-        return result
+        try:
+            return planner.invoke(self.state)
+        finally:
+            # Capture accumulated usage even if invoke raised — the caller's except handler
+            # records it so tokens already spent this node aren't lost on a crash.
+            self.token_usage = planner.token_usage
 
     def _teardown_sandbox(self) -> None:
         if self.sandbox_tools and self.run_id and os.getenv("TEAR_DOWN_SANDBOX_AFTER_RUN", "false").lower() == "true":

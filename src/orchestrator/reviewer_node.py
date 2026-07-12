@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import os
 
 from langchain_core.tools import BaseTool
@@ -9,15 +9,15 @@ from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.models import Artifact, Run
 from Exceptions.RunExecutionError import RunExecutionError
-from Exceptions.RetriableError import RetriableError
+from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 from db.settings_store import resolve_run_config
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.token_budget import record_usage, token_budget_exceeded
+from orchestrator.token_budget import record_usage, record_usage_safe, token_budget_exceeded
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
-from orchestrator.state import BlackboardState, EventType, RunStatus, Iteration, Constraints
+from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunConfig, RunStatus
 from agents.Planning.Reviewer.reviewer import Reviewer
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.gateway import ToolGateway
@@ -71,24 +71,20 @@ class ReviewerRunner:
                 )
 
             # Runaway planner↔reviewer guard. Cap the planning loop at
-            # max_planner_reviewer_iterations; on exhaustion fail the run (and persist it)
-            # rather than re-invoking the LLM forever.
+            # max_planner_reviewer_iterations; on exhaustion FAIL the run (deterministic,
+            # unrecoverable) via the shared handler — consistent with every other terminal-FAILED
+            # path (handle sets Run.status=FAILED, retracts lessons, emits run.failed).
             if iteration.planner_reviewer_iteration_current >= constraints.max_planner_reviewer_iterations:
-                _log.warning(
-                    "reviewer.max_iterations_exceeded",
-                    current=iteration.planner_reviewer_iteration_current,
-                    limit=constraints.max_planner_reviewer_iterations,
-                    recovery="setting status to FAILED",
+                cur = iteration.planner_reviewer_iteration_current
+                cap = constraints.max_planner_reviewer_iterations
+                _log.warning("reviewer.max_iterations_exceeded", current=cur, limit=cap,
+                             recovery="setting status to FAILED")
+                return RunFailureHandler.handle(
+                    db_session, self.run_id, self.name, self.state,
+                    RunExecutionError(
+                        phase="plan_review",
+                        reason=f"planner↔reviewer loop did not converge — hit the iteration cap ({cur}/{cap})"),
                 )
-                result = {"status": RunStatus.FAILED}
-                self._persist_results(db_session, result)
-                LessonStore.retract_run(db_session, self.run_id)   # failed run leaves no lessons
-                EventLogger.log(db_session, self.run_id, self.name, EventType.RUN_FAILED, {
-                    "reason": "planner-reviewer iteration cap exceeded",
-                    "iterations": iteration.planner_reviewer_iteration_current,
-                    "limit": constraints.max_planner_reviewer_iterations,
-                })
-                return result
 
             # Increment via the node-return dict — never mutate state in place
             # (LangGraph checkpoints state from returned deltas).
@@ -96,21 +92,28 @@ class ReviewerRunner:
                 "planner_reviewer_iteration_current": iteration.planner_reviewer_iteration_current + 1,
             })
 
+            reviewer_agent: Optional[Reviewer] = None
+            config: Optional[RunConfig] = None
             try:
                 tools = self._init_tools(db_session)
                 config = self.state.get("config") or resolve_run_config()
                 reviewer_agent = Reviewer(run_id=self.run_id, tools=tools, config=config)
                 result = reviewer_agent.invoke(self.state)
             except RetriableError:
+                self._record_crash_usage(db_session, iteration, reviewer_agent, config)
                 raise   # transient (LLM timeout) → let _drive mark STALLED, not FAILED
             except Exception as error:
-                # Convert to a clean FAILED (phase-attributed) instead of unwinding into
-                # graph.invoke. The _drive guard is the net; this gives the better label.
+                self._record_crash_usage(db_session, iteration, reviewer_agent, config)
+                # Belt-and-suspenders: an unclassified transient that slipped past the agent's
+                # own RetriableError wrapping must still STALL, not FAIL (ADR 0023).
+                if is_transient_llm_error(error):
+                    _log.error("reviewer.cluster_unreachable", error=str(error))
+                    raise RetriableError(f"reviewer LLM call failed: {error}", phase="reviewer")
+                # A generic/unexpected crash is NOT proven unrecoverable — let it escape to
+                # `_drive`, which marks the run STALLED (recoverable, ADR 0021), NOT terminal
+                # FAILED. Consistent with planner/coder/tester/reflector.
                 _log.error("reviewer.unexpected_error", error=str(error))
-                return RunFailureHandler.handle(
-                    db_session, self.run_id, self.name, self.state,
-                    RunExecutionError(phase="plan_review", reason=f"Reviewer crashed: {error}"),
-                )
+                raise
 
             next_iteration = record_usage(
                 db_session, self.run_id, self.name, next_iteration,
@@ -132,6 +135,15 @@ class ReviewerRunner:
                 )
 
             return result
+
+    def _record_crash_usage(self, db_session, iteration: Iteration,
+                            reviewer_agent: Optional[Reviewer], config: Optional[RunConfig]) -> None:
+        """Record tokens the Reviewer spent this node even though it crashed (record_usage_safe
+        no-ops if it never called the LLM)."""
+        if reviewer_agent is None or config is None:
+            return
+        record_usage_safe(db_session, self.run_id, self.name, iteration,
+                          reviewer_agent.token_usage, config.llm.reviewer.model)
 
     def _persist_results(self, db_session, result: Dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)

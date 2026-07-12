@@ -17,6 +17,8 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from providers import TokenUsage
+
 from agents.Implementing.Tester.context import TestContext
 from agents.Implementing.Tester.phases import (
     DetectProjectPhase,
@@ -61,6 +63,10 @@ class TestPipeline:
         self.tools = tester_tools
         self.name = Roles.TESTER.value
         self.config = config
+        # Live snapshot of tokens spent this run() — exposed so the tester node can record
+        # them even when a phase crashes (the result dict that normally carries usage never
+        # gets built on a crash). Updated as phases run.
+        self.token_usage = TokenUsage()
         recursion_limit = self.config.knobs.tester_max_tool_steps * 2 + 5
 
         llm = self._build_llm()
@@ -89,12 +95,17 @@ class TestPipeline:
                   microtask_id=microtask.microtask_id, final_validation=final_validation,
                   is_rewrite=bool(ctx.rejection_note))
         _log.info("tester.pipeline.phases", information = f"Run {state.get('run_id')} will execute the following phases: {[phase.name for phase in self.phases]}")
-        for phase in self.phases:
-            if phase.should_run(ctx):
-                _log.info("tester.phase.enter", run_id=self.run_id, phase=phase.name)
-                ctx = phase.run(ctx)
-            else:
-                _log.info("tester.phase.skip", run_id=self.run_id, phase=phase.name)
+        try:
+            for phase in self.phases:
+                if phase.should_run(ctx):
+                    _log.info("tester.phase.enter", run_id=self.run_id, phase=phase.name)
+                    ctx = phase.run(ctx)
+                    self.token_usage = ctx.token_usage   # live snapshot for the crash path
+                else:
+                    _log.info("tester.phase.skip", run_id=self.run_id, phase=phase.name)
+        finally:
+            # Capture whatever was spent even if a phase raised — the node's except records it.
+            self.token_usage = ctx.token_usage
         _log.info("tester.pipeline.end", run_id=self.run_id, summary=ctx.summary)
         return ctx.to_result()
 

@@ -28,12 +28,27 @@ _TAUTOLOGICAL_RE = re.compile(
 )
 
 
+def _has_useful_example(c: AcceptanceCriterion) -> bool:
+    """True only if a criterion carries at least one example with ACTUAL data — a non-empty
+    `given` OR a non-null `expect`. An example of `given={}` + `expect=None` is schema-valid
+    but useless (a weaker model dodging the criterion by emitting a hollow example object), so
+    it does NOT count as grounding."""
+    return any(bool(ex.given) or ex.expect is not None for ex in c.examples)
+
+
+def _has_hollow_examples(c: AcceptanceCriterion) -> bool:
+    """The model emitted example object(s) but left every one entirely empty (given={},
+    expect=None). Worse than an empty list — it signals intent to exemplify with no data —
+    and must be rejected so the planner either fills them or drops the examples list."""
+    return bool(c.examples) and not _has_useful_example(c)
+
+
 def _is_ungroundable(c: AcceptanceCriterion) -> bool:
     """A criterion the Tester can't turn into a real assertion: file/directory-existence
-    checks, or tautological/meta statements (unless it carries a concrete IOExample, which
-    always gives the Tester something deterministic to assert)."""
+    checks, or tautological/meta statements (unless it carries a USEFUL IOExample, which
+    gives the Tester something deterministic to assert). A hollow example does not count."""
     text = c.text.strip().lower()
-    if c.examples:
+    if _has_useful_example(c):
         return False
     if text.startswith(("file exists", "directory exists")):
         return True
@@ -148,6 +163,16 @@ def _normalize_output(result: "PlannerOutput") -> "PlannerOutput":
                 "value give a concrete example "
                 "(e.g. {'text': \"findCity('London') returns the London entry\", "
                 "'examples': [{'given': {'q': 'London'}, 'expect': {'name': 'London'}}]})"
+            )
+
+        hollow = [i + 1 for i, c in enumerate(task.acceptance_criteria) if _has_hollow_examples(c)]
+        if hollow:
+            errors.append(
+                f"{tid}: acceptance_criteria {hollow} have EMPTY examples "
+                "(given={} and expect=null) — a hollow example is worse than none. Either FILL each "
+                "with real data (e.g. 'given': {'value': 18, 'unit': 'F'}, 'expect': 64.4) or set "
+                "'examples': [] and describe the behaviour in `text`. Never emit an example object "
+                "with no data."
             )
 
         microtasks.append(

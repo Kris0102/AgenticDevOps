@@ -124,8 +124,15 @@ class DockerSandboxTools:
         self.labels_base = labels_base or {}
         self.client = docker.from_env()
 
-    # ---- lifecycle ----
-
+    # ---- lifecycle ----s
+    def get_sandbox_id(self, *, run_id: str, verify: bool = True) -> str:
+        if verify:
+            with db.session_scope() as session:
+                record = session.get(Sandbox, f"sbox_{run_id}")
+                if not record:
+                    raise SandboxError(f"Unknown run_id: {run_id}. Did you call sandbox.create?")
+        return f"sbox_{run_id}"
+    
     def sandbox_create(self, *, run_id: str) -> SandboxCreateResult:
         """
         Create a container per run. Idempotent: reconnects to existing container if DB record exists.
@@ -220,6 +227,20 @@ class DockerSandboxTools:
             c.remove(force=True)
         except Exception:
             pass
+    
+    def sandbox_exists(self, *, sandbox_id: str, start_if_created_but_not_running: bool = False) -> bool:
+        with db.session_scope() as session:
+            record = session.get(Sandbox, sandbox_id)
+            if not record:
+                return False
+            cid = record.container_id
+        try:
+            c = self.client.containers.get(cid)
+            if start_if_created_but_not_running and c.status == "created":
+                c.start()
+            return c.status == "running" or c.status == "created" 
+        except Exception:
+            return False
         
     def sanxbox_stop_container(self, *, sandbox_id: str) -> None:
         _log.info("sandbox.stop_container", sandbox_id=sandbox_id)

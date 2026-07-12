@@ -10,6 +10,11 @@ from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import BlackboardState, EventType, RunStatus
 
 
+# If used within a NODE, the run will always be terminated.
+# The handler returns RunStatus.Failed which is then passed to the orchestrator 
+# to update the run status and exits.
+# Important is that this ONLY works if you are within the graph lifecycle,
+# otherwise e.g in service.py you have to additionally use self.response() to set the run to failed!
 class RunFailureHandler:
     """Centralizes FAILED bookkeeping — status update + audit events.
 

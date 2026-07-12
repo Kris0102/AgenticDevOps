@@ -163,6 +163,18 @@ class ProviderProfile(BaseModel):
     base_url: Optional[str] = None             # required for openai_compatible; ignored for anthropic
     api_key: Optional[str] = None
     models: List[str] = Field(default_factory=list)
+    # Anthropic only: extended ("adaptive") thinking. True (default) = the model thinks before
+    # answering — better plans/code, but slower and pricier per call. False sends
+    # `thinking:{type:disabled}` — faster, cheaper, weaker reasoning. Ignored for
+    # openai_compatible. NOTE: on Fable 5 thinking can't be disabled (the API 400s on
+    # `disabled`); leave this True for that model — preflight surfaces the error otherwise.
+    thinking: bool = True
+    # SDK client retries on a failed request (timeout / 429 / 5xx). Tune per provider: a
+    # cluster whose "GPU overloaded" 429s are genuinely transient wants 2-3; a slow-thinking
+    # Claude model wants 1 — a timeout there is deterministic (the call is just too slow), so
+    # retrying re-sends the same too-slow prompt and multiplies the wall-clock wait
+    # (timeout × (retries+1)) before it surfaces. Default 2.
+    max_retries: int = 2
     # Vendor-specific request params merged into every request body (GH #65) — the
     # escape hatch for the long tail of OpenAI-compatible endpoints (prompt_cache_key,
     # OpenRouter cache blocks, …) without per-vendor code. NOT for secrets (stored
@@ -194,21 +206,26 @@ class ProbeLLMConfig(BaseLLMConfig):
 
 
 class Knobs(BaseModel):
-    """Every agent tuning value — formerly scattered os.getenv reads. Defaults mirror the
-    old env defaults so behaviour is unchanged when nothing is set."""
+    """Every agent tuning value — formerly scattered os.getenv reads.
+
+    Per-LLM-request timeouts are sized for CURRENT CLAUDE MODELS, which run ADAPTIVE THINKING
+    by default (Sonnet 5 / Opus 4.8 / Fable 5) — a single call thinks before answering and can
+    run several minutes on a heavy prompt (planner synthesis, coder file-gen). The old
+    fast-cluster values (60/120s) timed those out. These are upper bounds, not targets: a fast
+    provider returns well under them, so the higher ceiling only ever helps."""
     planner_max_tool_steps: int = 15
-    planner_timeout_seconds: int = 60
+    planner_timeout_seconds: int = 240
     planner_max_synthesis_attempts: int = 3
     reviewer_max_tool_steps: int = 15
-    reviewer_timeout_seconds: int = 60
+    reviewer_timeout_seconds: int = 240
     coder_max_tool_steps: int = 16
-    coder_timeout_seconds: int = 120
+    coder_timeout_seconds: int = 300
     coder_max_empty_diff_retries: int = 2
     coder_max_compile_retries: int = 2
     tester_max_tool_steps: int = 6
-    tester_timeout_seconds: int = 120
+    tester_timeout_seconds: int = 240
     reflector_max_tool_steps: int = 8
-    reflector_timeout_seconds: int = 120
+    reflector_timeout_seconds: int = 240
     reflector_max_test_resynth: int = 2
 
 class LLMConfig(BaseModel):

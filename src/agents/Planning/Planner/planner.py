@@ -47,8 +47,9 @@ load_dotenv()
 _log = get_logger(Category.PLANNER)
 
 
-def _build_revision_context(plan: Plan) -> str:
-    """Format the prior plan + the CURRENT review for the revision prompt block.
+def _build_revision_context(plan: Plan, microtasks: List[Microtask]) -> str:
+    """Format the prior plan + its FULL microtasks + the CURRENT review for the revision
+    prompt block.
 
     Only the LATEST review verdict is rendered — not the whole reject history. Each
     review is a complete, fresh re-assessment of the current plan, so it supersedes
@@ -57,10 +58,33 @@ def _build_revision_context(plan: Plan) -> str:
     stale "(UNRESOLVED)" notes and slowed convergence to a crawl (GH #43). The full
     history still lives on the blackboard for the audit trail — only the prompt
     rendering is trimmed.
+
+    The PRIOR MICROTASKS are rendered in full detail. Without them the planner revised
+    blind — it regenerated every microtask from scratch each pass, which (observed on a
+    real run) dropped whole microtasks the reviewer then demanded back, and kept
+    re-emitting the exact example strings the reviewer had flagged, looping the same
+    rejection verbatim until the iteration cap. A reviewer note like "change
+    'Hamburg' to 'hamburg' in M2 AC1" is only actionable if the planner can SEE M2 AC1.
     """
     lines = [
         f"Prior plan summary: {plan.summary}",
         f"Prior architecture notes: {plan.architecture_notes}",
+        "",
+        "PRIOR MICROTASKS (your previous output — revise these, do not regenerate blind):",
+    ]
+    for mt in microtasks:
+        lines.append(f"  [{mt.microtask_id}] {mt.title}")
+        lines.append(f"    description: {mt.description}")
+        if mt.approach:
+            lines.append(f"    approach: {mt.approach}")
+        lines.append(f"    target_files: {mt.target_files}")
+        if mt.context_files:
+            lines.append(f"    context_files: {mt.context_files}")
+        if mt.dependencies:
+            lines.append(f"    dependencies: {mt.dependencies}")
+        for i, c in enumerate(mt.acceptance_criteria, 1):
+            lines.append(f"    AC {i}: {c.render()}")
+    lines += [
         "",
         "Rejection notes (address every one):",
     ]
@@ -68,6 +92,13 @@ def _build_revision_context(plan: Plan) -> str:
     if latest:
         label = "Human reviewer" if latest.source == FeedbackSource.HUMAN else "Automated reviewer"
         lines.append(f"  [{label}] {latest.notes}")
+    lines += [
+        "",
+        "Apply the rejection notes as SURGICAL EDITS to the prior microtasks above: change "
+        "exactly what each note flags, keep everything else (microtask count, ids, unflagged "
+        "criteria and examples) UNCHANGED. Never drop a microtask the review did not tell you "
+        "to drop.",
+    ]
     return "\n".join(lines)
 
 
@@ -166,8 +197,11 @@ class Planner:
 
         # Detect revision pass: prior plan exists and carries human/reviewer rejection notes.
         prior_plan = state.get("plan")
+        prior_microtasks: List[Microtask] = list(state.get("microtasks") or [])
         is_revision = prior_plan is not None and bool(prior_plan.review_feedback)
-        revision_context: Optional[str] = _build_revision_context(prior_plan) if is_revision and prior_plan else None
+        revision_context: Optional[str] = (
+            _build_revision_context(prior_plan, prior_microtasks) if is_revision and prior_plan else None
+        )
         if is_revision:
             _log.info("planner.revision_pass", reason="prior feedback present — re-investigating to re-ground")
 
@@ -264,11 +298,15 @@ class Planner:
                     microtasks=draft.microtasks,
                 )
             except ValidationError as e:
+                # Structured output is schema-CONSTRAINED server-side (Anthropic `json_schema`),
+                # so a required field can't be omitted — a ValidationError here means a genuine
+                # bug (schema/model mismatch), not a flaky generation. Crash cleanly; don't
+                # retry the same deterministic failure.
                 _log.error("planner.synthesis_validation_failed", error=str(e))
                 raise
             except Exception as e:
                 if is_transient_llm_error(e):
-                    _log.error("planner.cluster_unreachable", phase="synthesis", error=str(e))
+                    _log.error("planner.api_unreachable", phase="synthesis", error=str(e))
                     raise RetriableError(f"planner synthesis LLM call failed: {e}", phase="planner")
                 _log.error("planner.synthesis_error", error=str(e))
                 raise

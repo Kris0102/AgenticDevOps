@@ -14,6 +14,7 @@ const STATE_LABEL: Record<RunState, string> = {
   completed: 'completed',
   failed: 'failed',
   stalled: 'stalled',
+  stopped: 'manually stopped',
 }
 
 function fmtWhen(iso: string): string {

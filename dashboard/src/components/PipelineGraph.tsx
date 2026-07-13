@@ -9,7 +9,7 @@ import { api, type EventView, type MicrotaskRow, type RunResponse } from '../api
 
 type NodeId =
   | 'bootstrap' | 'planner' | 'reviewer' | 'coder' | 'tester'
-  | 'reflector' | 'deploy' | 'push' | 'hitl'
+  | 'reflector' | 'deploy' | 'push' | 'hitl' | 'stop'
 
 interface GNode {
   id: NodeId
@@ -33,6 +33,7 @@ const NODES: GNode[] = [
   { id: 'push',      label: 'push',      icon: '⇈',   x: 952, y: 170, cat: 'deployer' },
   { id: 'reflector', label: 'reflector', icon: '⚕',   x: 594, y: 262, cat: 'reflector' },
   { id: 'hitl',      label: 'human gate', icon: '⏸',  x: 540, y: 62,  cat: 'hitl' },
+  { id: 'stop',      label: 'stopped',   icon: '■',   x: 952, y: 258, cat: 'stop' },
 ]
 
 interface GEdge {
@@ -90,6 +91,7 @@ const ACTOR_NODE: Record<string, NodeId> = {
 function nodeOf(e: EventView): NodeId | null {
   if (e.event_type.startsWith('hitl.')) return 'hitl'
   if (e.event_type === 'gitops.pushed') return 'push'
+  if (e.event_type === 'run.stopped') return 'stop'
   return ACTOR_NODE[e.actor] ?? null   // orchestrator/db actors = routing noise, skipped
 }
 
@@ -164,6 +166,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
 
   const failed = run?.run_state === 'failed' || run?.status === 'FAILED'
   const done = run?.run_state === 'completed'
+  const stopped = run?.run_state === 'stopped'
 
   const { visited, transitions, activeNode } = useMemo(() => {
     const trans = new Set<string>()
@@ -172,10 +175,11 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
     // Live: the status names the node that runs NEXT (the actor stream lags one node);
     // failed: the last node that acted is where it died.
     const current = failed ? last : STATUS_NODE[String(run?.status ?? '')] ?? last
-    return { visited: new Set<NodeId>(trail), transitions: trans, activeNode: done ? null : current }
-  }, [trail, run?.status, failed, done])
+    return { visited: new Set<NodeId>(trail), transitions: trans, activeNode: done ? null : stopped ? null : current }
+  }, [trail, run?.status, failed, done, stopped])
 
   const nodeState = (id: NodeId): string => {
+    if (id === 'stop') return stopped ? 'stopped' : 'pending'
     if (activeNode === id) return failed ? 'failed' : 'active'
     if (visited.has(id)) return 'visited'
     return 'pending'
@@ -233,8 +237,8 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
     <div className="panel pipeline">
       <div className="pl-head">
         <h3>pipeline</h3>
-        <span className={`pl-state ${failed ? 'bad' : done ? 'ok' : ''}`}>
-          {done ? '✓ completed' : failed ? '✗ failed' : activeNode ? `● ${NODES.find((n) => n.id === activeNode)?.label ?? ''}` : ''}
+        <span className={`pl-state ${failed ? 'bad' : done ? 'ok' : stopped ? 'stopped' : ''}`}>
+          {done ? '✓ completed' : failed ? '✗ failed' : stopped ? '■ manually stopped' : activeNode ? `● ${NODES.find((n) => n.id === activeNode)?.label ?? ''}` : ''}
         </span>
       </div>
 

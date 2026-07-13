@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 import uuid
 from typing import AsyncIterator, List, Optional
 
@@ -7,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from Exceptions.RetriableError import RetriableError, is_transient_llm_error
+from Exceptions.RunStoppedError import RunStoppedError
 from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 
 from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunRequest
@@ -38,7 +40,7 @@ from db.db import db
 from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.semanticMemory.semantic_store import SemanticStore
-from db.models import Artifact as ArtifactRow, MicrotaskRecord, Run
+from db.models import Artifact as ArtifactRow, MicrotaskRecord, Run, Sandbox
 from db.models import Event as EventRow
 from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
@@ -49,9 +51,10 @@ from observability import Category, bind_run, clear_context, configure_logging, 
 from observability.log_bus import log_bus
 from orchestrator.bootstrap_node import BootStrapper
 from sandbox.sandbox_tools import DockerSandboxTools
-from orchestrator.checkpointer import setup_checkpointer
+from orchestrator.checkpointer import checkpointer, setup_checkpointer
 from orchestrator.hitl import HitlResume, Phase
 from orchestrator.orchestrator import graph
+from orchestrator.run_control import clear_stop, request_stop
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import (
     AppSettings,
@@ -74,6 +77,11 @@ _LOG_STREAM_POLL_SECONDS = 0.5
 _LOG_PROMOTED_KEYS = {"timestamp", "level", "category", "event", "run_id"}
 _PRIMITIVE = (str, int, float, bool, type(None))
 
+# Raw Run.status string for a manually-stopped run — deliberately NOT a RunStatus enum
+# member (that enum is deeply threaded through node routing; a stopped run never
+# re-enters the graph, so it doesn't need a routable value). See ADR 0033.
+STOPPED_STATUS = "STOPPED"
+
 _log = get_logger(Category.ORCHESTRATOR)
 
 
@@ -83,6 +91,27 @@ class HitlNotPausedError(RuntimeError):
 
 class RunAlreadyExistsError(RuntimeError):
     """import_run() targeted a run_id that is already in this database."""
+
+
+class RunNotFoundError(RuntimeError):
+    """stop_run()/delete_run() targeted a run_id with no matching `runs` row."""
+
+
+class RunAlreadyTerminalError(RuntimeError):
+    """stop_run() was called on a run that's already completed/failed/stopped."""
+
+
+class RunStopTimeoutError(RuntimeError):
+    """stop_run() waited past `_STOP_WAIT_TIMEOUT_SECONDS` for the driver thread to exit.
+    Safe to retry — the thread is guaranteed to clear on its own shortly via its own
+    configured LLM timeout (see ADR 0033)."""
+    def __init__(self, run_id: str):
+        super().__init__(f"timed out waiting for run {run_id}'s driver thread to exit")
+
+
+class RunNotDeletableError(RuntimeError):
+    """delete_run() was called on a run that's still RUNNING/PAUSED_HITL — must be
+    stopped first (ADR 0033)."""
 
 
 class InvalidModelChangeError(ValueError):
@@ -562,6 +591,75 @@ class Service:
         self._teardown_sandbox(run_id)
         return self._response(run_id)
 
+    # Last-resort ceiling for stop_run's wait — comfortably above any single configured
+    # agent LLM timeout, so hitting it means something is genuinely stuck, not just slow.
+    _STOP_WAIT_TIMEOUT_SECONDS = 180
+
+    def stop_run(self, run_id: str, note: Optional[str] = None) -> RunResponse:
+        """Hard-stop a live run ('Stop' button, ADR 0033). Sets the cooperative stop flag
+        FIRST (orchestrator/run_control.py) — every graph node wrapper checks it before
+        doing any work, which is the actual stop mechanism: a killed sandbox alone does
+        NOT reliably interrupt a live node, since tool-call exceptions are caught deep in
+        ToolGateway and fed back to the LLM as a normal observation instead of propagating,
+        and much of a ReAct agent's investigation may never touch the sandbox at all (e.g.
+        semantic_search over pgvector). The sandbox kill still happens too — real signal
+        for whatever sandbox call IS in flight, and needed for the actual container
+        cleanup. Then BLOCKS until `is_active` genuinely goes False before writing the
+        terminal verdict — never forces the claim open early, since that would let a
+        second driver start on this run_id while the old thread might still be mutating
+        the same checkpoint/DB row. Raises RunStopTimeoutError (mapped to 503, safe to
+        retry) if the wait exceeds `_STOP_WAIT_TIMEOUT_SECONDS`."""
+        current = self._response(run_id)
+        if current.run_state in (RunState.COMPLETED, RunState.FAILED, RunState.STOPPED):
+            raise RunAlreadyTerminalError(f"run {run_id} is already {current.run_state.value}")
+        request_stop(run_id)
+        self._teardown_sandbox(run_id, force=True)
+        if current.run_state == RunState.RUNNING:
+            deadline = time.monotonic() + self._STOP_WAIT_TIMEOUT_SECONDS
+            while self.is_active(run_id):
+                if time.monotonic() >= deadline:
+                    raise RunStopTimeoutError(run_id)
+                time.sleep(0.2)
+        reason = f"manually stopped by user{f': {note}' if note else ''}"
+        with db.session_scope() as session:
+            run_record = session.get(Run, run_id)
+            if run_record is None:
+                raise RunNotFoundError(run_id)
+            run_record.status = STOPPED_STATUS
+            run_record.updated_at = datetime.now(timezone.utc)
+            try:
+                LessonStore.retract_run(session, run_id)
+            except Exception:
+                pass
+            EventLogger.log(session, run_id, Roles.HUMAN.value, EventType.RUN_STOPPED, {"reason": reason})
+        _log.info("run.stopped", run_id=run_id, note=note or "")
+        log_bus.mark_done(run_id)
+        self._purge_semantic(run_id)
+        clear_stop(run_id)   # run is terminal now — drop the flag, don't leak it forever
+        return self._response(run_id)
+
+    def delete_run(self, run_id: str) -> None:
+        """Permanently remove a run and its per-run data (ADR 0033). Refuses a live run
+        (409 in the route) — delete is a data-removal operation and must never race a
+        live driver thread; the run must be stopped first. Lessons are deliberately KEPT
+        (cross-run memory, ADR 0018) — deleting a run's audit history is orthogonal to
+        whether its lessons were already judged trustworthy at write time."""
+        current = self._response(run_id)
+        if current.run_state in (RunState.RUNNING, RunState.PAUSED_HITL):
+            raise RunNotDeletableError(f"run {run_id} is {current.run_state.value} — stop it first")
+        self._teardown_sandbox(run_id, force=True)
+        SemanticStore().delete_workspace(run_id)
+        checkpointer.delete_thread(run_id)
+        with db.session_scope() as session:
+            run_record = session.get(Run, run_id)
+            if run_record is None:
+                raise RunNotFoundError(run_id)
+            for model in (EventRow, ArtifactRow, MicrotaskRecord, Sandbox):
+                session.query(model).filter(model.run_id == run_id).delete()
+            session.delete(run_record)
+        clear_stop(run_id)   # defensive — e.g. a stop_run that hit RunStopTimeoutError
+        _log.info("run.deleted", run_id=run_id)
+
     def review_context(self, run_id: str) -> Optional[HitlReviewContext]:
         """Everything the human reviews at the paused gate: the plan + microtasks for
         a `plan` gate, the raw diff for a `code` gate. None if the run isn't paused.
@@ -1011,6 +1109,8 @@ class Service:
         """Coarse lifecycle from the stored status string only (no checkpoint read).
         A run persisted at NEEDS_HITL_APPROVAL is paused; terminal statuses map directly;
         otherwise it's RUNNING if a worker drives it, else STALLED (orphaned)."""
+        if status == STOPPED_STATUS:
+            return RunState.STOPPED
         if status == RunStatus.FAILED.value:
             return RunState.FAILED
         if status == RunStatus.DONE.value:
@@ -1130,6 +1230,13 @@ class Service:
             # so it reads STALLED and can be re-driven via /continue, re-running the node.
             _log.warning("graph.transient", run_id=run_id, error=exc.reason)
             self._mark_stalled(run_id, exc.reason)
+        except RunStoppedError:
+            # A node aborted because stop_run() flagged this run_id (ADR 0033 amendment,
+            # orchestrator/run_control.py) — a clean, intentional unwind, not a crash. No
+            # stall event: stop_run's own wait loop is watching is_active and will write
+            # the terminal STOPPED status + its own run.stopped event once this thread
+            # exits (imminently, via the caller's `finally: mark_inactive`).
+            _log.info("graph.stop_requested", run_id=run_id)
         except Exception as exc:
             # A raw transient that escaped the agents (defensive — the nodes classify these
             # now, but a call site outside an agent could still leak one) → also STALL.
@@ -1183,12 +1290,18 @@ class Service:
         status = values.get("status")
         pending = self._pending_payload(run_id)
         state = self._derive_state(status, pending, self.is_active(run_id))
-        if state == RunState.STALLED and self._db_status(run_id) == RunStatus.FAILED.value:
+        db_status = self._db_status(run_id)
+        if state == RunState.STALLED and db_status == RunStatus.FAILED.value:
             # human closed the case (give_up) or sandbox doesnt exists anymore: checkpoint stays non-terminal, but the
             # runs-table verdict is FAILED — the row wins over the orphaned checkpoint.
             state = RunState.FAILED
+        if state in (RunState.STALLED, RunState.PAUSED_HITL) and db_status == STOPPED_STATUS:
+            # A run stopped while PAUSED_HITL still has its checkpoint's pending interrupt,
+            # so _derive_state returns PAUSED_HITL first — the row still wins (ADR 0033).
+            state = RunState.STOPPED
         stall_payload = self._last_event_payload(run_id, EventType.RUN_STALLED.value) if state == RunState.STALLED else None
         fail_payload = self._last_event_payload(run_id, EventType.RUN_FAILED.value) if state == RunState.FAILED else None
+        stop_payload = self._last_event_payload(run_id, EventType.RUN_STOPPED.value) if state == RunState.STOPPED else None
         return RunResponse(
             run_id=run_id,
             run_state=state,
@@ -1201,6 +1314,8 @@ class Service:
             stalled_kind=stall_payload.get("kind") if stall_payload else None,
             # Only for a failed run: the run.failed reason — the dashboard's error banner.
             failure_reason=fail_payload.get("reason") if fail_payload else None,
+            # Only for a manually-stopped run: the run.stopped reason — the gray banner.
+            stopped_reason=stop_payload.get("reason") if stop_payload else None,
             progress=self._progress(values),
         )
 
@@ -1390,11 +1505,14 @@ class Service:
         except Exception as exc:
             _log.warning("semantic.prune_failed", run_id=run_id, error=str(exc))
 
-    def _teardown_sandbox(self, run_id: str) -> None:
-        """Destroy the run's Docker sandbox if settings ask for it. Best-effort — a
-        teardown failure must never mask the run's actual outcome."""
+    def _teardown_sandbox(self, run_id: str, force: bool = False) -> None:
+        """Destroy the run's Docker sandbox if settings ask for it, or unconditionally
+        when `force` (an explicit user Stop/Delete, ADR 0033) — those must tear the
+        container down regardless of the `teardown_on_terminal` setting, which only
+        governs routine end-of-run housekeeping. Best-effort — a teardown failure must
+        never mask the run's actual outcome."""
         try:
-            if not SettingsStore.get().defaults.teardown_on_terminal:
+            if not force and not SettingsStore.get().defaults.teardown_on_terminal:
                 return
             DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace").sandbox_destroy(
                 sandbox_id=f"sbox_{run_id}"

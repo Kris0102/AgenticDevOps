@@ -24,6 +24,7 @@
   --cat-sandbox: #ffa657;      /* orange */
   --cat-bootstrap: #79c0ff;    /* sky */
   --cat-db: #8b949e;           /* grey */
+  --cat-stop: #8b949e;         /* grey — manually stopped, ADR 0033 */
 }
 
 * { box-sizing: border-box; }
@@ -97,6 +98,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .statusbar.state-completed .badge { background: #3fb95033; color: var(--green); }
 .statusbar.state-failed .badge { background: #f8514933; color: var(--red); }
 .statusbar.state-stalled .badge { background: #e3b34133; color: var(--yellow); }
+.statusbar.state-stopped .badge { background: #8b949e33; color: var(--muted); }
 .statusbar .rid { color: var(--muted); font-size: 12px; }
 .statusbar .gate { color: var(--yellow); font-weight: 600; }
 .statusbar .nowdoing { color: var(--muted); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
@@ -127,6 +129,13 @@ button.continue { background: var(--yellow); color: #0d1117; white-space: nowrap
 .cb-actions { display: flex; gap: 8px; }
 button.giveup { background: transparent; color: var(--red); border: 1px solid #f8514955; white-space: nowrap; }
 button.giveup:hover { border-color: var(--red); background: #f851490f; }
+
+/* ---- run actions: stop / delete (ADR 0033) ---- */
+.run-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+button.stop { background: transparent; color: var(--muted); border: 1px solid #8b949e55; white-space: nowrap; }
+button.stop:hover { border-color: var(--muted); background: #8b949e14; }
+button.delete { background: transparent; color: var(--red); border: 1px solid #f8514955; white-space: nowrap; }
+button.delete:hover { border-color: var(--red); background: #f851490f; }
 
 /* ---- runs home ---- */
 .runshome { margin-bottom: 12px; }
@@ -185,6 +194,7 @@ button.giveup:hover { border-color: var(--red); background: #f851490f; }
 .runbox.state-completed { border-left-color: var(--green); } .runbox.state-completed .badge { background: #3fb95033; color: var(--green); }
 .runbox.state-failed { border-left-color: var(--red); } .runbox.state-failed .badge { background: #f8514933; color: var(--red); }
 .runbox.state-stalled { border-left-color: var(--yellow); } .runbox.state-stalled .badge { background: #e3b34133; color: var(--yellow); }
+.runbox.state-stopped { border-left-color: var(--muted); } .runbox.state-stopped .badge { background: #8b949e33; color: var(--muted); }
 
 .back { background: var(--panel); color: var(--fg); border: 1px solid var(--border); font-weight: 500; margin-bottom: 12px; }
 
@@ -453,6 +463,7 @@ button.danger:hover { border-color: var(--red); }
 .pl-state { font-size: 13px; font-weight: 600; color: var(--accent); }
 .pl-state.ok { color: var(--green); }
 .pl-state.bad { color: var(--red); }
+.pl-state.stopped { color: var(--muted); }
 .plsvg { width: 100%; height: auto; display: block; }
 
 .pl-progress { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 14px; }
@@ -509,6 +520,8 @@ button.danger:hover { border-color: var(--red); }
 }
 .plnode.failed .box { stroke: var(--red); stroke-width: 2.2; fill: #f851490f; filter: drop-shadow(0 0 7px #f8514966); }
 .plnode.failed .plabel, .plnode.failed .picon { fill: var(--red); }
+.plnode.stopped .box { stroke: var(--muted); stroke-width: 2.2; fill: #8b949e14; filter: drop-shadow(0 0 7px #8b949e66); }
+.plnode.stopped .plabel, .plnode.stopped .picon { fill: var(--muted); }
 .plnode.pending { opacity: 0.45; }
 
 /* ---- tokens by agent (horizontal bar chart) ---- */
@@ -627,6 +640,18 @@ a.export:hover { border-color: var(--accent); }
   letter-spacing: 0.06em; white-space: nowrap;
 }
 .fb-reason { font-family: var(--mono); font-size: 12.5px; color: var(--fg); word-break: break-word; }
+
+/* ---- manually-stopped banner (ADR 0033) ---- */
+.stopbanner {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px;
+  padding: 10px 14px; border: 1px solid #8b949e66; border-left: 3px solid var(--muted);
+  border-radius: 8px; background: #8b949e0f;
+}
+.sb-badge {
+  color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; white-space: nowrap;
+}
+.sb-reason { font-family: var(--mono); font-size: 12.5px; color: var(--fg); word-break: break-word; }
 
 .rb-fail {
   color: var(--red); font-size: 12px; font-family: var(--mono);

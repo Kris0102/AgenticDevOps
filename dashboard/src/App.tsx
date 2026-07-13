@@ -26,6 +26,7 @@ export default function App() {
   const [view, setView] = useState<View>('home')
   const [tab, setTab] = useState<Tab>('activity')
   const [continuing, setContinuing] = useState(false)
+  const [stopping, setStopping] = useState(false)
   // Entered in thousands, same convention as the Settings "max tokens per run" field —
   // "200" here means "+200,000 tokens". This ADDS to the current cap, it does not replace
   // it (ADR 0025 amendment): a run capped at 200k that stalls and gets "200" entered again
@@ -33,7 +34,7 @@ export default function App() {
   const [addTokensK, setAddTokensK] = useState('')
   const [capVersion, setCapVersion] = useState(0)
   const { run, error } = useRunStatus(runId)
-  const terminal = run?.run_state === 'completed' || run?.run_state === 'failed'
+  const terminal = run?.run_state === 'completed' || run?.run_state === 'failed' || run?.run_state === 'stopped'
   // A token-budget stall can't usefully be retried unchanged — it just re-trips the same
   // check and re-stalls — so an amount to add is mandatory for this stall kind (not for a
   // plain transient/crash stall, where blank = retry unchanged).
@@ -66,6 +67,34 @@ export default function App() {
     const note = window.prompt('Optional note (why is it hopeless?)') ?? undefined
     try {
       await api.failRun(runId, note || undefined)   // poll flips to the failed banner
+    } catch (e) {
+      alert(String(e))
+    }
+  }
+
+  // Hard-stop a live run (ADR 0033). Blocks server-side until the driver thread has
+  // actually exited, so this call can take a moment — the button shows a busy state.
+  const onStop = async () => {
+    if (!runId) return
+    if (!window.confirm('Stop this run? It will end early and cannot be resumed.')) return
+    const note = window.prompt('Optional note (why stop it?)') ?? undefined
+    setStopping(true)
+    try {
+      await api.stopRun(runId, note || undefined)   // poll flips to the gray "stopped" banner
+    } catch (e) {
+      alert(String(e))
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  // Permanently remove a terminal run and its data — no undo, so confirm plainly.
+  const onDelete = async () => {
+    if (!runId) return
+    if (!window.confirm('Delete this run permanently? Its history cannot be recovered.')) return
+    try {
+      await api.deleteRun(runId)
+      setRunId(null)   // nothing left to poll — back to the run list
     } catch (e) {
       alert(String(e))
     }
@@ -106,12 +135,34 @@ export default function App() {
 
           <StatusBar run={run} />
 
+          {(run?.run_state === 'running' || run?.run_state === 'paused_hitl' || terminal) && (
+            <div className="run-actions">
+              {(run?.run_state === 'running' || run?.run_state === 'paused_hitl') && (
+                <button className="stop" disabled={stopping} onClick={onStop} title="hard-stop this run — ends it early, cannot be resumed">
+                  {stopping ? 'stopping…' : '■ Stop run'}
+                </button>
+              )}
+              {terminal && (
+                <button className="delete" onClick={onDelete} title="permanently delete this run and its data">
+                  🗑 Delete run
+                </button>
+              )}
+            </div>
+          )}
+
           <PipelineGraph runId={runId} run={run} live={!terminal} />
 
           {run?.run_state === 'failed' && (
             <div className="failbanner">
               <span className="fb-badge">run failed</span>
               <span className="fb-reason">{run.failure_reason ?? 'no failure reason recorded'}</span>
+            </div>
+          )}
+
+          {run?.run_state === 'stopped' && (
+            <div className="stopbanner">
+              <span className="sb-badge">manually stopped</span>
+              <span className="sb-reason">{run.stopped_reason ?? 'no reason recorded'}</span>
             </div>
           )}
 

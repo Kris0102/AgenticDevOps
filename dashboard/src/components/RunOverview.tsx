@@ -248,7 +248,7 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
         <div className="nowworking">
           <span className="nw-pulse" aria-hidden>●</span>
           <span className="nw-label">working on</span>
-          <span className="nw-idx">#{current.idx}{tasks.length ? `/${tasks.length}` : ''}</span>
+          <span className="nw-idx">#{current.idx + 1}{tasks.length ? `/${tasks.length}` : ''}</span>
           <span className="nw-title" title={current.title}>{current.title}</span>
           <span className="nw-attempt">attempt {Math.max(current.attempts, 1)}{maxAttempts ? `/${maxAttempts}` : ''}</span>
         </div>
@@ -261,7 +261,7 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
               key={t.microtask_id}
               className={`mtrow ${DONE.has(t.status) ? 'ok' : t.status === 'FAILED' ? 'bad' : ''} ${current?.microtask_id === t.microtask_id ? 'now' : ''}`}
             >
-              <span className="mtidx">{t.idx}</span>
+              <span className="mtidx">{t.idx + 1}</span>
               <span className="mttitle" title={t.title}>{t.title}</span>
               <span className="mtfiles" title={(t.files_touched.length ? t.files_touched : t.target_files).join('\n')}>
                 {(t.files_touched.length ? t.files_touched : t.target_files).length} files

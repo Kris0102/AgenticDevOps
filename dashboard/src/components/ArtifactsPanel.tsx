@@ -81,7 +81,7 @@ export function ArtifactsPanel({ runId }: { runId: string }) {
     for (const t of tasks) {
       const arr = byTask.get(t.microtask_id)
       if (arr) {
-        out.push({ key: t.microtask_id, title: `microtask ${t.idx} — ${t.title}`, items: arr })
+        out.push({ key: t.microtask_id, title: `microtask ${t.idx + 1} — ${t.title}`, items: arr })
         byTask.delete(t.microtask_id)
       }
     }

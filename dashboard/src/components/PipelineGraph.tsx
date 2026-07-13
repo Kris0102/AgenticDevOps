@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type EventView, type MicrotaskRow, type RunResponse } from '../api'
 
 // Live pipeline map: the real LangGraph topology with the CURRENT node pulsing and the
@@ -194,6 +194,24 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
   const mt = progress?.microtask ?? null
   const mtTotal = tasks.length
   const mtDone = tasks.filter((t) => MICROTASK_DONE.has(t.status)).length
+
+  // `mt` (from the 1.5s run-status poll) flips to null the instant a microtask
+  // finishes or advances to the next one — but `tasks` (the durable board driving
+  // the "N/M completed" line above) only refreshes on its own 3s interval, so the
+  // count can lag stale for up to 3s right when it matters most. The DB row and the
+  // checkpoint commit together in the same tester-node transaction, so re-pulling
+  // the board the instant `mt` changes catches the finish immediately instead of
+  // waiting on the interval.
+  const mtKey = `${runId}:${mt?.idx ?? 'none'}`
+  const prevMtKeyRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const first = prevMtKeyRef.current === undefined
+    const changed = prevMtKeyRef.current !== mtKey
+    prevMtKeyRef.current = mtKey
+    if (!first && changed) {
+      api.getMicrotasks(runId).then(setTasks).catch(() => {})
+    }
+  }, [mtKey, runId])
   // The plan cycle is done once we've moved past the reviewer — proof the plan was
   // approved and the run moved on (a reject just loops planner→reviewer again). Checked
   // two ways: `activeNode` reacts the instant `run.status` flips to NEEDS_CODE (committed
@@ -242,7 +260,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
           <div className="pp-body">
             {mt ? (
               <>
-                <span className="pp-label">microtask #{mt.idx} of {mt.total} — attempt {mt.attempts}</span>
+                <span className="pp-label">microtask #{mt.idx + 1} of {mt.total} — attempt {mt.attempts}</span>
                 <span className="pp-meterrow">
                   <Meter value={mt.attempts} max={mt.max_attempts} />
                 </span>
@@ -251,7 +269,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
               <>
                 <span className="pp-label">{mtDone}/{mtTotal} microtasks completed</span>
                 <span className="pp-subline">
-                  {tasks.map((t) => `#${t.idx} ${t.attempts} attempt${t.attempts === 1 ? '' : 's'}`).join('  ·  ')}
+                  {tasks.map((t) => `#${t.idx + 1} ${t.attempts} attempt${t.attempts === 1 ? '' : 's'}`).join('  ·  ')}
                 </span>
               </>
             ) : (

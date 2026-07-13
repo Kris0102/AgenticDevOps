@@ -193,7 +193,7 @@ export function MicrotasksPanel({ runId }: { runId: string }) {
                 onClick={() => setOpen(isOpen ? null : t.microtask_id)}
                 aria-expanded={isOpen}
               >
-                <span className="mtidx">{t.idx}</span>
+                <span className="mtidx">{t.idx + 1}</span>
                 <span className="mttitle" title={t.title}>{t.title}</span>
                 <span className="mtcrit-count" title="acceptance criteria">{t.acceptance_criteria.length} criteria</span>
                 <span className="mtfiles" title={t.target_files.join('\n')}>{t.target_files.length} files</span>

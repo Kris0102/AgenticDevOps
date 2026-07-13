@@ -92,6 +92,9 @@ class RunState(str, Enum):
     # guard could mark it FAILED. Recoverable — POST /runs/{id}/continue re-drives from the
     # checkpoint. Distinct from RUNNING (a worker IS driving it). See ADR 0019.
     STALLED = "stalled"
+    # Terminal: a human hard-stopped the run early via POST /runs/{id}/stop. Distinct from
+    # FAILED — rendered gray, labeled "manually stopped". See ADR 0033.
+    STOPPED = "stopped"
 
 
 class MicrotaskProgress(BaseModel):
@@ -134,6 +137,8 @@ class RunResponse(BaseModel):
     # set only when run_state == failed — the run.failed reason, so the dashboard can
     # say WHY instead of just showing a red badge.
     failure_reason: Optional[str] = None
+    # set only when run_state == stopped — the run.stopped reason, for the gray banner.
+    stopped_reason: Optional[str] = None
     # planner-loop / microtask-loop iteration counts, sourced from the checkpoint —
     # None before the graph has produced any Iteration/Microtask state yet (ADR 0028).
     progress: Optional[PipelineProgress] = None

@@ -89,6 +89,7 @@ class EventType(str, Enum):
     RUN_FAILED = "run.failed"
     RUN_STALLED = "run.stalled"
     RUN_RESUMED = "run.resumed"
+    RUN_STOPPED = "run.stopped"
     TOOL_EXECUTED = "tool.executed"
     TOOL_DENIED = "tool.denied"
     HITL_REQUESTED = "hitl.requested"

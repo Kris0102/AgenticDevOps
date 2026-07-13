@@ -52,7 +52,7 @@ interface Group {
   items: ArtifactView[]
 }
 
-export function ArtifactsPanel({ runId }: { runId: string }) {
+export function ArtifactsPanel({ runId, live }: { runId: string; live: boolean }) {
   const [items, setItems] = useState<ArtifactView[]>([])
   const [tasks, setTasks] = useState<MicrotaskRow[]>([])
   const [open, setOpen] = useState<string | null>(null)
@@ -60,10 +60,17 @@ export function ArtifactsPanel({ runId }: { runId: string }) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let alive = true
+    const load = () => {
+      api.getArtifacts(runId).then((it) => { if (alive) setItems(it) }).catch((e) => { if (alive) setError(String(e)) })
+      api.getMicrotasks(runId).then((ts) => { if (alive) setTasks(ts) }).catch(() => {})
+    }
     setItems([]); setTasks([]); setOpen(null); setBodies({})
-    api.getArtifacts(runId).then(setItems).catch((e) => setError(String(e)))
-    api.getMicrotasks(runId).then(setTasks).catch(() => {})
-  }, [runId])
+    load()
+    if (!live) return () => { alive = false }
+    const t = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [runId, live])
 
   // Run-level artifacts (plan, review) first, then one section per microtask in board order.
   const groups = useMemo<Group[]>(() => {
@@ -81,7 +88,7 @@ export function ArtifactsPanel({ runId }: { runId: string }) {
     for (const t of tasks) {
       const arr = byTask.get(t.microtask_id)
       if (arr) {
-        out.push({ key: t.microtask_id, title: `microtask ${t.idx} — ${t.title}`, items: arr })
+        out.push({ key: t.microtask_id, title: `microtask ${t.idx + 1} — ${t.title}`, items: arr })
         byTask.delete(t.microtask_id)
       }
     }

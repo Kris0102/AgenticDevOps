@@ -27,6 +27,10 @@ from api.service.service import (
     ProviderUnreachableError,
     RepoValidationFailedError,
     RunAlreadyExistsError,
+    RunAlreadyTerminalError,
+    RunNotDeletableError,
+    RunNotFoundError,
+    RunStopTimeoutError,
     Service,
 )
 from db.repo_store import DuplicateRepoError, RepoNotFoundError
@@ -291,6 +295,34 @@ def fail_run(run_id: str, body: Optional[dict] = None) -> RunResponse:
     if current.run_state != RunState.STALLED:
         raise HTTPException(status.HTTP_409_CONFLICT, f"run is {current.run_state.value}, not stalled")
     return service.give_up(run_id, (body or {}).get("note"))
+
+
+@app.post("/runs/{run_id}/stop", response_model=RunResponse)
+def stop_run(run_id: str, body: Optional[dict] = None) -> RunResponse:
+    """Hard-stop a run: kills its sandbox and BLOCKS until the driver thread has
+    actually exited before returning — the response only ever says 'stopped' once
+    nothing is running for this run_id anymore (see Service.stop_run, ADR 0033)."""
+    try:
+        return service.stop_run(run_id, (body or {}).get("note"))
+    except RunNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    except RunAlreadyTerminalError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    except RunStopTimeoutError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
+
+
+@app.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_run(run_id: str) -> Response:
+    """Permanently remove a run and its per-run data. Refuses a live run (409) — it must
+    be stopped first (ADR 0033). Lessons are kept (cross-run memory, ADR 0018)."""
+    try:
+        service.delete_run(run_id)
+    except RunNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    except RunNotDeletableError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/runs/{run_id}/events", response_model=List[EventView])

@@ -10,6 +10,7 @@ from langgraph.types import interrupt
 # before the intra-package imports below resolve.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from Exceptions.RunStoppedError import RunStoppedError
 from observability import Category, get_logger
 from orchestrator.checkpointer import checkpointer
 from orchestrator.coder_node import CoderRunner
@@ -18,6 +19,7 @@ from orchestrator.hitl import HitlDecision, HitlGate, HitlResume, Phase
 from orchestrator.planner_node import PlannerRunner
 from orchestrator.reflector_node import ReflectorRunner
 from orchestrator.reviewer_node import ReviewerRunner
+from orchestrator.run_control import is_stop_requested
 from orchestrator.state import BlackboardState, RunStatus
 from orchestrator.tester_node import TesterRunner
 
@@ -50,20 +52,36 @@ class OrchestratorGraph:
     # 1. Agent Wrapper Nodes
     # ==========================================
 
+    @staticmethod
+    def _check_stop(state: BlackboardState) -> None:
+        """Cooperative stop checkpoint (ADR 0033 amendment, see run_control.py): raised
+        BEFORE a node does any real work, so a human Stop request bounds the run to at
+        most one more in-flight node's worth of work instead of marching through further
+        plan/review/code cycles. A sandbox kill alone doesn't reliably interrupt a live
+        node — tool-call exceptions get swallowed deep in ToolGateway and fed back to the
+        LLM as an observation — so this explicit check is the real stop mechanism."""
+        run_id = state.get("run_id")
+        if run_id and is_stop_requested(run_id):
+            raise RunStoppedError(run_id)
+
     def _planner(self, state: BlackboardState) -> Dict[str, Any]:
+        self._check_stop(state)
         _log.info("node.enter", node="planner")
         return PlannerRunner(state).invoke()
 
     def _plan_reviewer(self, state: BlackboardState) -> Dict[str, Any]:
+        self._check_stop(state)
         _log.info("node.enter", node="plan_reviewer")
         result = ReviewerRunner(state).invoke()
         return HitlGate.apply(Phase.PLAN, result, state)
 
     def _coder(self, state: BlackboardState) -> Dict[str, Any]:
+        self._check_stop(state)
         _log.info("node.enter", node="coder")
         return CoderRunner(state).invoke()
 
     def _tester(self, state: BlackboardState) -> Dict[str, Any]:
+        self._check_stop(state)
         _log.info("node.enter", node="tester")
         result = TesterRunner(state).invoke()
         # On a PASS the Tester advances (NEEDS_CODE/DONE) and sets _tested_microtask_id;
@@ -77,6 +95,7 @@ class OrchestratorGraph:
         """Failure-only diagnosis: only reached on a tester FAIL (REFLECT). Diagnoses the
         failure, seeds a Reflection, and routes back to the coder (NEEDS_CODE). It never
         approves or gates — the Tester owns the PASS verdict (ADR 0016)."""
+        self._check_stop(state)
         _log.info("node.enter", node="reflector")
         return ReflectorRunner(state).invoke()
 
@@ -84,12 +103,14 @@ class OrchestratorGraph:
         """Gate producer for the deploy phase. Emits READY_TO_DEPLOY and funnels it
         through the shared HITL gate — when 'deploy' is in hitl.hitl_checkpoints the
         push pauses for human approval; otherwise it passes straight to deploy_push."""
+        self._check_stop(state)
         _log.info("node.enter", node="deploy")
         return HitlGate.apply(Phase.DEPLOY, {"status": RunStatus.READY_TO_DEPLOY}, state)
 
     def _deploy_push(self, state: BlackboardState) -> Dict[str, Any]:
         """Actor: stages/commits/pushes the sandbox to a run_id-named branch. Reached
         only after the deploy gate clears (or when no gate is configured)."""
+        self._check_stop(state)
         _log.info("node.enter", node="deploy_push")
         result = DeployRunner(state).invoke()
         return {**result, "status": RunStatus.DONE}

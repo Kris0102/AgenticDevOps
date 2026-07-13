@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type EventView, type MicrotaskRow, type RunResponse } from '../api'
 
 // Live pipeline map: the real LangGraph topology with the CURRENT node pulsing and the
@@ -9,7 +9,7 @@ import { api, type EventView, type MicrotaskRow, type RunResponse } from '../api
 
 type NodeId =
   | 'bootstrap' | 'planner' | 'reviewer' | 'coder' | 'tester'
-  | 'reflector' | 'deploy' | 'push' | 'hitl'
+  | 'reflector' | 'deploy' | 'push' | 'hitl' | 'stop'
 
 interface GNode {
   id: NodeId
@@ -33,6 +33,7 @@ const NODES: GNode[] = [
   { id: 'push',      label: 'push',      icon: '⇈',   x: 952, y: 170, cat: 'deployer' },
   { id: 'reflector', label: 'reflector', icon: '⚕',   x: 594, y: 262, cat: 'reflector' },
   { id: 'hitl',      label: 'human gate', icon: '⏸',  x: 540, y: 62,  cat: 'hitl' },
+  { id: 'stop',      label: 'stopped',   icon: '■',   x: 952, y: 258, cat: 'stop' },
 ]
 
 interface GEdge {
@@ -90,6 +91,7 @@ const ACTOR_NODE: Record<string, NodeId> = {
 function nodeOf(e: EventView): NodeId | null {
   if (e.event_type.startsWith('hitl.')) return 'hitl'
   if (e.event_type === 'gitops.pushed') return 'push'
+  if (e.event_type === 'run.stopped') return 'stop'
   return ACTOR_NODE[e.actor] ?? null   // orchestrator/db actors = routing noise, skipped
 }
 
@@ -164,6 +166,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
 
   const failed = run?.run_state === 'failed' || run?.status === 'FAILED'
   const done = run?.run_state === 'completed'
+  const stopped = run?.run_state === 'stopped'
 
   const { visited, transitions, activeNode } = useMemo(() => {
     const trans = new Set<string>()
@@ -172,10 +175,11 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
     // Live: the status names the node that runs NEXT (the actor stream lags one node);
     // failed: the last node that acted is where it died.
     const current = failed ? last : STATUS_NODE[String(run?.status ?? '')] ?? last
-    return { visited: new Set<NodeId>(trail), transitions: trans, activeNode: done ? null : current }
-  }, [trail, run?.status, failed, done])
+    return { visited: new Set<NodeId>(trail), transitions: trans, activeNode: done ? null : stopped ? null : current }
+  }, [trail, run?.status, failed, done, stopped])
 
   const nodeState = (id: NodeId): string => {
+    if (id === 'stop') return stopped ? 'stopped' : 'pending'
     if (activeNode === id) return failed ? 'failed' : 'active'
     if (visited.has(id)) return 'visited'
     return 'pending'
@@ -194,6 +198,24 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
   const mt = progress?.microtask ?? null
   const mtTotal = tasks.length
   const mtDone = tasks.filter((t) => MICROTASK_DONE.has(t.status)).length
+
+  // `mt` (from the 1.5s run-status poll) flips to null the instant a microtask
+  // finishes or advances to the next one — but `tasks` (the durable board driving
+  // the "N/M completed" line above) only refreshes on its own 3s interval, so the
+  // count can lag stale for up to 3s right when it matters most. The DB row and the
+  // checkpoint commit together in the same tester-node transaction, so re-pulling
+  // the board the instant `mt` changes catches the finish immediately instead of
+  // waiting on the interval.
+  const mtKey = `${runId}:${mt?.idx ?? 'none'}`
+  const prevMtKeyRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const first = prevMtKeyRef.current === undefined
+    const changed = prevMtKeyRef.current !== mtKey
+    prevMtKeyRef.current = mtKey
+    if (!first && changed) {
+      api.getMicrotasks(runId).then(setTasks).catch(() => {})
+    }
+  }, [mtKey, runId])
   // The plan cycle is done once we've moved past the reviewer — proof the plan was
   // approved and the run moved on (a reject just loops planner→reviewer again). Checked
   // two ways: `activeNode` reacts the instant `run.status` flips to NEEDS_CODE (committed
@@ -215,8 +237,8 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
     <div className="panel pipeline">
       <div className="pl-head">
         <h3>pipeline</h3>
-        <span className={`pl-state ${failed ? 'bad' : done ? 'ok' : ''}`}>
-          {done ? '✓ completed' : failed ? '✗ failed' : activeNode ? `● ${NODES.find((n) => n.id === activeNode)?.label ?? ''}` : ''}
+        <span className={`pl-state ${failed ? 'bad' : done ? 'ok' : stopped ? 'stopped' : ''}`}>
+          {done ? '✓ completed' : failed ? '✗ failed' : stopped ? '■ manually stopped' : activeNode ? `● ${NODES.find((n) => n.id === activeNode)?.label ?? ''}` : ''}
         </span>
       </div>
 
@@ -242,7 +264,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
           <div className="pp-body">
             {mt ? (
               <>
-                <span className="pp-label">microtask #{mt.idx} of {mt.total} — attempt {mt.attempts}</span>
+                <span className="pp-label">microtask #{mt.idx + 1} of {mt.total} — attempt {mt.attempts}</span>
                 <span className="pp-meterrow">
                   <Meter value={mt.attempts} max={mt.max_attempts} />
                 </span>
@@ -251,7 +273,7 @@ export function PipelineGraph({ runId, run, live }: { runId: string; run: RunRes
               <>
                 <span className="pp-label">{mtDone}/{mtTotal} microtasks completed</span>
                 <span className="pp-subline">
-                  {tasks.map((t) => `#${t.idx} ${t.attempts} attempt${t.attempts === 1 ? '' : 's'}`).join('  ·  ')}
+                  {tasks.map((t) => `#${t.idx + 1} ${t.attempts} attempt${t.attempts === 1 ? '' : 's'}`).join('  ·  ')}
                 </span>
               </>
             ) : (

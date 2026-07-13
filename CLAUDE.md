@@ -191,6 +191,8 @@ cd src
 #   GET  /runs/{id}                    poll status / run_state / hitl_phase
 #   GET  /runs/{id}/hitl               paused-gate review context (plan or green/red diff)
 #   POST /runs/{id}/resume             {decision: approve|reject, note}
+#   POST /runs/{id}/stop               hard-stop a live run (blocks until driver thread exits, ADR 0033)
+#   DELETE /runs/{id}                  permanently delete a terminal run + its data (409 if live, ADR 0033)
 #   GET  /runs/{id}/logs/stream        live logs over SSE (structlog bus)
 #   GET  /runs/{id}/events?after=<seq> durable history (events audit table)
 ```
@@ -336,7 +338,10 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 
 ## Adding a new agent
 1. Create `src/agents/<Phase>/<name>.py` with a class that has `invoke(state: BlackboardState) -> Dict[str, Any]`
-2. Add a node wrapper in `orchestrator.py` following the `planner_node` pattern
+2. Add a node wrapper in `orchestrator.py` following the `planner_node` pattern — call
+   `self._check_stop(state)` as its first line (ADR 0033 amendment) so a human Stop
+   request bounds the run at this node too; there's no automatic enforcement of this,
+   it's easy to forget
 3. Register the node: `builder.add_node("<name>", <name>_node)`
 4. Wire edges and add routing logic if needed
 5. Define which tools the agent can access in `Roles.py`
@@ -355,3 +360,4 @@ See `docs/Blackboard.md` §6.7 for full registry. Key ones:
 - `semantic.baseline_ingested`, `semantic.workspace_synced`
 - `llm.usage` (per agent-node invocation — tokens in/out/total; see ADR 0025)
 - `run.token_budget_raised` (human raises `Constraints.max_total_tokens` on a stalled run via `/continue`; see ADR 0025)
+- `run.stopped` (human hard-stops a live run via `/runs/{id}/stop`; a raw `Run.status = "STOPPED"` string, not a `RunStatus` enum member; see ADR 0033)

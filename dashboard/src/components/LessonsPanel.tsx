@@ -3,13 +3,18 @@ import { api, type LessonView } from '../api'
 
 // What past runs on this repo taught the system (ADR 0018) — confirmed failure lessons
 // the agents get injected as advisory context. Renders nothing when the repo has none.
-export function LessonsPanel({ runId }: { runId: string }) {
+export function LessonsPanel({ runId, live }: { runId: string; live: boolean }) {
   const [lessons, setLessons] = useState<LessonView[]>([])
 
   useEffect(() => {
+    let alive = true
+    const load = () => { api.getLessons(runId).then((ls) => { if (alive) setLessons(ls) }).catch(() => {}) }
     setLessons([])
-    api.getLessons(runId).then(setLessons).catch(() => {})
-  }, [runId])
+    load()
+    if (!live) return () => { alive = false }
+    const t = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [runId, live])
 
   return (
     <div className="panel lessons">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, LLM_AGENTS, type AppSettings, type LLMConfig, type RepoView } from '../api'
 import { buildRunRequest } from '../defaultRunRequest'
 import { ModelPicker } from './ModelPicker'
@@ -22,6 +22,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   const [baseRef, setBaseRef] = useState('')
   const [baseSha, setBaseSha] = useState('')
   const [task, setTask] = useState('')
+  const taskRef = useRef<HTMLTextAreaElement | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [skipDeploy, setSkipDeploy] = useState(false)
   // Per-run, per-agent model override (GH #71), seeded from the global default.
@@ -62,6 +63,14 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
       .catch((e) => { if (!stale) setBranchWarning(`branch list unavailable (${e}) — using the default branch`) })
     return () => { stale = true }
   }, [repoId, repos])
+
+  // Auto-grow the task textarea with its content, up to the CSS max-height (then it scrolls).
+  useEffect(() => {
+    const el = taskRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [task])
 
   const start = async () => {
     if (!settings || !repoId || !llm) return
@@ -129,7 +138,8 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
           <label className="fld"><span>base sha <em>optional</em></span>
             <input placeholder="pin a commit on the base branch" value={baseSha} onChange={(e) => setBaseSha(e.target.value)} /></label>
           <label className="fld span2"><span>task</span>
-            <textarea placeholder="what should the agents implement?" value={task} onChange={(e) => setTask(e.target.value)} /></label>
+            <textarea ref={taskRef} className="ta-task" placeholder="what should the agents implement?" value={task}
+              onChange={(e) => setTask(e.target.value)} /></label>
           <label className="fld span2"><span>deploy commit message <em>optional — editable again at the deploy gate</em></span>
             <input placeholder="AgenticDevOps run <run id>" value={commitMessage} disabled={skipDeploy}
               onChange={(e) => setCommitMessage(e.target.value)} /></label>

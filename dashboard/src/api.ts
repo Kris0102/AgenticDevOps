@@ -6,7 +6,7 @@ import axios, { AxiosError } from 'axios'
 
 // ----------------------------------------------------------------- response models
 
-export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'stalled'
+export type RunState = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'stalled' | 'stopped'
 
 // One microtask's position + attempt count while the coder/tester/reflector loop is
 // actively working it. Mirrors responses.MicrotaskProgress (ADR 0028).
@@ -36,6 +36,7 @@ export interface RunResponse {
   stalled_reason?: string | null   // transient-error / crash reason when run_state === 'stalled'
   stalled_kind?: 'token_budget' | 'transient' | string | null   // cause of the stall (ADR 0025)
   failure_reason?: string | null   // run.failed reason when run_state === 'failed'
+  stopped_reason?: string | null   // run.stopped reason when run_state === 'stopped' (ADR 0033)
   progress?: PipelineProgress | null   // iteration/microtask-loop progress (ADR 0028)
 }
 
@@ -371,6 +372,14 @@ export const api = {
   // Human verdict on a stalled run: close the case as FAILED ('Mark as failed').
   failRun: (id: string, note?: string) =>
     http.post<RunResponse>(`/runs/${id}/fail`, { note: note || null }).then((r) => r.data),
+
+  // Hard-stop a running/paused run (ADR 0033). Blocks until the driver thread has
+  // actually exited — can take a moment (up to low minutes in the worst case).
+  stopRun: (id: string, note?: string) =>
+    http.post<RunResponse>(`/runs/${id}/stop`, { note: note || null }).then((r) => r.data),
+
+  // Permanently delete a terminal run and its per-run data (ADR 0033). 409 if still live.
+  deleteRun: (id: string) => http.delete(`/runs/${id}`).then(() => undefined),
 
   // Durable run detail: artifact browse list (no bodies), one artifact's body, microtask board.
   getArtifacts: (id: string) =>

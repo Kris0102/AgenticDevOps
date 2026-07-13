@@ -157,13 +157,8 @@ class Planner:
             provider = config.provider_for(self.llm_config)
             self.llm = build_chat_llm(provider, self.llm_config,
                                       timeout_seconds=self.timeout_seconds)
-
-            # Enforce structured output at the end of the pipeline. include_raw=True so the
-            # underlying AIMessage (and its usage_metadata) stays accessible for token
-            # accounting (ADR 0025) — see the parsing_error handling in invoke() below.
-            # Method is provider-aware: Anthropic → function_calling (schema-enforced tool use);
-            # cluster → json_mode. json_mode on Anthropic yields unparseable JSON from cheaper
-            # models (OutputParserException).
+            
+            # Depending on provider the string to force structured output may differ. Anthropic uses `json_schema`, OpenAI uses `structured_output`.
             self.structured_llm = self.llm.with_structured_output(
                 PlannerDraft, method=structured_output_method(provider), include_raw=True
             )

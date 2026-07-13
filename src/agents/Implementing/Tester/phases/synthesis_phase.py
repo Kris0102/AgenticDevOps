@@ -19,6 +19,7 @@ from agents.Implementing.Tester.prompt.tester_prompt import (
 )
 from agents.Implementing.Tester.tester_tools import TesterTools
 from observability import Category, get_logger
+from orchestrator.state import RunConfig
 from providers import sum_usage
 
 _log = get_logger(Category.TESTER)
@@ -39,11 +40,12 @@ def _test_file_path(microtask_id: str, project_type: str) -> str:
 class SynthesisPhase(TestPhase):
     name = "synthesis"
 
-    def __init__(self, tools: TesterTools, python_agent, js_agent, recursion_limit: int):
+    def __init__(self, tools: TesterTools, python_agent, js_agent, recursion_limit: int, config: RunConfig):
         self.tools = tools
         self.python_agent = python_agent
         self.js_agent = js_agent
         self.recursion_limit = recursion_limit
+        self.llm_config = config.llm.tester  # for token accounting    
 
     def should_run(self, ctx: TestContext) -> bool:
         """Synthesize ONLY when needed — otherwise the test becomes a moving target the

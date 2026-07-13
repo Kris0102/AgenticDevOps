@@ -27,6 +27,7 @@ from db.models import Run
 from observability import Category, get_logger
 from orchestrator.state import Constraints, EventType, Iteration
 from providers import TokenUsage
+from providers.pricing import cost_for
 
 _log = get_logger(Category.ORCHESTRATOR)
 
@@ -68,6 +69,15 @@ def record_usage(
         cache_creation_tokens=usage.cache_creation_tokens,
         microtask_id=microtask_id,
     )
+    # Price this usage HERE via cost_for (providers/pricing.py — the single source of truth
+    # for the cost formula) and store the dollar figure on the event. That keeps the durable
+    # event self-contained: the API per-run cost view and the Grafana cross-run cost panels
+    # both read this ONE number, computed once, instead of re-deriving prices (the dashboard
+    # can't call Python). None for an unpriced cluster model — it contributes tokens, no cost.
+    cost = cost_for(
+        model, usage.input_tokens, usage.output_tokens,
+        usage.cache_read_tokens, usage.cache_creation_tokens,
+    )
     EventLogger.log(db_session, run_id, actor, EventType.LLM_USAGE_RECORDED, {
         "agent": actor, "model": model,
         "input_tokens": usage.input_tokens,
@@ -77,6 +87,7 @@ def record_usage(
         # never added onto totals). 0 for providers that don't report caching.
         "cache_read_tokens": usage.cache_read_tokens,
         "cache_creation_tokens": usage.cache_creation_tokens,
+        "cost_usd": round(cost.total, 6) if cost is not None else None,
         "microtask_id": microtask_id,
     })
     return updated

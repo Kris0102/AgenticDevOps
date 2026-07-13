@@ -131,6 +131,32 @@ export interface AgentModelView {
   provider_id: string
   model: string
 }
+export interface CostView {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  total: number
+}
+export interface PhaseCostView {
+  phase: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  total_tokens: number
+  priced: boolean
+  cost: CostView | null      // null when the model has no list price (cluster)
+}
+export interface RunCostView {
+  lines: PhaseCostView[]
+  total_cost: number         // sums priced lines only
+  total_tokens: number
+  has_unpriced: boolean      // some models unpriced → total is a lower bound
+  currency: string
+}
+
 export interface RunConfigView {
   models: AgentModelView[]
   providers: { id: string; label: string; models: string[] }[]
@@ -346,6 +372,11 @@ export const api = {
 
   getHitl: (id: string) =>
     http.get<HitlReviewContext>(`/runs/${id}/hitl`).then((r) => r.data),
+
+  // Detailed per-phase/per-model USD cost (GH #62) — derived from durable llm.usage
+  // events, so it's correct live, after a clean finish, and after a crash/stall.
+  getCost: (id: string) =>
+    http.get<RunCostView>(`/runs/${id}/cost`).then((r) => r.data),
 
   // Run-settings view + mid-run per-agent model change (GH #64).
   getRunConfig: (id: string) =>

@@ -1,0 +1,21 @@
+# Postgres is a Grafana CORE datasource — no plugin install needed.
+# Provisioned here so it auto-connects on boot. Creds reuse the project .env
+# POSTGRES_* vars, injected into the container by docker-compose and expanded by
+# Grafana's $__env{} provisioning interpolation — so this file holds no secrets.
+apiVersion: 1
+
+datasources:
+  - name: AgenticDevOps
+    uid: agenticdevops-pg          # stable uid — dashboard panels reference it
+    type: postgres
+    access: proxy                  # Grafana server talks to Postgres, not the browser
+    url: postgres:5432             # docker-compose service name on the shared network
+    user: $__env{POSTGRES_USER}
+    isDefault: true
+    editable: true
+    jsonData:
+      database: $__env{POSTGRES_DB}
+      sslmode: disable             # same-host compose network
+      postgresVersion: 1500        # pinned pg15 image
+    secureJsonData:
+      password: $__env{POSTGRES_PASSWORD}

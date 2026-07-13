@@ -29,15 +29,14 @@ function fmtTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-function useMicrotaskTokens(runId: string): Record<string, MtTokens> {
+function useMicrotaskTokens(runId: string, live: boolean): Record<string, MtTokens> {
   const [events, setEvents] = useState<EventView[]>([])
 
   useEffect(() => {
     let alive = true
-    setEvents([])
+    let cursor = 0
+    let acc: EventView[] = []
     const load = async () => {
-      let cursor = 0
-      let acc: EventView[] = []
       try {
         for (;;) {
           const batch = await api.getEvents(runId, cursor)
@@ -51,9 +50,12 @@ function useMicrotaskTokens(runId: string): Record<string, MtTokens> {
         /* transient — leave prior totals in place */
       }
     }
+    setEvents([]); acc = []
     load()
-    return () => { alive = false }
-  }, [runId])
+    if (!live) return () => { alive = false }
+    const t = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [runId, live])
 
   return useMemo(() => {
     const byTask: Record<string, MtTokens> = {}
@@ -165,16 +167,21 @@ function MicrotaskDetail({ t, tokens }: { t: MicrotaskRow; tokens: MtTokens }) {
   )
 }
 
-export function MicrotasksPanel({ runId }: { runId: string }) {
+export function MicrotasksPanel({ runId, live }: { runId: string; live: boolean }) {
   const [tasks, setTasks] = useState<MicrotaskRow[]>([])
   const [open, setOpen] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const tokensByTask = useMicrotaskTokens(runId)
+  const tokensByTask = useMicrotaskTokens(runId, live)
 
   useEffect(() => {
+    let alive = true
+    const load = () => { api.getMicrotasks(runId).then((ts) => { if (alive) setTasks(ts) }).catch((e) => { if (alive) setError(String(e)) }) }
     setTasks([]); setOpen(null); setError(null)
-    api.getMicrotasks(runId).then(setTasks).catch((e) => setError(String(e)))
-  }, [runId])
+    load()
+    if (!live) return () => { alive = false }
+    const t = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [runId, live])
 
   return (
     <div className="panel microtasks-panel">

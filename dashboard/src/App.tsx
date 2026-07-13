@@ -188,9 +188,9 @@ export default function App() {
               />
             )
           )}
-          {tab === 'artifacts' && <ArtifactsPanel runId={runId} />}
-          {tab === 'microtasks' && <MicrotasksPanel runId={runId} />}
-          {tab === 'lessons' && <LessonsPanel runId={runId} />}
+          {tab === 'artifacts' && <ArtifactsPanel runId={runId} live={!terminal} />}
+          {tab === 'microtasks' && <MicrotasksPanel runId={runId} live={!terminal} />}
+          {tab === 'lessons' && <LessonsPanel runId={runId} live={!terminal} />}
         </>
       )}
     </div>

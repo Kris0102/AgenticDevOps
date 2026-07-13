@@ -35,6 +35,7 @@ function fmtAgo(iso: string): string {
 }
 
 const LIVE_STATES: RunState[] = ['running', 'paused_hitl', 'stalled']
+const DELETABLE_STATES = new Set<RunState>(['stalled', 'completed', 'failed'])
 
 export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; onOpen: (id: string) => void }) {
   const [runs, setRuns] = useState<RunResponseWithDetails[]>([])
@@ -58,7 +59,17 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
       clearInterval(t)
     }
   }, [])
-
+  
+  const deleteRun = async (runId: string) => {
+    if (!confirm(`Are you sure you want to delete run ${runId}? This cannot be undone.`)) return
+    try {
+      await api.deleteRun(runId)
+      setRuns((prev) => prev.filter((r) => r.run_id !== runId))
+      if (activeRunId === runId) onOpen('') // close the deleted run if it was open
+    } catch (e) {
+      alert(`Failed to delete run ${runId}: ${String(e)}`)
+    }
+  }
   const onImportFile = async (file: File) => {
     try {
       const bundle = JSON.parse(await file.text())
@@ -160,10 +171,18 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
 
       <div className="rh-grid">
         {visible.map((run) => (
-          <button
+          <div
             key={run.run_id}
             className={`runbox state-${run.run_state} ${run.run_id === activeRunId ? 'active' : ''}`}
+            role="button"
+            tabIndex={0}
             onClick={() => onOpen(run.run_id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onOpen(run.run_id)
+              }
+            }}
           >
             <div className="rb-top">
               <span className="rb-repo">{run.repo_name}</span>
@@ -186,8 +205,19 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
                 <span className="rb-pushed" title="files shipped by the deploy push">⇡ {run.pushed_files} files</span>
               )}
             </div>
-            <code className="rb-id" title={run.run_id}>{run.run_id.slice(0, 8)}</code>
-          </button>
+            <div className="rb-foot">
+              <code className="rb-id" title={run.run_id}>{run.run_id.slice(0, 8)}</code>
+              {run.run_name && <span className="rb-name" title={run.run_name}>{run.run_name}</span>}
+              <button
+                className="runbox-del"
+                disabled={!DELETABLE_STATES.has(run.run_state)}
+                onClick={(e) => { e.stopPropagation(); deleteRun(run.run_id) }}
+                title={DELETABLE_STATES.has(run.run_state) ? 'delete this run' : 'delete becomes available after the run stalls, completes, or fails'}
+              >
+                delete
+              </button>
+            </div>
+          </div>
         ))}
       </div>
     </section>

@@ -16,8 +16,9 @@ class Base(DeclarativeBase):
 
 class Run(Base):
     __tablename__ = "runs"
-
     run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
     repo_url: Mapped[str] = mapped_column(String, nullable=False)
     # Registry reference (repos.repo_id) — nullable, no FK: pre-registry runs and runs
     # whose repo entry was later deleted keep working off the repo_url snapshot.

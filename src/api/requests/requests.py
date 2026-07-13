@@ -6,7 +6,8 @@ from orchestrator.state import HITL, Constraints, LLMConfig, Objective, Policy, 
 
 
 class RunRequest(BaseModel):
-
+    run_name: Optional[str] = None
+    
     objective: Objective
     trigger: Trigger
     # Exactly one of `repo` / `repo_id`: the dashboard sends `repo_id` (registry pick,

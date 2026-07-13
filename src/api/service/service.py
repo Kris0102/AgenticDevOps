@@ -129,6 +129,16 @@ class InvalidTokenBudgetError(ValueError):
     `token_budget_exceeded` and re-stall the instant the node re-enters)."""
 
 
+class RunNotFoundError(RuntimeError):
+    """No run row for the given id — the caller asked to act on a run that doesn't exist."""
+
+
+class RunActiveError(RuntimeError):
+    """Refused a destructive op (delete) on a run a worker is actively driving — deleting its
+    checkpoint out from under a live `graph.invoke` would corrupt the in-flight superstep.
+    Stop/finish the run first (it becomes deletable once it's terminal or stalled)."""
+
+
 class ProviderUnreachableError(RuntimeError):
     """LLM preflight failed — the run must not start. `kind` = auth | unreachable | timeout."""
     def __init__(self, kind: str, reason: str):
@@ -244,6 +254,7 @@ class Service:
                                         reason="RunRequest.repo not resolved — route must call resolve_repo() first")
             _log.info("run.start", repo_url=repo.repo_url, base_sha=repo.base_sha)
             state = create_initial_blackboard_state(
+                run_name=request.run_name,
                 run_id=run_id,
                 trigger=request.trigger,
                 repo=repo,
@@ -811,6 +822,7 @@ class Service:
             if state == RunState.FAILED else None,
             repo_url=run.repo_url,
             repo_name=self._repo_name(run.repo_url),
+            run_name=run.run_name,
             base_sha=run.base_sha,
             task_description=self._ensure_task(session, run),
             pushed_files=pushed_files,
@@ -1126,6 +1138,7 @@ class Service:
                 raise RunAlreadyExistsError(f"run {run.run_id} already exists — refusing to overwrite")
             session.add(Run(
                 run_id=run.run_id,
+                run_name=run.run_name,
                 repo_url=run.repo_url,
                 base_sha=run.base_sha,
                 status=run.status or "FAILED",
@@ -1586,6 +1599,19 @@ class Service:
             _log.info("sandbox.teardown_on_terminal", run_id=run_id)
         except Exception as exc:
             _log.warning("sandbox.teardown_failed", run_id=run_id, error=str(exc))
+
+    def _destroy_sandbox_container(self, run_id: str) -> None:
+        """UNCONDITIONAL sandbox destroy — used by delete_run, where the run is going away
+        entirely so the container must go regardless of the teardown_on_terminal setting
+        (that flag governs whether a FINISHED run keeps its container for inspection, which
+        is moot once the run is deleted). Best-effort; a missing container is not an error."""
+        try:
+            DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace").sandbox_destroy(
+                sandbox_id=f"sbox_{run_id}"
+            )
+            _log.info("sandbox.destroyed_on_delete", run_id=run_id)
+        except Exception as exc:
+            _log.warning("sandbox.destroy_failed", run_id=run_id, error=str(exc))
 
     @staticmethod
     def _derive_state(status, pending: Optional[dict], is_active: bool) -> RunState:

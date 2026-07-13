@@ -22,9 +22,10 @@ CONTAINER="${POSTGRES_CONTAINER:-deploy-postgres-1}"
 
 echo ""
 echo "This will DELETE ALL DATA from:"
-echo "  runs, microtasks, events, artifacts, sandboxes, code_chunks, checkpoints"
+echo "  runs, microtasks, events, artifacts, sandboxes, code_chunks, lessons, checkpoints"
 echo ""
-echo "Schema (tables/columns) is preserved. Migrations are NOT affected."
+echo "KEPT: repos (registry) + app_settings (provider/GitHub config) — so you don't"
+echo "      re-enter repos or secrets. Schema/migrations are NOT affected."
 echo ""
 read -rp "Type 'yes' to confirm: " CONFIRM
 if [[ "$CONFIRM" != "yes" ]]; then
@@ -39,6 +40,10 @@ TRUNCATE TABLE events        RESTART IDENTITY CASCADE;
 TRUNCATE TABLE artifacts     RESTART IDENTITY CASCADE;
 TRUNCATE TABLE sandboxes     RESTART IDENTITY CASCADE;
 TRUNCATE TABLE code_chunks   RESTART IDENTITY CASCADE;
+-- Cross-run failure memory (ADR 0018): its run_id references would dangle after a run
+-- wipe, so clear it too for a true clean slate. repos + app_settings are intentionally
+-- left intact (registry + provider/GitHub config).
+TRUNCATE TABLE lessons       RESTART IDENTITY CASCADE;
 TRUNCATE TABLE checkpoints   RESTART IDENTITY CASCADE;
 TRUNCATE TABLE checkpoint_writes RESTART IDENTITY CASCADE;
 TRUNCATE TABLE checkpoint_blobs      RESTART IDENTITY CASCADE;

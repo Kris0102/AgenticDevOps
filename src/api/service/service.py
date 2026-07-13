@@ -30,7 +30,10 @@ from api.responses.responses import (
     PlanView,
     ProviderOption,
     RepoView,
+    CostView,
+    PhaseCostView,
     RunConfigView,
+    RunCostView,
     RunExportBundle,
     RunResponse,
     RunResponseWithDetails,
@@ -45,7 +48,7 @@ from db.models import Event as EventRow
 from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
 from gitops.github_api import GitHubRepoClient, RepoValidationKind, RepoValidationResult
-from providers import health_check, probe_cache
+from providers import cost_for, health_check, probe_cache
 from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
 from observability.log_bus import log_bus
@@ -202,7 +205,7 @@ class Service:
         """Resolve the run's effective config (per-run override › global › env) and PROBE the
         provider before anything starts. Raises ProviderUnreachableError on a dead/mis-keyed
         provider so the route can reject with the reason — no run is created. Fail fast."""
-        config = resolve_run_config(override=runRequest.llm)
+        config = resolve_run_config(override=runRequest.llm if runRequest else None)
         # Per-agent models (GH #71): probe every DISTINCT (provider, model) pair actually
         # used, deduped — a mis-keyed provider on ANY agent must fail fast before a run
         # is created, not mid-run on the first agent that touches it.
@@ -702,6 +705,69 @@ class Service:
                 .all()
             )
             return [self._event_view(r) for r in rows]
+
+    def run_cost(self, run_id: str) -> RunCostView:
+        """Detailed USD cost for a run, broken down per phase and per model (GH #62).
+
+        Derived from the durable `llm.usage` events (written on every path including a
+        crash, ADR 0025) — so it's accurate live, after a clean finish, AND after a
+        stall/crash. NOT computed in the deploy node, which a failed run never reaches.
+        Groups the events by (agent, model), sums the token split, and prices each bucket
+        via `providers.pricing.cost_for`; a model with no list price (cluster) contributes
+        its tokens but no cost and flips `has_unpriced`."""
+        buckets: dict[tuple[str, str], dict[str, int]] = {}
+        with db.session_scope() as session:
+            rows = (
+                session.query(EventRow.payload_json)
+                .filter(
+                    EventRow.run_id == run_id,
+                    EventRow.event_type == EventType.LLM_USAGE_RECORDED.value,
+                )
+                .all()
+            )
+        for (payload,) in rows:
+            payload = payload or {}
+            phase = str(payload.get("agent") or "")
+            model = str(payload.get("model") or "")
+            if not phase or not model:
+                continue
+            acc = buckets.setdefault((phase, model), {
+                "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "total": 0,
+            })
+            acc["input"] += int(payload.get("input_tokens") or 0)
+            acc["output"] += int(payload.get("output_tokens") or 0)
+            acc["cache_read"] += int(payload.get("cache_read_tokens") or 0)
+            acc["cache_creation"] += int(payload.get("cache_creation_tokens") or 0)
+            acc["total"] += int(payload.get("total_tokens") or 0)
+
+        lines: List[PhaseCostView] = []
+        total_cost = 0.0
+        total_tokens = 0
+        has_unpriced = False
+        for (phase, model), acc in buckets.items():
+            cost = cost_for(
+                model, acc["input"], acc["output"], acc["cache_read"], acc["cache_creation"],
+            )
+            if cost is None:
+                has_unpriced = True
+            else:
+                total_cost += cost.total
+            total_tokens += acc["total"]
+            lines.append(PhaseCostView(
+                phase=phase, model=model,
+                input_tokens=acc["input"], output_tokens=acc["output"],
+                cache_read_tokens=acc["cache_read"],
+                cache_creation_tokens=acc["cache_creation"],
+                total_tokens=acc["total"],
+                priced=cost is not None,
+                cost=None if cost is None else CostView(**cost.model_dump()),
+            ))
+        # Priced lines first, then by spend — the biggest cost driver reads at the top.
+        lines.sort(key=lambda ln: (ln.cost is None, -(ln.cost.total if ln.cost else 0.0)))
+        return RunCostView(
+            lines=lines, total_cost=total_cost, total_tokens=total_tokens,
+            has_unpriced=has_unpriced,
+        )
 
     def logs(self, run_id: str, after: int = 0) -> List[LogView]:
         """Polled snapshot of the in-memory live log (entries with seq > `after`).

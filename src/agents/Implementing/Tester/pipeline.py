@@ -76,7 +76,7 @@ class TestPipeline:
         self.phases: List[TestPhase] = [
             DetectProjectPhase(self.tools),
             DeterministicChecksPhase(self.tools),
-            SynthesisPhase(self.tools, python_agent, js_agent, recursion_limit),
+            SynthesisPhase(self.tools, python_agent, js_agent, recursion_limit, self.config),
             TrivialGuardPhase(),
             ExecutePhase(self.tools),
             VerdictPhase(self.tools),

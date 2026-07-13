@@ -21,6 +21,44 @@ class ProviderOption(BaseModel):
     models: List[str]
 
 
+class CostView(BaseModel):
+    """USD cost breakdown for one (phase, model) bucket — the caching slices are the
+    cache-priced part of the input spend. `None` cost fields never happen here (an
+    unpriced model omits the whole line via `priced=False` on the parent)."""
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = 0.0
+    cache_write: float = 0.0
+    total: float = 0.0
+
+
+class PhaseCostView(BaseModel):
+    """One agent×model slice of a run's spend (GH #62). A model can switch mid-run, so a
+    single phase may appear on more than one line. `priced=False` means the model has no
+    list price (self-hosted cluster) — tokens are still shown, `cost` is None."""
+    phase: str                       # planner | reviewer | coder | tester | reflector
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    total_tokens: int
+    priced: bool
+    cost: Optional[CostView] = None
+
+
+class RunCostView(BaseModel):
+    """Detailed per-phase/per-model cost for a run — derived from the durable `llm.usage`
+    events, so it's correct live, after a clean finish, and after a crash (ADR 0025 /
+    GH #62). `total_cost` sums only the priced lines; `has_unpriced` flags that some
+    models (cluster) had no rate, making the total a lower bound."""
+    lines: List[PhaseCostView] = []
+    total_cost: float = 0.0
+    total_tokens: int = 0
+    has_unpriced: bool = False
+    currency: str = "USD"
+
+
 class RunConfigView(BaseModel):
     """The effective config a run is executing under (run-settings view). Everything is
     read-only EXCEPT `models` (per-agent), which can be changed mid-run via PATCH

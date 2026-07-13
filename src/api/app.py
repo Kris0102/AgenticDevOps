@@ -16,6 +16,7 @@ from api.responses.responses import (
     MicrotaskRow,
     RepoView,
     RunConfigView,
+    RunCostView,
     RunExportBundle,
     RunResponse,
     RunResponseWithDetails,
@@ -185,6 +186,14 @@ def repo_branches(repo_id: str) -> BranchListResponse:
 def get_run(run_id: str) -> RunResponse:
     """Poll target: current lifecycle state + pending HITL payload (if any)."""  # We will run this method to check whether the run is paused at a HTIL gate!
     return service.status(run_id)
+
+
+@app.get("/runs/{run_id}/cost", response_model=RunCostView)
+def get_run_cost(run_id: str) -> RunCostView:
+    """Detailed USD cost for a run, per phase and per model (GH #62). Derived from the
+    durable llm.usage events, so it's accurate live, after a clean finish, and after a
+    crash/stall. Unpriced (cluster) models contribute tokens but no cost."""
+    return service.run_cost(run_id)
 
 
 @app.get("/runs/{run_id}/config", response_model=RunConfigView)

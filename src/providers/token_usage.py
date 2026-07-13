@@ -34,7 +34,14 @@ class TokenUsage(BaseModel):
 
 def sum_usage(messages: Iterable[BaseMessage]) -> TokenUsage:
     """Sum `.usage_metadata` across every AIMessage in `messages`. Messages without usage
-    data (e.g. a provider that doesn't report it) are silently skipped — never raises."""
+    data (e.g. a provider that doesn't report it) are silently skipped — never raises.
+
+    The per-invocation total returned here is what each node records into the durable
+    `llm.usage` event (orchestrator/token_budget) — the ONE source of truth for run cost
+    (providers/pricing). We deliberately do NOT accumulate per-model tallies onto the
+    RunConfig here: nodes never return `config` in their result dict, so any such mutation
+    is dropped at the next checkpoint (and is empty on a crash) — a dead, misleading
+    second source. Cost is derived from the events instead."""
     usage = TokenUsage()
     for message in messages:
         if not isinstance(message, AIMessage) or not message.usage_metadata:

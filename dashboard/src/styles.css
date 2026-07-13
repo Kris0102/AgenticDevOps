@@ -538,6 +538,28 @@ button.danger:hover { border-color: var(--red); }
 .tbfill.cat-reflector { background: var(--cat-reflector); }
 .tbvalue { flex: 0 0 44px; font-size: 12px; font-weight: 700; color: var(--fg); font-variant-numeric: tabular-nums; }
 
+/* Detailed cost view (GH #62) — collapsible; headline total always shown. */
+.panel.costbreakdown { margin-bottom: 12px; }
+.cost-head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; padding: 0; cursor: pointer; text-align: left; }
+.cost-head h3 { margin: 0; flex: 1; }
+.cost-caret { color: var(--muted); font-size: 11px; width: 12px; }
+.cost-total { font-size: 15px; font-weight: 700; color: var(--cat-coder); font-variant-numeric: tabular-nums; }
+.cost-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.cost-empty { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.cost-table { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; overflow-x: auto; }
+.cost-row { display: grid; grid-template-columns: 90px 1fr repeat(5, 62px); gap: 6px; align-items: center; min-width: 560px; }
+.cost-hrow { color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; padding-bottom: 3px; border-bottom: 1px solid var(--border); }
+.cost-row .cx-phase { display: flex; align-items: center; gap: 5px; text-transform: capitalize; }
+.cost-row .cx-model { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cost-row .cx-num { text-align: right; font-variant-numeric: tabular-nums; }
+.cost-row .cx-tot { font-weight: 700; color: var(--fg); }
+.cost-dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.cost-dot.cat-planner { background: var(--cat-planner); }
+.cost-dot.cat-reviewer { background: var(--cat-reviewer); }
+.cost-dot.cat-coder { background: var(--cat-coder); }
+.cost-dot.cat-tester { background: var(--cat-tester); }
+.cost-dot.cat-reflector { background: var(--cat-reflector); }
+
 /* ---- overview ---- */
 .panel.overview { margin-bottom: 12px; }
 .ov-head { display: flex; align-items: center; justify-content: space-between; }

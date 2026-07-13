@@ -1,0 +1,1355 @@
+{
+  "uid": "agenticdevops-overview",
+  "title": "AgenticDevOps \u2014 Cross-Run Metrics",
+  "tags": [
+    "agenticdevops"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total Runs",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(*) AS runs FROM runs;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Success Rate",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT 100.0 * count(*) FILTER (WHERE status = 'DONE') / NULLIF(count(*), 0) AS success_rate FROM runs;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Avg Run Duration (terminal)",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT avg(EXTRACT(EPOCH FROM (updated_at - created_at))) AS avg_seconds FROM runs WHERE status IN ('DONE', 'FAILED');",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Avg Microtask Attempts",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT avg(attempts) AS avg_attempts FROM microtasks;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "piechart",
+      "title": "Runs by Status",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT status AS metric, count(*) AS value FROM runs GROUP BY status ORDER BY value DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "Tokens by Agent",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT payload_json->>'agent' AS metric, sum((payload_json->>'total_tokens')::bigint) AS value FROM events WHERE event_type = 'llm.usage' AND payload_json->>'agent' IS NOT NULL GROUP BY 1 ORDER BY value DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "Microtasks by Status",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT status AS metric, count(*) AS value FROM microtasks GROUP BY status ORDER BY value DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "barchart",
+      "title": "Tokens per Run (last 20)",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "continuous-BlPu"
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0,
+        "showValue": "auto",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT run_id, tokens_used_total FROM runs ORDER BY created_at DESC LIMIT 20;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Recent Runs",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "duration_s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT created_at, run_id, repo_url, status, llm_model AS model, tokens_used_total AS tokens, EXTRACT(EPOCH FROM (updated_at - created_at))::int AS duration_s FROM runs ORDER BY created_at DESC LIMIT 50;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Recovery Rate After Stall",
+      "description": "Of runs that emitted a run.stalled event, the % that still finished DONE.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 29
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "WITH stalled AS (SELECT DISTINCT run_id FROM events WHERE event_type = 'run.stalled') SELECT round(100.0 * count(*) FILTER (WHERE r.status = 'DONE') / NULLIF(count(*), 0), 1) AS recovery_pct FROM stalled s JOIN runs r ON r.run_id = s.run_id;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Reflections per Run",
+      "description": "Self-correction intensity \u2014 reflection.created events divided by total runs.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 29
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1.5
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round((SELECT count(*) FROM events WHERE event_type = 'reflection.created')::numeric / NULLIF((SELECT count(*) FROM runs), 0), 2) AS reflections_per_run;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Token Efficiency",
+      "description": "Avg tokens spent per second of wall-clock, over terminal runs.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 29
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(avg(tokens_used_total / NULLIF(EXTRACT(EPOCH FROM (updated_at - created_at)), 0))::numeric, 1) AS tokens_per_sec FROM runs WHERE status IN ('DONE', 'FAILED') AND updated_at > created_at;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Self-Corrected Microtasks",
+      "description": "Microtasks that failed at least once (attempts > 1) but ultimately completed.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 29
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(*) AS recovered FROM microtasks WHERE attempts > 1 AND status IN ('COMPLETED', 'DONE');",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "barchart",
+      "title": "Run Outcomes (Success : Failed : Other)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "orientation": "auto",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT CASE WHEN status = 'DONE' THEN 'DONE' WHEN status = 'FAILED' THEN 'FAILED' ELSE 'Running/Stalled' END AS outcome, count(*) AS value FROM runs GROUP BY 1 ORDER BY value DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Runs over Time (per day)",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 33
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT date_trunc('day', created_at) AS time, count(*) AS runs FROM runs GROUP BY 1 ORDER BY 1;",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "xychart",
+      "title": "Duration vs Tokens (correlation)",
+      "description": "Each dot = one terminal run. X = wall-clock seconds, Y = total tokens.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "show": "points",
+            "pointSize": {
+              "fixed": 6
+            }
+          }
+        }
+      },
+      "options": {
+        "seriesMapping": "auto",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(EXTRACT(EPOCH FROM (updated_at - created_at))::numeric, 0) AS duration_s, tokens_used_total AS tokens FROM runs WHERE status IN ('DONE', 'FAILED') AND updated_at > created_at ORDER BY 1;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "xychart",
+      "title": "Task Description Length vs Duration",
+      "description": "Each dot = one terminal run. X = task_description chars, Y = wall-clock seconds.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "show": "points",
+            "pointSize": {
+              "fixed": 6
+            }
+          }
+        }
+      },
+      "options": {
+        "seriesMapping": "auto",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT length(task_description) AS desc_chars, round(EXTRACT(EPOCH FROM (updated_at - created_at))::numeric, 0) AS duration_s FROM runs WHERE task_description IS NOT NULL AND status IN ('DONE', 'FAILED') AND updated_at > created_at ORDER BY 1;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "table",
+      "title": "Task Complexity \u2014 Length Bucket vs Duration / Success / Tokens",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_duration_s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT CASE WHEN length(task_description) < 100 THEN '1. <100 chars' WHEN length(task_description) < 300 THEN '2. 100-300' WHEN length(task_description) < 600 THEN '3. 300-600' ELSE '4. 600+' END AS desc_bucket, count(*) AS runs, round(avg(length(task_description))) AS avg_chars, round(avg(EXTRACT(EPOCH FROM (updated_at - created_at)))) AS avg_duration_s, round(100.0 * count(*) FILTER (WHERE status = 'DONE') / NULLIF(count(*), 0), 1) AS success_pct, round(avg(tokens_used_total)) AS avg_tokens FROM runs WHERE task_description IS NOT NULL GROUP BY 1 ORDER BY 1;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "table",
+      "title": "Model Comparison",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_duration_s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT llm_model AS model, count(*) AS runs, round(100.0 * count(*) FILTER (WHERE status = 'DONE') / NULLIF(count(*), 0), 1) AS success_pct, round(avg(tokens_used_total)) AS avg_tokens, round(avg(EXTRACT(EPOCH FROM (updated_at - created_at)))) AS avg_duration_s FROM runs WHERE llm_model IS NOT NULL GROUP BY 1 ORDER BY runs DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Lessons Memory Growth (per repo)",
+      "description": "Cross-run failure memory accumulated per repo (ADR 0018).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT repo_url, count(*) AS lessons, count(DISTINCT run_id) AS from_runs FROM lessons GROUP BY 1 ORDER BY lessons DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "Cost Analysis \u2014 per Model & Phase (GH #62)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "panels": []
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Total Cost (priced models)",
+      "description": "USD across all runs. Cluster/unpriced models contribute tokens but no cost (like the per-run cost view's has_unpriced).",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 67
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(SUM((payload_json->>'cost_usd')::numeric), 2) AS total_usd FROM events WHERE event_type = 'llm.usage';",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Avg Cost per Run",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 67
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(SUM((payload_json->>'cost_usd')::numeric) / NULLIF(COUNT(DISTINCT run_id), 0), 4) AS avg_cost_per_run FROM events WHERE event_type = 'llm.usage';",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "piechart",
+      "title": "Cost by Model",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT payload_json->>'model' AS metric, round(SUM((payload_json->>'cost_usd')::numeric), 4) AS value FROM events WHERE event_type = 'llm.usage' AND payload_json->>'cost_usd' IS NOT NULL GROUP BY 1 ORDER BY value DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "piechart",
+      "title": "Cost by Phase",
+      "description": "Which agent/phase spends the money \u2014 planner, coder, tester, reflector, plan_review.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT payload_json->>'agent' AS metric, round(SUM((payload_json->>'cost_usd')::numeric), 4) AS value FROM events WHERE event_type = 'llm.usage' AND payload_json->>'cost_usd' IS NOT NULL GROUP BY 1 ORDER BY value DESC;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "Cost Breakdown \u2014 Phase \u00d7 Model",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 79
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "cost_usd",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cost_usd"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT payload_json->>'agent' AS phase, payload_json->>'model' AS model, SUM((payload_json->>'total_tokens')::bigint) AS tokens, round(SUM((payload_json->>'cost_usd')::numeric), 4) AS cost_usd FROM events WHERE event_type = 'llm.usage' GROUP BY 1, 2 ORDER BY cost_usd DESC NULLS LAST;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Cost over Time (per day)",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 79
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT date_trunc('day', ts) AS time, round(SUM((payload_json->>'cost_usd')::numeric), 4) AS cost_usd FROM events WHERE event_type = 'llm.usage' GROUP BY 1 ORDER BY 1;",
+          "format": "time_series"
+        }
+      ]
+    }
+  ]
+}

@@ -29,6 +29,7 @@ class Phase(str, Enum):
     PLAN = "plan"
     CODE = "code"
     TEST = "test"
+    REFLECT = "reflect"
     DEPLOY = "deploy"
 
     @classmethod
@@ -182,14 +183,14 @@ class ProviderProfile(BaseModel):
     # unencrypted, returned unmasked). Unknown params 400 on strict endpoints —
     # verify via the provider's Test connection button.
     extra_request_params: Dict[str, Any] = Field(default_factory=dict)
-   
+    
 class BaseLLMConfig(BaseModel, ABC):
-    name: str   
+    name: str
     provider_id: str
     model: str
     temperature: float = 0.0
-    max_retries: int = 3 
-    
+    max_retries: int = 3
+
 class PlannerLLMConfig(BaseLLMConfig):
     name: str = Roles.PLANNER.value
 class ReviewerLLMConfig(BaseLLMConfig):
@@ -204,7 +205,6 @@ class ProbeLLMConfig(BaseLLMConfig):
     # Not a graph agent — a concrete BaseLLMConfig for one-off provider probes
     # (Settings 'Test connection', cache probe). Carries provider_id/model only.
     name: str = "probe"
-
 
 class Knobs(BaseModel):
     """Every agent tuning value — formerly scattered os.getenv reads.

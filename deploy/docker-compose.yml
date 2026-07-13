@@ -34,6 +34,28 @@ services:
       - postgres
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+
+  # Grafana — cross-run metrics dashboard over the SAME Postgres (read path only).
+  # Postgres is a Grafana core datasource (no plugin). Datasource + dashboards are
+  # baked into the image and auto-provisioned at boot (src/grafana/provisioning).
+  # DB creds are passed through from the project .env and expanded by Grafana's
+  # $__env{} provisioning interpolation — so no secrets live in the yaml.
+  grafana:
+    build:
+      context: ../src/grafana
+      dockerfile: Dockerfile
+    # Same .env the postgres service reads (resolved relative to THIS compose file,
+    # cwd-proof). Provisioning/datasources/postgres.yml picks POSTGRES_* up via
+    # $__env{...} from the container environment.
+    env_file:
+      - ../.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    volumes:
+      - grafana_data:/var/lib/grafana
+
   # This service definition is used strictly to BUILD the base sandbox image.
   # The orchestrator's Docker SDK will spin up the actual containers.
   # We use a profile so that `docker-compose up` does not run a container for this.
@@ -47,3 +69,4 @@ services:
 volumes:
     postgres_data:
     pgadmin_data:
+    grafana_data:

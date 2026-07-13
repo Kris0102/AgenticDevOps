@@ -6,6 +6,7 @@ import { MicrotasksPanel } from './components/MicrotasksPanel'
 import { LessonsPanel } from './components/LessonsPanel'
 import { PipelineGraph } from './components/PipelineGraph'
 import { TokensByAgent } from './components/TokensByAgent'
+import { CostBreakdown } from './components/CostBreakdown'
 import { NewRunPage } from './components/NewRunPage'
 import { ReposPage } from './components/ReposPage'
 import { SettingsPage } from './components/SettingsPage'
@@ -19,6 +20,12 @@ import { HitlPanel } from './components/HitlPanel'
 import { EventTimeline } from './components/EventTimeline'
 
 type View = 'home' | 'newrun' | 'settings' | 'repos'
+
+// Grafana runs as its own page (compose service `grafana`, :3000). We link out to it
+// rather than embedding — override the host with VITE_GRAFANA_URL if the port moved.
+const GRAFANA_URL =
+  (import.meta.env.VITE_GRAFANA_URL as string | undefined)?.replace(/\/$/, '') ?? 'http://localhost:3000'
+const GRAFANA_DASHBOARD = `${GRAFANA_URL}/d/agenticdevops-overview`
 type Tab = 'activity' | 'artifacts' | 'microtasks' | 'lessons'
 
 export default function App() {
@@ -117,6 +124,7 @@ export default function App() {
         </div>
         {!runId && (
           <div className="topbar-actions">
+            <a className="ghost" href={GRAFANA_DASHBOARD} target="_blank" rel="noreferrer" title="Cross-run metrics (Grafana)">Metrics ↗</a>
             <button className="ghost" onClick={() => setView('repos')} title="Repositories">Repos</button>
             <button className="ghost gear" onClick={() => setView('settings')} title="Settings" aria-label="Settings">⚙</button>
             <button className="primary" onClick={() => setView('newrun')}>＋ New run</button>
@@ -214,6 +222,8 @@ export default function App() {
           <RunSettingsPanel runId={runId} live={!terminal} />
 
           <TokensByAgent runId={runId} live={!terminal} />
+
+          <CostBreakdown runId={runId} live={!terminal} />
 
           {/* ONE content area below the overview — tabs instead of four stacked panels
               each with its own scrollbar. Live feeds keep an internal scroll (they must

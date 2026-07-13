@@ -6,8 +6,7 @@ sets `ctx.skip` so the synthesis/execute phases no-op and the verdict is `skippe
 """
 from __future__ import annotations
 import enum
-
-
+import json
 
 from agents.Implementing.Tester.context import TestContext
 from agents.Implementing.Tester.phases.base import TestPhase
@@ -31,9 +30,38 @@ class DetectProjectPhase(TestPhase):
         ctx.project_type = self._detect()
         if ctx.project_type == SupportedProjectTypes.UNKNOWN.value:
             ctx.skip = True
+        if ctx.project_type == SupportedProjectTypes.JAVASCRIPT.value:
+            ctx.js_test_framework = self._detect_js_framework()
         _log.info("tester.project_type.detected", run_id=ctx.run_id,
-                  project_type=ctx.project_type, microtask_id=ctx.microtask.microtask_id)
+                  project_type=ctx.project_type, js_framework=ctx.js_test_framework,
+                  microtask_id=ctx.microtask.microtask_id)
         return ctx
+
+    def _detect_js_framework(self) -> str:
+        """Which JS test framework the repo uses, so Track B writes AND runs tests in it.
+        `scripts.test` is ground truth (what the repo actually runs); devDependencies are the
+        fallback. Defaults to node:test — Node's built-in runner needs no dependency, so it's
+        the only safe default for a repo that declares no framework (Jest would need install)."""
+        raw = self.tools.read_sandbox_file("package.json")
+        try:
+            pkg = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return "node:test"
+        test_script = str((pkg.get("scripts") or {}).get("test", "")).lower()
+        dep_names = {
+            k.lower()
+            for k in {**(pkg.get("devDependencies") or {}), **(pkg.get("dependencies") or {})}
+        }
+        # What the test script literally invokes wins over what's merely installed.
+        for fw in ("vitest", "mocha", "jest"):
+            if fw in test_script:
+                return fw
+        if "node --test" in test_script or "node:test" in test_script:
+            return "node:test"
+        for fw in ("vitest", "mocha", "jest"):
+            if fw in dep_names:
+                return fw
+        return "node:test"
 
     def _detect(self) -> str:
         js = self.tools.run(

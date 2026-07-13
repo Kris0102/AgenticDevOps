@@ -47,6 +47,15 @@ load_dotenv()
 _log = get_logger(Category.PLANNER)
 
 
+def _is_grammar_compile_error(exc: Exception) -> bool:
+    """True for Anthropic's `json_schema` grammar-compile timeout (a 400 the constrained
+    decoder raises when compiling a large/deeply-nested output schema into a sampling
+    grammar exceeds its budget). Matched on the message — it's not its own exception type —
+    so we can fall the ONE affected call back to `function_calling` (no grammar compile)
+    rather than fail the whole synthesis. See planner __init__ + _invoke_structured."""
+    return "grammar compilation timed out" in str(exc).lower()
+
+
 def _build_revision_context(plan: Plan, microtasks: List[Microtask]) -> str:
     """Format the prior plan + its FULL microtasks + the CURRENT review for the revision
     prompt block.
@@ -159,9 +168,14 @@ class Planner:
                                       timeout_seconds=self.timeout_seconds)
             
             # Depending on provider the string to force structured output may differ. Anthropic uses `json_schema`, OpenAI uses `structured_output`.
-            self.structured_llm = self.llm.with_structured_output(
-                PlannerDraft, method=structured_output_method(provider), include_raw=True
-            )
+            self._synthesis_method = structured_output_method(provider)
+            self.structured_llm = self._build_structured_llm(self._synthesis_method)
+            # Anthropic `json_schema` compiles the (large, deeply-nested) PlannerDraft schema
+            # into a sampling grammar server-side; on a big plan that compile can time out
+            # (400 "Grammar compilation timed out"). If it does, _invoke_structured swaps this
+            # instance to `function_calling` (no grammar compile) ONCE and never looks back —
+            # the flag guards against a swap loop. json_mode providers never hit this.
+            self._grammar_fallback_used = False
 
             # Setup the investigator ReAct agent if tools are available
             if self.tools:
@@ -176,6 +190,34 @@ class Planner:
         except Exception as e:
             _log.error("planner.init_failed", error=str(e))
             raise
+
+    def _build_structured_llm(self, method: str):
+        """Bind PlannerDraft as the structured-output schema under the given method
+        (`json_schema` | `json_mode` | `function_calling`). include_raw=True so the invoke
+        returns {"raw","parsing_error","parsed"} (raw carries token usage)."""
+        return self.llm.with_structured_output(PlannerDraft, method=method, include_raw=True)
+
+    def _invoke_structured(self, messages: List[Any]) -> Dict[str, Any]:
+        """Invoke the structured-output LLM, with a ONE-TIME fallback: if Anthropic's
+        `json_schema` grammar compile times out on our big schema, rebuild this instance's
+        structured LLM with `function_calling` (which does no grammar compilation) and retry
+        the same call once. The swap is permanent for the planner instance (`_grammar_fallback_used`)
+        so later synthesis attempts don't re-hit the timeout. function_calling is looser
+        (a required field can be omitted) — the existing `_normalize_output` quality gate +
+        BadMicroTaskException retry already guard that."""
+        try:
+            return cast(Dict[str, Any], self.structured_llm.invoke(messages))
+        except Exception as e:
+            if self._grammar_fallback_used or not _is_grammar_compile_error(e):
+                raise
+            _log.warning(
+                "planner.grammar_timeout_fallback",
+                was=self._synthesis_method, now="function_calling",
+            )
+            self._grammar_fallback_used = True
+            self._synthesis_method = "function_calling"
+            self.structured_llm = self._build_structured_llm("function_calling")
+            return cast(Dict[str, Any], self.structured_llm.invoke(messages))
 
     def invoke(self, state: BlackboardState) -> Dict[str, Any]:
         """Runs the planner logic to build the macro Plan and Microtasks."""
@@ -276,10 +318,9 @@ class Planner:
             # Since we use `.with_structured_output`, we can just invoke it with the prompt.
             try:
                 # include_raw=True → invoke returns a {"raw","parsing_error","parsed"} dict at
-                # runtime; the Runnable stub types it as the model, so cast to what it actually is.
-                raw = cast(Dict[str, Any], self.structured_llm.invoke(
-                    [HumanMessage(content=synthesis_prompt)],
-                ))
+                # runtime. _invoke_structured adds the one-time json_schema→function_calling
+                # fallback if Anthropic's grammar compile times out on our schema.
+                raw = self._invoke_structured([HumanMessage(content=synthesis_prompt)])
                 if raw.get("raw") is not None:
                     self.token_usage = self.token_usage + sum_usage([raw["raw"]])
                 if raw.get("parsing_error"):

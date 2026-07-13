@@ -45,7 +45,7 @@ class TesterPermissions(RolePermissions):
 
     role = Roles.TESTER
     tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]
-    allowed_commands = ["git", "python", "pip", "pytest", "node", "npm", "npx", "apt-get", "grep", "ls", "cat", "find", "mkdir", "pip install"]
+    allowed_commands = ["git", "python", "pip", "pytest", "node", "npm", "npx", "apt-get", "grep", "ls", "cat", "find", "mkdir", "mv"]
 
 
 class ReviewerPermissions(RolePermissions):

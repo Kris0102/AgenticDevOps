@@ -10,12 +10,10 @@ routing — TesterRunner derives the PASS/FAIL verdict from the emitted checks.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
 
 from providers import TokenUsage
 
@@ -77,7 +75,7 @@ class TestPipeline:
             DetectProjectPhase(self.tools),
             DeterministicChecksPhase(self.tools),
             SynthesisPhase(self.tools, python_agent, js_agent, recursion_limit, self.config),
-            TrivialGuardPhase(),
+            TrivialGuardPhase(self.tools),
             ExecutePhase(self.tools),
             VerdictPhase(self.tools),
         ]

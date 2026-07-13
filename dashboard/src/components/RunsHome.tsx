@@ -80,6 +80,20 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
     }
   }
 
+  // Delete one run + all its data. Guarded by a confirm; optimistically drop the card and
+  // re-sync on failure. The card is itself a button, so callers stop propagation to avoid
+  // opening the run on the way to the ✕.
+  const onDelete = async (run: RunResponseWithDetails) => {
+    if (!window.confirm(`Delete run ${run.run_id.slice(0, 8)} and all its data (events, artifacts, lessons)? This cannot be undone.`)) return
+    setRuns((rs) => rs.filter((r) => r.run_id !== run.run_id))
+    try {
+      await api.deleteRun(run.run_id)
+    } catch (e) {
+      alert(`delete failed: ${String(e)}`)
+      api.getRunsDetails().then(setRuns).catch(() => {})   // resync — the card is still there
+    }
+  }
+
   const pulse = useMemo(() => {
     const by = (st: RunState) => runs.filter((r) => r.run_state === st).length
     const completed = by('completed')

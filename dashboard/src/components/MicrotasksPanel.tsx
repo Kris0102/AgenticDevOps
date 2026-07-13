@@ -25,7 +25,7 @@ function fmtTs(ts: string): string {
 }
 
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 

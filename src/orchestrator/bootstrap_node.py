@@ -112,6 +112,7 @@ class BootStrapper:
         task = f"{objective.title}: {objective.description}" if objective else None
         config = self.state.get("config")   # settings hub — record the provider/model used
         constraints = self.state.get("constraints")
+        run_name = self.state.get("run_name")  # New field for run name
 
         with db.session_scope() as session:
             existing = session.get(Run, run_id)
@@ -121,6 +122,7 @@ class BootStrapper:
             else:
                 session.add(Run(
                     run_id=run_id,
+                    run_name=run_name,
                     repo_url=repo.repo_url,
                     repo_id=repo.repo_id,
                     base_sha=repo.base_sha,

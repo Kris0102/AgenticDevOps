@@ -188,6 +188,7 @@ button.delete:hover { border-color: var(--red); background: #f851490f; }
 .rb-sha { font-family: var(--mono); }
 .rb-pushed { color: var(--green); }
 .rb-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.rb-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; }
 /* left bar + badge tint per lifecycle (mirrors the status bar palette) */
 .runbox.state-running { border-left-color: var(--accent); } .runbox.state-running .badge { background: #1f6feb33; color: var(--accent); }
 .runbox.state-paused_hitl { border-left-color: var(--yellow); } .runbox.state-paused_hitl .badge { background: #d2992233; color: var(--yellow); }
@@ -195,6 +196,26 @@ button.delete:hover { border-color: var(--red); background: #f851490f; }
 .runbox.state-failed { border-left-color: var(--red); } .runbox.state-failed .badge { background: #f8514933; color: var(--red); }
 .runbox.state-stalled { border-left-color: var(--yellow); } .runbox.state-stalled .badge { background: #e3b34133; color: var(--yellow); }
 .runbox.state-stopped { border-left-color: var(--muted); } .runbox.state-stopped .badge { background: #8b949e33; color: var(--muted); }
+.runbox-del {
+  background: transparent; color: var(--red); border: 1px solid #f8514942; border-radius: 999px;
+  padding: 3px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  transition: border-color 0.14s ease, background 0.14s ease, opacity 0.14s ease;
+  opacity: 0.76;
+}
+.runbox:hover .runbox-del { opacity: 1; border-color: var(--red); }
+.runbox-del:hover { background: #f851490f; }
+.runbox-del:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.runbox-del:disabled {
+  color: var(--muted);
+  border-color: var(--border);
+  background: transparent;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.runbox:hover .runbox-del:disabled { opacity: 0.5; border-color: var(--border); }
+
+.ov-actions { display: flex; align-items: center; gap: 8px; }
+.ov-delete { white-space: nowrap; }
 
 .back { background: var(--panel); color: var(--fg); border: 1px solid var(--border); font-weight: 500; margin-bottom: 12px; }
 

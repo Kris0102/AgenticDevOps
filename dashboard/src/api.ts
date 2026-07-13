@@ -45,6 +45,7 @@ export interface RunResponse {
 export interface RunResponseWithDetails extends RunResponse {
   repo_url: string
   repo_name: string
+  run_name?: string | null
   base_sha?: string | null
   task_description?: string | null   // what the run was asked to do
   pushed_files?: number | null       // files shipped by the deploy push

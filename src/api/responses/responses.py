@@ -186,6 +186,7 @@ class RunResponseWithDetails(RunResponse):
     labels + sort keys, so the list renders from one `GET /runs` call."""
     repo_url: str
     repo_name: str                    # owner/repo derived from repo_url — the box's title
+    run_name: Optional[str] = None    # optional human label for the run
     base_sha: Optional[str] = None
     task_description: Optional[str] = None   # what the run was asked to do
     pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)

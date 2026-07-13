@@ -21,6 +21,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   const [branchWarning, setBranchWarning] = useState<string | null>(null)
   const [baseRef, setBaseRef] = useState('')
   const [baseSha, setBaseSha] = useState('')
+  const [runName, setRunName] = useState('')  // New state for run name
   const [task, setTask] = useState('')
   const taskRef = useRef<HTMLTextAreaElement | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
@@ -78,10 +79,11 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
     try {
       const req = buildRunRequest({
         repoId,
-        baseRef: baseRef || null,
+        baseRef: baseRef || null, 
         baseSha,
         task,
         hitlCheckpoints: GATES.filter((g) => gates[g] && !(g === 'deploy' && skipDeploy)),
+        runName: runName || null,  // Include the run name in the request optional
         llm,
         maxPlannerReviewerIterations: settings.defaults.max_planner_reviewer_iterations,
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
@@ -135,6 +137,8 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
             </select>
             {branchWarning && <em className="np-hint">{branchWarning}</em>}
           </label>
+           <label className="fld"><span>run name <em>optional</em></span>
+            <input placeholder="name for the run" value={runName} onChange={(e) => setRunName(e.target.value)} /></label>
           <label className="fld"><span>base sha <em>optional</em></span>
             <input placeholder="pin a commit on the base branch" value={baseSha} onChange={(e) => setBaseSha(e.target.value)} /></label>
           <label className="fld span2"><span>task</span>

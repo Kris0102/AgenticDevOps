@@ -93,7 +93,7 @@ function buildPhases(events: EventView[]): PhaseSeg[] {
   return total > 0 ? raw.map((s) => ({ ...s, pct: (s.ms / total) * 100 })) : []
 }
 
-export function RunOverview({ runId, live, capVersion, progress }: { runId: string; live: boolean; capVersion?: number; progress?: PipelineProgress | null }) {
+export function RunOverview({ runId, live, capVersion, progress }: { runId: string; live: boolean; capVersion?: number; progress?: PipelineProgress | null; }) {
   const [events, setEvents] = useState<EventView[]>([])
   const [tasks, setTasks] = useState<MicrotaskRow[]>([])
   const [info, setInfo] = useState<RunResponseWithDetails | null>(null)
@@ -194,9 +194,11 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
     <div className="panel overview">
       <div className="ov-head">
         <h3>run overview</h3>
-        <a className="export" href={api.exportUrl(runId)} download title="download this run's full record (events, artifacts, microtasks) as JSON">
-          ⇓ export
-        </a>
+        <div className="ov-actions">
+          <a className="export" href={api.exportUrl(runId)} download title="download this run's full record (events, artifacts, microtasks) as JSON">
+            ⇓ export
+          </a>
+        </div>
       </div>
 
       {info?.task_description && <p className="ov-task">{info.task_description}</p>}

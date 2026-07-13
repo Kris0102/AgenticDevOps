@@ -8,6 +8,7 @@ export interface NewRunOpts {
   repoId: string            // registered repo (GH #41) — the server resolves URL/token
   baseRef?: string | null   // base branch for the run; null = the repo's default branch
   baseSha?: string
+  runName?: string | null  // name for the run OPTIONAL;
   task: string
   hitlCheckpoints: string[] // subset of 'plan' | 'code' | 'test' | 'deploy'
   llm?: LLMConfig | null                 // per-run model override (settings hub)
@@ -31,6 +32,7 @@ export function buildRunRequest(opts: NewRunOpts) {
     // default branch from repo_id, and preflights the repo before creating the run.
     repo: null,
     repo_id: opts.repoId,
+    run_name: opts.runName || null,
     base_ref: opts.baseRef ?? null,
     base_sha: opts.baseSha || null,
     llm: opts.llm ?? null,

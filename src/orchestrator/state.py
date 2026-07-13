@@ -533,6 +533,7 @@ class BlackboardState(TypedDict):
     Owned by the Orchestrator. Agents communicate by reading/writing to this state via Orchestrator events.
     """
     schema_version: str
+    run_name: Optional[str]
     run_id: str
     created_at: str
     updated_at: str
@@ -607,6 +608,7 @@ def _utc_now_iso() -> str:
 
 def create_initial_blackboard_state(
     *,
+    run_name: Optional[str] = None,
     run_id: str,
     trigger: Trigger,
     repo: Repo,
@@ -624,6 +626,7 @@ def create_initial_blackboard_state(
     return BlackboardState(
         schema_version="1.0.0",
         run_id=run_id,
+        run_name=run_name,
         created_at=now,
         updated_at=now,
         trigger=trigger,

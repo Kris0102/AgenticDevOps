@@ -196,8 +196,15 @@ class TesterRunner:
             )
 
         new_evidence = evidence.model_copy(update={
-            "checks": evidence.checks.model_copy(update=check_updates),   # Here the art ref is saved to state.py 
+            "checks": evidence.checks.model_copy(update=check_updates),   # Here the art ref is saved to state.py
         })
+
+        # Persist the LLM-synthesized test (source + status) as its own dashboard artifact —
+        # only present when the tester actually WROTE a test this run (synthesis ran). Lets a
+        # human see what Track B produced and whether it gated/was advisory/couldn't load.
+        synth = result.get("synth_test")
+        if synth:
+            self._store_synth_test_artifact(db_session, microtask.microtask_id, synth, now)
 
         # On PASS the Tester owns completion: mark the microtask DONE (final) / COMPLETED.
         # TODO the reflector should alsways be triggert regardless of pass or not!
@@ -279,6 +286,37 @@ class TesterRunner:
             created_at=now,
         ))
         check.artifact_ref = artifact_ref
+        return artifact_ref
+
+    def _store_synth_test_artifact(
+        self,
+        db_session,
+        microtask_id: str,
+        synth: Dict[str, Any],
+        now: datetime,
+    ) -> str:
+        """Store the tester's synthesized test source as a `test-synth` artifact so it shows
+        up in the dashboard artifact browser (grouped under its microtask) the moment the
+        test is written. Distinct from the per-check `test-*` artifacts — this is the actual
+        test FILE the LLM authored, not a run's stdout."""
+        artifact_ref = f"art_{self.run_id}_synthtest_{microtask_id}_{now.strftime('%Y%m%d%H%M%S%f')}"
+        guard = "passed" if synth.get("guard_ok") else f"REJECTED — {synth.get('guard_reason', '')}"
+        header = (
+            f"Synthesized test file: {synth.get('file', '')}\n"
+            f"Execution status: {synth.get('status', 'unknown')}\n"
+            f"Role in verdict: {synth.get('verdict_role', 'unknown')}\n"
+            f"Trivial-guard: {guard}\n"
+            f"{'-' * 60}\n\n"
+        )
+        db_session.merge(DbArtifact(
+            artifact_id=artifact_ref,
+            run_id=self.run_id,
+            kind="test-synth",
+            microtask_id=microtask_id,
+            content_text=header + (synth.get("content")
+                                   or "(no test source — the test-writer produced no usable file this iteration)"),
+            created_at=now,
+        ))
         return artifact_ref
 
     def _record_code_lesson(self, db_session, microtask: Microtask) -> None:

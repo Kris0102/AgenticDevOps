@@ -13,6 +13,14 @@ const KIND_INFO: Record<string, { icon: string; label: string; desc: string }> =
   review: { icon: '🔍', label: 'plan review', desc: "the reviewer's verdict + notes on the plan" },
   diff: { icon: '±', label: 'code changes', desc: 'the diff the coder produced for this microtask' },
   reflection: { icon: '🩺', label: 'failure diagnosis', desc: "the reflector's root-cause analysis after a failed check" },
+  // The tester emits several test-* artifacts. Their names don't say WHO produced them, so
+  // spell it out: Track B (LLM-written) vs Track A (the repo's own, pre-existing tooling).
+  'test-synth': { icon: '🧪', label: 'synthesized test (LLM)', desc: "Track B — the test the tester WROTE from the plan's acceptance criteria (source + run status + role in the verdict)" },
+  'test-unit_tests': { icon: '⚖️', label: 'verdict (combined)', desc: "the tester's final PASS/FAIL for this microtask — Track A checks + the synthesized test folded together. NOT a test file" },
+  'test-integration_tests': { icon: '📦', label: "repo's own suite", desc: "Track A — the repo's PRE-EXISTING test suite, run as-is. Not written by the agent" },
+  'test-build': { icon: '🔨', label: 'build', desc: "Track A — the repo's own build/compile step (pre-existing tooling)" },
+  'test-typecheck': { icon: '🔎', label: 'typecheck', desc: "Track A — the repo's own typechecker (pre-existing tooling)" },
+  'test-lint': { icon: '🧹', label: 'lint (advisory)', desc: "Track A — the repo's own linter; advisory only, never gates the verdict" },
 }
 
 function kindInfo(kind: string): { icon: string; label: string; desc: string } {

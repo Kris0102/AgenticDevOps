@@ -9,8 +9,9 @@ deterministic even on the synthesis track. Python uses the `ast`; JavaScript use
 from __future__ import annotations
 
 import ast
+import json
 import re
-from typing import Tuple
+from typing import List, Set, Tuple
 
 # Names that count as a real assertion when called (pytest/unittest idioms).
 _PY_ASSERT_CALL_PREFIXES = ("assert",)  # assertEqual, assertTrue, assertRaises, ...
@@ -57,12 +58,70 @@ def _has_skip_decorator(fn: ast.FunctionDef) -> bool:
     return False
 
 
-# expect(...).toBe(...) / assert(...) / .should — count call sites, not chained matchers.
-_JS_ASSERT_RE = re.compile(r"\b(expect|assert)\s*\(")
+# Count assertion call sites: bare `assert(...)` / `expect(...)`, AND the dotted node:assert
+# idiom `assert.equal(...)` / `assert.deepEqual(...)` / `assert.strict.equal(...)`. The old
+# regex required `(` immediately after `assert`, so it scored every node:test file (which uses
+# `assert.equal`, not `expect`) as ZERO assertions → trivial-guard rejected correct tests once
+# synthesis was made framework-aware (run 7a64fb2b). Optional `.method` chain closes that gap.
+_JS_ASSERT_RE = re.compile(r"\b(?:expect|assert)\s*(?:\.\s*\w+)*\s*\(")
+
+_JS_IMPORT_FROM_RE = re.compile(r"(?m)^\s*import\s+.*?\s+from\s+['\"]([^'\"]+)['\"]")
+_JS_IMPORT_SIDE_EFFECT_RE = re.compile(r"(?m)^\s*import\s+['\"]([^'\"]+)['\"]")
+_JS_EXPORT_FROM_RE = re.compile(r"(?m)^\s*export\s+.*?\s+from\s+['\"]([^'\"]+)['\"]")
+_JS_REQUIRE_RE = re.compile(r"require\(\s*['\"]([^'\"]+)['\"]\s*\)")
+_JS_DYNAMIC_IMPORT_RE = re.compile(r"import\(\s*['\"]([^'\"]+)['\"]\s*\)")
 
 
 def count_js_assertions(source: str) -> int:
     return len(_JS_ASSERT_RE.findall(source))
+
+
+def js_import_specifiers(source: str) -> List[str]:
+    """Return all static/dynamic JS module specifiers referenced in source."""
+    specifiers: Set[str] = set()
+    for regex in (
+        _JS_IMPORT_FROM_RE,
+        _JS_IMPORT_SIDE_EFFECT_RE,
+        _JS_EXPORT_FROM_RE,
+        _JS_REQUIRE_RE,
+        _JS_DYNAMIC_IMPORT_RE,
+    ):
+        specifiers.update(match.group(1) for match in regex.finditer(source))
+    return sorted(specifiers)
+
+
+def js_package_name(specifier: str) -> str:
+    """Map a JS import specifier to its package root name."""
+    if specifier.startswith("@"):
+        parts = specifier.split("/")
+        return "/".join(parts[:2]) if len(parts) >= 2 else specifier
+    return specifier.split("/", 1)[0]
+
+
+def js_dependency_specifiers(source: str) -> List[str]:
+    """Return bare JS imports that should be checked against package.json/node_modules.
+
+    Relative imports and Node builtins are excluded by the caller.
+    """
+    return [
+        spec for spec in js_import_specifiers(source)
+        if not spec.startswith((".", "/", "node:"))
+    ]
+
+
+def js_declared_dependency_names(package_json_text: str) -> Set[str]:
+    """Return package roots declared in package.json dependency sections."""
+    try:
+        data = json.loads(package_json_text)
+    except json.JSONDecodeError:
+        return set()
+
+    declared: Set[str] = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        section = data.get(key) or {}
+        if isinstance(section, dict):
+            declared.update(section.keys())
+    return declared
 
 
 def is_trivial(project_type: str, source: str) -> Tuple[bool, str]:

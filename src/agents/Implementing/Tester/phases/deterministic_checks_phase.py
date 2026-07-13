@@ -13,7 +13,8 @@ into the canonical `unit_tests` verdict.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from contextlib import contextmanager
+from typing import Iterator, List, Optional
 
 from agents.Implementing.Tester.context import TestContext
 from agents.Implementing.Tester.phases.base import TestPhase
@@ -212,35 +213,50 @@ class DeterministicChecksPhase(TestPhase):
         self._mark_deps_cached()
 
     # ----------------------------------------------------------- javascript checks
+    # The Tester's ephemeral synth dir (ADR 0019), and where we stash it while Track A runs.
+    _AGENTIC_DIR = ".agentic_tests"
+    _AGENTIC_HIDDEN = "/workspace/.agentic_tests_hidden"
+
     def _js_suite(self) -> CheckResult:
-        """Run the repo's OWN suite (Track A). Two hard-won caveats (run ba3a937c):
-        1. Bare `jest` DOES discover `.agentic_tests/` (default testMatch matches dot
-           dirs), so a stale Track-B synth file would leak into Track A on retries —
-           exclude it via CLI override when the test script is jest. The override
-           REPLACES jest's default ignore list, so /node_modules/ must be re-included.
-        2. A repo with zero tests makes jest exit 1 ("No tests found") — that is
-           'nothing to verify', not a failure; map it to SKIPPED like the pytest side
-           (exit 5), otherwise every first microtask on a testless repo fails Track A."""
+        """Run the repo's OWN suite (Track A) — and ONLY the repo's own tests.
+
+        Bare `npm test` discovers our synthesized `.agentic_tests/` too (node --test /
+        jest / mocha / vitest all glob the tree), so a PRIOR microtask's synth file would
+        leak into THIS microtask's suite verdict and poison it (run 5e7f7c41: a stale
+        test_MT_4 importing a browser module crashed `npm test` under node:test, failing an
+        unrelated microtask). We hide the dir for the duration of the run — runner-agnostic,
+        unlike the old jest-only `--testPathIgnorePatterns` (Python uses pytest `--ignore`).
+
+        A repo with zero tests makes jest exit 1 ("No tests found") — 'nothing to verify',
+        not a failure; map it to SKIPPED like the pytest side (exit 5), otherwise every first
+        microtask on a testless repo fails Track A."""
         if not self._npm_has_script("test"):
             return skipped_check("integration_tests", "no real npm test script in package.json")
         cmd = ["npm", "test"]
-        if self._npm_script_uses("test", "jest"):
-            cmd = ["npm", "test", "--", "--testPathIgnorePatterns", "/node_modules/", ".agentic_tests"]
-        result = self.tools.run(cmd, timeout_s=300)
+        with self._agentic_tests_hidden():
+            result = self.tools.run(cmd, timeout_s=300)
         blob = f"{result.get('stdout', '')} {result.get('stderr', '')}"
         if int(result.get("exit_code", 1)) == 1 and "No tests found" in blob:
             return skipped_check("integration_tests", "no discoverable tests in repo (jest: No tests found)")
         return make_check("integration_tests", cmd, result)
 
-    def _npm_script_uses(self, name: str, needle: str) -> bool:
-        """True when package.json scripts.<name> invokes <needle> (e.g. jest) — gates
-        arg-forwarding so a non-jest test runner never receives jest-specific flags."""
-        probe = self.tools.run(
-            ["node", "-e",
-             f"const s=(require('./package.json').scripts||{{}}).{name}||'';"
-             f"process.exit(s.includes('{needle}') ? 0 : 1)"],
-            timeout_s=15)
-        return int(probe.get("exit_code", 1)) == 0
+    @contextmanager
+    def _agentic_tests_hidden(self) -> Iterator[None]:
+        """Move `.agentic_tests/` out of the tree for the wrapped block, then restore it —
+        so a Track-A suite run (any JS runner) can't discover our synthesized tests. No-op
+        when the dir doesn't exist yet (first microtask). `mv` is gateway-allowlisted for the
+        Tester. Best-effort restore in `finally` so a suite crash can't strand the synth files."""
+        present = bool(
+            self.tools.run(["find", self._AGENTIC_DIR, "-maxdepth", "0"], timeout_s=10)
+            .get("stdout", "").strip()
+        )
+        if present:
+            self.tools.run(["mv", self._AGENTIC_DIR, self._AGENTIC_HIDDEN], timeout_s=15)
+        try:
+            yield
+        finally:
+            if present:
+                self.tools.run(["mv", self._AGENTIC_HIDDEN, self._AGENTIC_DIR], timeout_s=15)
 
     def _js_build(self) -> Optional[CheckResult]:
         if not self._npm_has_script("build"):

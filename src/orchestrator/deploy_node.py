@@ -84,7 +84,7 @@ class DeployRunner:
             # Gate-entered message › per-run message (both on deploy_commit_message,
             # the gate overwrote the seed) › the default. ADR 0027.
             commit_message = (self.state.get("deploy_commit_message") or "").strip() \
-                or f"AgenticDevOps run {self.run_id}"
+                or self._create_detailed_commit_message()
             try:
                 results = self.gitops.push_branch(
                     sandbox_id=sandbox.sandbox_id,
@@ -113,6 +113,34 @@ class DeployRunner:
         if pr_url:
             return {"repo": repo.model_copy(update={"pr_url": pr_url})}
         return {}
+    
+    def _create_detailed_commit_message(self) -> str:
+        """Commit message from the run objective + microtask titles + changed files.
+        Falls back to a minimal default on any error."""
+        try:
+            objective = self.state.get("objective")
+            microtasks = self.state.get("microtasks") or []
+            fileset = self.gitops.changed_files(sandbox_id=self.state.get("sandbox").sandbox_id)
+
+            subject = (objective.title.strip() if objective and objective.title.strip()
+                    else f"AgenticDevOps run {self.run_id}")[:72]
+
+            body: List[str] = []
+            if objective:
+                body.append(f"Objective:\n{objective.description}")
+            if microtasks:
+                lines = "\n".join(f"- {mt.title}" for mt in sorted(microtasks, key=lambda m: m.idx))
+                body.append(f"Microtasks:\n{lines}")
+            if fileset:
+                shown = fileset[:50]
+                more = len(fileset) - len(shown)
+                files = "\n".join(f"- {f}" for f in shown) + (f"\n- …and {more} more" if more > 0 else "")
+                body.append(f"Files touched:\n{files}")
+            body.append(f"Run: {self.run_id}")
+            return f"{subject}\n\n" + "\n\n".join(body)
+        except Exception as e:
+            _log.error("deployer.commit_message_failed", message="reverting to default", error=str(e))
+            return f"AgenticDevOps run {self.run_id}"
 
     def _maybe_create_pr(
         self,

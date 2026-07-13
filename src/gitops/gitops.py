@@ -170,7 +170,8 @@ class GitOps:
         _run(["git", "push", "auth-origin", f"HEAD:refs/heads/{branch}"])
         _log.info("gitops.pushed", branch=branch, repo_dir=repo_dir)
         return results
-
+    
+    
     def scan_secrets(self, *, sandbox_id: str, repo_dir: str = "repo") -> List[Dict[str, Any]]:
         """Content-scan the working tree for committed secrets with gitleaks BEFORE a push.
         Filename-based ignores can't catch a secret hardcoded in a source file — this does.

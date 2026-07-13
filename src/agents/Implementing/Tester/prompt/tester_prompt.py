@@ -41,7 +41,8 @@ CRITICAL — PYTHON IMPORTS ONLY, NO NODE/JS:
 
 TESTER_SYSTEM_PROMPT_JS = """
 You are the Test Writer agent in an autonomous DevOps pipeline.
-Your job is to write Jest unit tests for a completed microtask, verifying each acceptance criterion.
+Your job is to write JavaScript unit tests for a completed microtask, verifying each
+acceptance criterion, USING THE PROJECT'S OWN TEST FRAMEWORK (named in the task prompt below).
 
 You have access to the following tools:
 - read_sandbox_file: Read any file in the repo (path relative to repo root, e.g. 'src/app.js').
@@ -52,7 +53,9 @@ HARD RULES:
 1. Write tests to EXACTLY the path specified in the prompt — do not choose a different path.
 2. Each acceptance criterion must have at least one corresponding test function.
 3. Read the target source files before writing tests so you can require/import them correctly.
-4. Use standard Jest conventions: test functions use `test()` or `it()`, use `expect()` assertions.
+4. Use the EXACT test framework and assertion style named in the FRAMEWORK section of the
+   task prompt — do NOT default to Jest. Writing Jest (`expect()`) for a `node:test` repo,
+   or vice-versa, makes the test file fail to run even when the code is correct.
 5. Do NOT modify any source files — your only write operation is the test file.
 6. If the tests directory does not exist, create it first: execute_in_sandbox('mkdir -p tests').
 7. After writing the test file, stop — do not execute the tests yourself.
@@ -64,6 +67,14 @@ CRITICAL — MODULE IMPORTS:
 - Before requiring a module, verify the file exists using execute_in_sandbox('find . -name "*.js"').
 - Do NOT attempt to import Python files (.py) or non-JS files.
 - Never use pytest, unittest, or any Python testing library — this is a JavaScript project.
+
+IF YOU ADD DEPENDENCIES:
+- Prefer built-in Node/Jest APIs and the project's existing dependencies first.
+- If the test truly needs a new npm package, install it immediately with execute_in_sandbox('npm install <package>'). Do not modify package.json manually.
+- Before writing the test, verify the package is now listed in package.json and present in node_modules.
+- If the package cannot be installed or verified, do not use it in the test.
+- Do NOT install Python packages or use pip — this is a JavaScript project.
+- Do NOT call subprocess with 'python', 'pip', or any Python tooling.
 """
 
 
@@ -156,6 +167,43 @@ def build_test_writing_prompt_python(
     return "\n\n".join(sections)
 
 
+# Per-framework marching orders — the tester used to hardcode Jest, which fails outright on a
+# node:test / mocha repo (no `expect()`), so correct code got rejected. DetectProjectPhase
+# picks the repo's framework; this block tells the writer its exact import + assertion style.
+_JS_FRAMEWORK_GUIDE = {
+    "node:test": (
+        "FRAMEWORK: node:test — Node's BUILT-IN test runner — with node:assert. This repo does "
+        "NOT use Jest; `expect()` does not exist here and will throw.\n"
+        "  • Import runner + assert as node builtins:\n"
+        "    ESM:  import { test, describe } from 'node:test';\n"
+        "          import assert from 'node:assert/strict';\n"
+        "    CJS:  const { test, describe } = require('node:test');\n"
+        "          const assert = require('node:assert/strict');\n"
+        "  • Assert with node:assert: assert.equal(actual, expected), assert.deepEqual(...), "
+        "assert.throws(fn). NEVER use expect()/.toBe()/.toEqual().\n"
+        "  • The runner is `node --test <file>` — no dependency install needed."
+    ),
+    "jest": (
+        "FRAMEWORK: Jest. Use describe()/test()/it() and expect(...).toBe()/.toEqual()/.toThrow(). "
+        "Jest injects these globals — do NOT import test/describe/expect."
+    ),
+    "vitest": (
+        "FRAMEWORK: Vitest. Import the API explicitly:\n"
+        "    import { describe, test, expect } from 'vitest';\n"
+        "  • Assert with expect(...).toBe()/.toEqual()/.toThrow()."
+    ),
+    "mocha": (
+        "FRAMEWORK: Mocha with node:assert. Use describe()/it() (Mocha globals — do not import them):\n"
+        "    import assert from 'node:assert/strict';   // or const assert = require('node:assert/strict');\n"
+        "  • Assert with node:assert (assert.equal/deepEqual/throws). Do NOT use expect()."
+    ),
+}
+
+
+def _js_framework_guide(framework: Optional[str]) -> str:
+    return _JS_FRAMEWORK_GUIDE.get(framework or "node:test", _JS_FRAMEWORK_GUIDE["node:test"])
+
+
 def build_test_writing_prompt_js(
     objective: Optional[Objective],
     plan: Optional[Plan],
@@ -163,8 +211,9 @@ def build_test_writing_prompt_js(
     test_file: str,
     rejection_note: Optional[str] = None,
     reflections: Optional[List] = None,
+    framework: Optional[str] = None,
 ) -> str:
-    sections: List[str] = []
+    sections: List[str] = [_js_framework_guide(framework)]
 
     if rejection_note:
         sections.append(
@@ -198,7 +247,7 @@ def build_test_writing_prompt_js(
         "MICROTASK TO TEST:",
         f"Title: {microtask.title}",
         f"Description: {microtask.description}",
-        "Acceptance criteria (each must be covered by at least one Jest test):",
+        "Acceptance criteria (each must be covered by at least one test):",
     ]
     for criterion in microtask.acceptance_criteria:
         microtask_lines.append(f"  - {criterion.render()}")
@@ -241,9 +290,10 @@ def build_test_writing_prompt_js(
         f"   - Do NOT write to any other path.\n"
         f"   - Include one test() or it() call per acceptance criterion at minimum.\n"
         f"   - Use describe() blocks to group related tests.\n"
-        f"   - Every require/import must refer to a JS module you have confirmed exists."
-        + (f"\n7. IMPORTANT — this is a rewrite: the previous tests were rejected. "
-           f"Read the HUMAN REVIEWER FEEDBACK above and address every point." if rejection_note else "")
+        f"   - Every require/import must refer to a JS module you have confirmed exists.\n"
+        f"   - If a test needs a dependency that is not already declared, install it first with npm install and verify it appears in package.json before writing the test."
+        + ("\n7. IMPORTANT — this is a rewrite: the previous tests were rejected. "
+           "Read the HUMAN REVIEWER FEEDBACK above and address every point." if rejection_note else "")
     )
 
     return "\n\n".join(sections)

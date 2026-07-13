@@ -72,7 +72,7 @@ class SynthesisPhase(TestPhase):
 
         builder = build_test_writing_prompt_js if ctx.project_type == "javascript" else build_test_writing_prompt_python
         agent = self.js_agent if ctx.project_type == "javascript" else self.python_agent
-        prompt = builder(
+        builder_kwargs = dict(
             objective=ctx.state.get("objective"),
             plan=ctx.state.get("plan"),
             microtask=ctx.microtask,
@@ -80,6 +80,10 @@ class SynthesisPhase(TestPhase):
             rejection_note=ctx.rejection_note,
             reflections=ctx.reflections,
         )
+        # JS synthesis targets the repo's detected framework (Python has one runner: pytest).
+        if ctx.project_type == "javascript":
+            builder_kwargs["framework"] = ctx.js_test_framework
+        prompt = builder(**builder_kwargs)
         try:
             agent_result = agent.invoke(
                 {"messages": [HumanMessage(content=prompt)]},

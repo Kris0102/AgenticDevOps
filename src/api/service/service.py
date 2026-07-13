@@ -96,10 +96,6 @@ class RunAlreadyExistsError(RuntimeError):
     """import_run() targeted a run_id that is already in this database."""
 
 
-class RunNotFoundError(RuntimeError):
-    """stop_run()/delete_run() targeted a run_id with no matching `runs` row."""
-
-
 class RunAlreadyTerminalError(RuntimeError):
     """stop_run() was called on a run that's already completed/failed/stopped."""
 

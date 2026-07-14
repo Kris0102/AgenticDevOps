@@ -2,6 +2,12 @@
 
 # 1. Start Docker
 source venv/bin/activate
+if docker info > /dev/null 2>&1; then
+  echo "Docker is running."
+else
+  echo "Docker is not running. Please start Docker and try again."
+  exit 1
+fi
 docker-compose -f ./deploy/docker-compose.yml up --build -d
 
 # 2. Run concurrently and explicitly force it to use bash

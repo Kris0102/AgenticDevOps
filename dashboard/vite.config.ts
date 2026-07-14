@@ -14,6 +14,9 @@ export default defineConfig({
       '/runs': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/settings': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/repos': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // Lesson edit/delete are keyed by lesson_id alone, so they sit at the root
+      // rather than under /repos — they need their own entry here or they 404 in dev.
+      '/lessons': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

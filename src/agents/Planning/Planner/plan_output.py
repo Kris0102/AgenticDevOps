@@ -31,7 +31,7 @@ def _next_iteration(folder: Path, glob_pattern: str) -> int:
     return len(list(folder.glob(glob_pattern))) + 1
 
 
-def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str], token_usage: Optional[TokenUsage] = None) -> str:
+def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutput", run_id: str, revision_context: Optional[str], token_usage: Optional[TokenUsage] = None, lessons_block: str = "") -> str:
     """Write the plan to disk and return the absolute path."""
     try:
         src_dir = Path(__file__).resolve().parents[3]  # stable `src/` — not the launcher (uvicorn vs main.py)
@@ -60,6 +60,12 @@ def create_plan_file_as_output(investigation_summary: str, result: "PlannerOutpu
                 f.write("REVISION CONTEXT\n")
                 f.write("-" * 40 + "\n")
                 f.write(revision_context + "\n\n")
+
+            # Exactly what past-run memory shaped this plan — the audit trail ADR 0018 asks
+            # every lesson consumer to leave.
+            f.write("RETRIEVED LESSONS (injected into prompt)\n")
+            f.write("-" * 40 + "\n")
+            f.write((lessons_block or "No past-run lessons retrieved.") + "\n\n")
 
             # ── Plan ─────────────────────────────────────────────────────────
             f.write(f"{sep}\n")

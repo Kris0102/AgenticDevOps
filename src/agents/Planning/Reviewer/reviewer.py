@@ -226,12 +226,16 @@ class Reviewer:
 
         # Advisory: surface the top-k confirmed plan lessons from past runs on THIS repo
         # (ADR 0018). Semantic top-k, so it stays bounded no matter how many accumulate.
+        # The human's plan-scope operator rules are pinned above them (ADR 0034).
         repo = state.get("repo")
+        repo_url = repo.repo_url if repo else ""
         lessons = LessonStore.find_lessons(
-            repo.repo_url if repo else "", objective_text,
+            repo_url, objective_text,
             scope="plan", exclude_run_id=self.run_id,
         )
-        lessons_block = LessonStore.render_block(lessons)
+        lessons_block = LessonStore.render_block(
+            lessons, LessonStore.find_operator_rules(repo_url, scope="plan")
+        )
         if lessons_block:
             prompt = f"{lessons_block}\n\n{prompt}"
 

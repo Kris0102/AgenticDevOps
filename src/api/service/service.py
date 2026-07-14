@@ -2,7 +2,7 @@ import asyncio
 import threading
 import time
 import uuid
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, Dict, List, Optional, Sequence
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -11,7 +11,13 @@ from Exceptions.RetriableError import RetriableError, is_transient_llm_error
 from Exceptions.RunStoppedError import RunStoppedError
 from Exceptions.TokenBudgetExceededError import TokenBudgetExceededError
 
-from api.requests.requests import RepoCreateRequest, RepoUpdateRequest, RunRequest
+from api.requests.requests import (
+    LessonCreateRequest,
+    LessonUpdateRequest,
+    RepoCreateRequest,
+    RepoUpdateRequest,
+    RunRequest,
+)
 from datetime import datetime, timezone
 
 from api.responses.responses import (
@@ -43,7 +49,7 @@ from db.db import db
 from db.event_log import EventLogger
 from db.lessons import LessonStore
 from db.semanticMemory.semantic_store import SemanticStore
-from db.models import Artifact as ArtifactRow, MicrotaskRecord, Run, Sandbox
+from db.models import Artifact as ArtifactRow, Lesson, MicrotaskRecord, Run, Sandbox
 from db.models import Event as EventRow
 from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
@@ -871,18 +877,73 @@ class Service:
         with db.session_scope() as session:
             run = session.get(Run, run_id)
             repo_url = run.repo_url if run else ""
-        return [
-            LessonView(
-                lesson_id=l.lesson_id,
-                run_id=l.run_id,
-                scope=l.scope,
-                failure_type=l.failure_type,
-                summary=l.summary,
-                guidance=l.guidance,
-                created_at=l.created_at,
-            )
-            for l in LessonStore.list_for_repo(repo_url)
-        ]
+        return self._lesson_views(repo_url)
+
+    def repo_lessons(self, repo_id: str) -> List[LessonView]:
+        """The lesson store for a registered repo (ADR 0034) — the same per-repo memory the
+        run panel shows, reachable without opening a run. Raises RepoNotFoundError."""
+        return self._lesson_views(RepoStore.get(repo_id).repo_url)
+
+    def create_lesson(self, repo_id: str, request: LessonCreateRequest) -> LessonView:
+        """Add an operator rule to a repo's store. Raises RepoNotFoundError / ValueError."""
+        repo_url = RepoStore.get(repo_id).repo_url
+        lesson = LessonStore.create_manual(
+            repo_url,
+            scope=request.scope,
+            summary=request.summary,
+            guidance=request.guidance,
+            failure_type=request.failure_type,
+        )
+        return self._lesson_view(lesson, {})
+
+    def update_lesson(self, lesson_id: str, request: LessonUpdateRequest) -> LessonView:
+        """Edit a lesson. Raises LessonNotFoundError / ValueError."""
+        lesson = LessonStore.update_lesson(
+            lesson_id,
+            scope=request.scope,
+            summary=request.summary,
+            guidance=request.guidance,
+            failure_type=request.failure_type,
+        )
+        return self._lesson_view(lesson, self._run_names([lesson]))
+
+    def delete_lesson(self, lesson_id: str) -> None:
+        """Forget a lesson permanently. Raises LessonNotFoundError."""
+        LessonStore.delete_lesson(lesson_id)
+
+    def _lesson_views(self, repo_url: str) -> List[LessonView]:
+        lessons = LessonStore.list_for_repo(repo_url)
+        names = self._run_names(lessons)
+        return [self._lesson_view(l, names) for l in lessons]
+
+    @staticmethod
+    def _run_names(lessons: Sequence[Lesson]) -> Dict[str, str]:
+        """run_id → display name for the lessons' originating runs, resolved in ONE query.
+        A lesson outlives the run that taught it (runs are deletable, lessons are kept), so
+        a missing run is normal — the view falls back to the raw id."""
+        ids = {l.run_id for l in lessons if l.run_id}
+        if not ids:
+            return {}
+        with db.session_scope() as session:
+            rows = session.query(Run.run_id, Run.run_name).filter(Run.run_id.in_(ids)).all()
+        return {rid: name for rid, name in rows if name}
+
+    @staticmethod
+    def _lesson_view(lesson: Lesson, run_names: Dict[str, str]) -> LessonView:
+        return LessonView(
+            lesson_id=lesson.lesson_id,
+            repo_url=lesson.repo_url,
+            run_id=lesson.run_id,
+            run_name=run_names.get(lesson.run_id or ""),
+            agent=lesson.agent,
+            scope=lesson.scope,
+            microtask_id=lesson.microtask_id,
+            failure_type=lesson.failure_type,
+            summary=lesson.summary,
+            guidance=lesson.guidance,
+            created_at=lesson.created_at,
+            updated_at=lesson.updated_at,
+        )
 
     # ----------------------------------------------------------------- settings
     def get_settings(self) -> AppSettings:

@@ -115,16 +115,21 @@ class Coder:
     ) -> Dict[str, Any]:
         """Run the coding loop for one microtask and return the node-result dict."""
         self.token_usage = TokenUsage()
-        # Advisory: top-k confirmed code lessons from PAST runs on this repo (ADR 0018).
+        # Advisory: top-k confirmed code lessons from PAST runs on this repo (ADR 0018),
+        # plus the human's operator rules — always injected, never ranked (ADR 0034).
         # Computed once (constant across empty-diff retries), injected into the prompt and
         # recorded in the debug log. Excludes this run — same-run reflections already reach
         # the coder via state.reflections.
         repo = state.get("repo")
+        repo_url = repo.repo_url if repo else ""
         lessons_query = f"{microtask.title} {microtask.description} {' '.join(microtask.target_files)}"
-        lessons_block = LessonStore.render_block(LessonStore.find_lessons(
-            repo.repo_url if repo else "", lessons_query,
-            scope="code", exclude_run_id=state.get("run_id"),
-        ))
+        lessons_block = LessonStore.render_block(
+            LessonStore.find_lessons(
+                repo_url, lessons_query,
+                scope="code", exclude_run_id=state.get("run_id"),
+            ),
+            LessonStore.find_operator_rules(repo_url, scope="code"),
+        )
         diff_text, messages, attempts_log = self._code_until_diff(
             state, microtask, file_contents, lessons_block)
         # Deterministic compile gate (warm): if the changes don't compile, feed the error

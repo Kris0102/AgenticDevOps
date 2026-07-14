@@ -28,6 +28,7 @@ from agents.Planning.Planner.prompts.investigator import (
 )
 from agents.Planning.Planner.prompts.synthesis import build_synthesis_prompt
 from agents.Planning.Planner.quality import _normalize_output
+from db.lessons import LessonStore
 from Exceptions.BadMicroTaskExceptions import BadMicroTaskException
 from observability import Category, get_logger
 from orchestrator.state import (
@@ -304,6 +305,20 @@ class Planner:
                                         reason=f"Investigation failed: {e}")
            
 
+        # What past runs on this repo learned about PLANNING it (ADR 0018), plus the human's
+        # plan-scope operator rules (ADR 0034). The reviewer reads the same two sources before
+        # judging a plan; the planner reads them before writing one, so a mistake this repo has
+        # already made once is avoided rather than re-made and re-caught — the reject costs a
+        # whole planner↔reviewer cycle (ADR 0034). Excludes this run: a revision already gets
+        # the live verdict via `revision_context`, and re-injecting it here would double it.
+        # Computed once — constant across the synthesis retries below.
+        repo = state.get("repo")
+        repo_url = repo.repo_url if repo else ""
+        lessons_block = LessonStore.render_block(
+            LessonStore.find_lessons(repo_url, obj_text, scope="plan", exclude_run_id=self.run_id),
+            LessonStore.find_operator_rules(repo_url, scope="plan"),
+        )
+
         # 2. Synthesis Phase (Structured Output) — retried with feedback if quality gate rejects
         _log.info("planner.synthesizing")
         schema_json = PlannerDraft.model_json_schema()
@@ -313,7 +328,7 @@ class Planner:
         for attempt in range(1, self.max_synthesis_attempts + 1):
             synthesis_prompt = build_synthesis_prompt(
                 obj_text, investigation_summary, schema_json,
-                previous_attempt_feedback, revision_context,
+                previous_attempt_feedback, revision_context, lessons_block,
             )
             # Since we use `.with_structured_output`, we can just invoke it with the prompt.
             try:
@@ -348,7 +363,7 @@ class Planner:
                 raise
 
             # Write output file from raw LLM result — always, even if quality checks fail below
-            plan_file_path = create_plan_file_as_output(investigation_summary, raw_result, self.run_id, revision_context, self.token_usage)
+            plan_file_path = create_plan_file_as_output(investigation_summary, raw_result, self.run_id, revision_context, self.token_usage, lessons_block)
 
             # Quality validation — raises BadMicroTaskException with specific failures if microtasks are too vague
             try:

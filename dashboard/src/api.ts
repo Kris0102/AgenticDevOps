@@ -231,15 +231,38 @@ export interface RepoUpdateRequest {
   push_branch_override?: string | null // '' = clear, omitted = keep
 }
 
-// One per-repo lesson (ADR 0018). Mirrors responses.LessonView.
+// One per-repo lesson (ADR 0018) or human operator rule (ADR 0034).
+// Mirrors responses.LessonView. The whole provenance ("why was this added") is DERIVED
+// from these fields by lessonInfo.whyText — nothing about it is stored twice.
 export interface LessonView {
   lesson_id: string
-  run_id: string
-  scope: string
+  repo_url: string
+  run_id?: string | null    // null = human-authored operator rule
+  run_name?: string | null  // label for run_id; null when the run is gone
+  agent: string             // reviewer | reflector | human
+  scope: string             // plan | code
+  microtask_id?: string | null
   failure_type?: string | null
   summary: string
   guidance?: string | null
   created_at: string
+  updated_at?: string | null // set only by a human edit
+}
+
+// Add an operator rule to a repo's store — a standing instruction, not an advisory note.
+export interface LessonCreateRequest {
+  scope: string
+  summary: string
+  guidance?: string | null
+  failure_type?: string | null
+}
+
+// Edit a lesson. Omitted fields keep their stored value; '' clears the nullable ones.
+export interface LessonUpdateRequest {
+  scope?: string
+  summary?: string
+  guidance?: string | null
+  failure_type?: string | null
 }
 
 export interface MicrotaskView {
@@ -463,4 +486,14 @@ export const api = {
     http.post<RepoValidationResult>(`/repos/${id}/validate`).then((r) => r.data),
   getRepoBranches: (id: string) =>
     http.get<{ branches: string[] }>(`/repos/${id}/branches`).then((r) => r.data.branches),
+
+  // Lesson store (ADR 0034) — the repo's cross-run memory, curatable by hand.
+  getRepoLessons: (repoId: string) =>
+    http.get<LessonView[]>(`/repos/${repoId}/lessons`).then((r) => r.data),
+  createLesson: (repoId: string, body: LessonCreateRequest) =>
+    http.post<LessonView>(`/repos/${repoId}/lessons`, body).then((r) => r.data),
+  updateLesson: (lessonId: string, body: LessonUpdateRequest) =>
+    http.put<LessonView>(`/lessons/${lessonId}`, body).then((r) => r.data),
+  deleteLesson: (lessonId: string) =>
+    http.delete(`/lessons/${lessonId}`).then(() => undefined),
 }

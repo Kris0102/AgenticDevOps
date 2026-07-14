@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
-from api.requests.requests import AgentModelPatch, ContinueRunRequest, RepoCreateRequest, RepoUpdateRequest, RunConfigPatch, RunRequest
+from api.requests.requests import AgentModelPatch, ContinueRunRequest, LessonCreateRequest, LessonUpdateRequest, RepoCreateRequest, RepoUpdateRequest, RunConfigPatch, RunRequest
 from api.responses.responses import (
     ArtifactContent,
     ArtifactView,
@@ -35,6 +35,7 @@ from api.service.service import (
     RunStopTimeoutError,
     Service,
 )
+from db.lessons import LessonNotFoundError
 from db.repo_store import DuplicateRepoError, RepoNotFoundError
 from gitops.github_api import BranchListError, RepoValidationKind, RepoValidationResult
 from orchestrator.hitl import HitlDecision, HitlResume
@@ -181,6 +182,53 @@ def repo_branches(repo_id: str) -> BranchListResponse:
     except BranchListError as e:
         code = _REPO_KIND_STATUS.get(e.kind, status.HTTP_503_SERVICE_UNAVAILABLE)
         raise HTTPException(code, f"branch list failed ({e.kind.value}): {e.reason}")
+
+
+# ------------------------------------------------------------------- lesson store
+# ADR 0034 — per-repo memory a human can read, correct and extend. Agent-learned lessons
+# arrive here via the graph (ADR 0018); an operator rule is typed straight in.
+
+@app.get("/repos/{repo_id}/lessons", response_model=List[LessonView])
+def list_repo_lessons(repo_id: str) -> List[LessonView]:
+    """Everything this repo's memory holds, newest first — agent-learned lessons and
+    human-authored operator rules together."""
+    try:
+        return service.repo_lessons(repo_id)
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo not found")
+
+
+@app.post("/repos/{repo_id}/lessons", status_code=status.HTTP_201_CREATED, response_model=LessonView)
+def create_repo_lesson(repo_id: str, request: LessonCreateRequest) -> LessonView:
+    """Add an operator rule: a standing instruction every future run on this repo follows."""
+    try:
+        return service.create_lesson(repo_id, request)
+    except RepoNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "repo not found")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+
+
+@app.put("/lessons/{lesson_id}", response_model=LessonView)
+def update_lesson(lesson_id: str, request: LessonUpdateRequest) -> LessonView:
+    """Correct a lesson. Editing re-embeds it and marks it human-reviewed, which also
+    exempts it from the failed-run retraction (ADR 0034)."""
+    try:
+        return service.update_lesson(lesson_id, request)
+    except LessonNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "lesson not found")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+
+
+@app.delete("/lessons/{lesson_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lesson(lesson_id: str) -> Response:
+    """Forget a lesson — it stops being injected into prompts immediately."""
+    try:
+        service.delete_lesson(lesson_id)
+    except LessonNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "lesson not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse)

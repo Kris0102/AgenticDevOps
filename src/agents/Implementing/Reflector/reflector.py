@@ -211,14 +211,18 @@ class Reflector:
 
         # Advisory: top-k confirmed code lessons from past runs on THIS repo to ground the
         # diagnosis (ADR 0018). Semantic top-k → bounded regardless of how many accumulate.
+        # The human's operator rules ride along unranked and unconditional (ADR 0034).
         repo = state.get("repo")
+        repo_url = repo.repo_url if repo else ""
         lessons = LessonStore.find_lessons(
-            repo.repo_url if repo else "",
+            repo_url,
             f"{microtask.title} {microtask.description} {' '.join(microtask.target_files)}",
             scope="code",
             exclude_run_id=self.run_id,
         )
-        lessons_block = LessonStore.render_block(lessons)
+        lessons_block = LessonStore.render_block(
+            lessons, LessonStore.find_operator_rules(repo_url, scope="code")
+        )
 
         # The synthesized test the verdict may have failed on — so the code-vs-test call
         # can judge the actual assertion, not just the failure output. Empty on a

@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api, type LessonView } from '../api'
+import { isHumanReviewed, origin, originLabel, whyText } from '../lessonInfo'
 
-// What past runs on this repo taught the system (ADR 0018) — confirmed failure lessons
-// the agents get injected as advisory context. Renders nothing when the repo has none.
+// What this run's repo knows (ADR 0018 + ADR 0034) — the agent-learned lessons plus the
+// human's operator rules, exactly as the Lesson store page shows them but read-only and
+// scoped to the open run. Provenance comes from the shared lessonInfo derivation, so the
+// two views can never drift. Curation lives on the store page (top bar → Lessons).
 export function LessonsPanel({ runId, live }: { runId: string; live: boolean }) {
   const [lessons, setLessons] = useState<LessonView[]>([])
 
@@ -24,13 +27,18 @@ export function LessonsPanel({ runId, live }: { runId: string; live: boolean }) 
       )}
       <div className="llist">
         {lessons.map((l) => (
-          <div key={l.lesson_id} className={`lrow scope-${l.scope}`}>
+          <div key={l.lesson_id} className={`lrow scope-${l.scope} kind-${origin(l)}`}>
             <span className="lscope">{l.scope}</span>
             <div className="lbody">
               <span className="lsummary">{l.summary}</span>
               {l.guidance && <span className="lguide">fix: {l.guidance}</span>}
+              <span className="lwhy">{whyText(l)}</span>
             </div>
-            {l.failure_type && <span className="ltype">{l.failure_type}</span>}
+            <div className="lmeta">
+              <span className="lorigin">{originLabel(l)}</span>
+              {l.failure_type && <span className="ltype">{l.failure_type}</span>}
+              {isHumanReviewed(l) && <span className="lsedited">edited</span>}
+            </div>
           </div>
         ))}
       </div>

@@ -7,6 +7,7 @@ def build_synthesis_prompt(
     schema_json: Dict[str, Any],
     previous_attempt_feedback: Optional[str] = None,
     revision_context: Optional[str] = None,
+    lessons_block: str = "",
 ) -> str:
     # Machine quality-gate feedback ("too vague", normalizer failure)
     feedback_block = ""
@@ -18,6 +19,11 @@ Your last output failed quality validation for these reasons:
 
 Produce a NEW plan that corrects every issue above. Do not repeat the same vague wording.
 """
+
+    # What past runs on THIS repo learned, plus the human's standing rules (ADR 0034).
+    # Sits next to the investigation findings — both answer "what do we already know about
+    # this repo" — and late in the prompt, where the plan is actually being composed.
+    lessons_section = f"\n{lessons_block}\n" if lessons_block else ""
 
     # Human/reviewer directional feedback ("wrong approach") — distinct from quality-gate
     revision_block = ""
@@ -136,4 +142,4 @@ For EACH microtask you MUST provide:
 
 == INVESTIGATION FINDINGS ==
 {investigation_summary[:4000]}
-{revision_block}{feedback_block}"""
+{lessons_section}{revision_block}{feedback_block}"""

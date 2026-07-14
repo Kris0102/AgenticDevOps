@@ -129,18 +129,24 @@ class CodeChunk(Base):
     
     
 class Lesson(Base):
-    """A single lesson learned from a microtask, embedded for semantic search."""
+    """A single lesson learned from a microtask, embedded for semantic search.
+
+    `agent` doubles as authorship: "reviewer"/"reflector" for agent-learned lessons,
+    "human" for an operator rule typed in the dashboard (ADR 0034). A human lesson has
+    no originating run, hence the nullable `run_id`."""
     __tablename__ = "lessons"
     repo_url: Mapped[str] = mapped_column(String, nullable=False, index=True) # Important for repo isolation and search
     lesson_id: Mapped[str] = mapped_column(String, primary_key=True)
-    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    agent: Mapped[str] = mapped_column(String, nullable=False)  # The agent that generated the lesson ("reviewer", "reflector")
+    run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)  # None = human-authored (no run)
+    agent: Mapped[str] = mapped_column(String, nullable=False)  # Who wrote it: "reviewer" | "reflector" | "human"
     scope: Mapped[str] = mapped_column(String, nullable=False)  # The scope of the lesson ("plan", "microtask")
+    microtask_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # The microtask whose PASS confirmed a code lesson
     failure_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # The type of failure that led to the lesson (if applicable)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     guidance: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Optional guidance for future runs
     embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # Set on human edit — never on an agent write
 
 
 class RepoRecord(Base):

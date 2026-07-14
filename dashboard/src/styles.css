@@ -767,15 +767,53 @@ a.export:hover { border-color: var(--accent); }
 .mtd-meta .mtd-key:first-child { margin-left: 0; }
 .mtd-meta .mtd-text { font-family: var(--mono); font-size: 12px; }
 
-/* ---- lessons ---- */
+/* ---- lessons ----
+   One colour language across the run panel and the store page: the left edge says WHERE a
+   lesson came from — gold = a human wrote it (an instruction), pink = the reflector learned
+   it from a code failure, blue = the reviewer learned it from a plan rejection. */
 .panel.lessons { margin-top: 12px; }
 .llist { display: flex; flex-direction: column; gap: 6px; }
 .lrow { display: flex; align-items: flex-start; gap: 10px; padding: 7px 10px; background: #0d1117; border: 1px solid var(--border); border-left: 3px solid var(--cat-reflector); border-radius: 6px; font-size: 13px; }
 .lrow.scope-plan { border-left-color: var(--cat-planner); }
+.lrow.kind-human { border-left-color: var(--cat-deployer); }
 .lscope { font-size: 10px; text-transform: uppercase; font-weight: 700; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; margin-top: 2px; }
 .lbody { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .lguide { color: var(--muted); font-size: 12px; }
 .ltype { color: var(--muted); font-size: 11px; font-family: var(--mono); white-space: nowrap; }
+.lwhy { color: var(--muted); font-size: 11.5px; font-style: italic; opacity: 0.85; margin-top: 2px; }
+.lmeta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.lorigin { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.lrow.kind-human .lorigin { color: var(--cat-deployer); }
+
+/* ---- lesson store page (ADR 0034) ---- */
+.lessonstore .sp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.lessonstore .lsrepo { min-width: 220px; }
+.sp-err { color: var(--red); font-size: 12.5px; margin: 0 0 14px; }
+button.primary.sm { padding: 4px 10px; font-size: 12px; font-weight: 500; }
+
+.lscard { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--cat-reflector); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.lscard.kind-plan { border-left-color: var(--cat-planner); }
+.lscard.kind-human { border-left-color: var(--cat-deployer); }
+.lscard-head, .lscard-foot { display: flex; align-items: center; gap: 8px; }
+.lscard-foot { margin-top: 8px; }
+.lsspacer { flex: 1; }
+.lspill { font-size: 10px; text-transform: uppercase; font-weight: 700; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.lsorigin { font-size: 11.5px; color: var(--muted); }
+.lscard.kind-human .lsorigin { color: var(--cat-deployer); font-weight: 600; }
+.lslink { background: none; border: none; padding: 0; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+.lslink:hover { text-decoration: underline; }
+.lsmt { font-size: 11px; font-family: var(--mono); color: var(--muted); }
+.lsdate { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.lswhy { margin: 8px 0 6px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.lswhy-k { display: inline-block; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); opacity: 0.7; margin-right: 7px; }
+.lssummary { margin: 0; font-size: 13.5px; color: var(--fg); line-height: 1.45; }
+.lsguide { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.lsguide-k { font-family: var(--mono); font-size: 11px; color: var(--muted); opacity: 0.7; margin-right: 6px; }
+.lstype { font-size: 11px; font-family: var(--mono); color: var(--muted); }
+.lsedited { font-size: 10.5px; color: var(--cat-deployer); border: 1px solid #e3b34155; border-radius: 4px; padding: 1px 5px; }
+.lserr { color: var(--red); font-size: 11.5px; }
+.lsedit { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.lsedit textarea { resize: vertical; }
 
 /* ---- HITL ---- */
 .panel.hitl { border-color: var(--yellow); margin-bottom: 12px; }

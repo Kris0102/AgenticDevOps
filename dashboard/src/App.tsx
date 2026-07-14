@@ -8,6 +8,7 @@ import { PipelineGraph } from './components/PipelineGraph'
 import { TokensByAgent } from './components/TokensByAgent'
 import { CostBreakdown } from './components/CostBreakdown'
 import { NewRunPage } from './components/NewRunPage'
+import { LessonStorePage } from './components/LessonStorePage'
 import { ReposPage } from './components/ReposPage'
 import { SettingsPage } from './components/SettingsPage'
 import { RunOverview } from './components/RunOverview'
@@ -19,7 +20,7 @@ import { LogPanel } from './components/LogPanel'
 import { HitlPanel } from './components/HitlPanel'
 import { EventTimeline } from './components/EventTimeline'
 
-type View = 'home' | 'newrun' | 'settings' | 'repos'
+type View = 'home' | 'newrun' | 'settings' | 'repos' | 'lessons'
 
 // Grafana runs as its own page (compose service `grafana`, :3000). We link out to it
 // rather than embedding — override the host with VITE_GRAFANA_URL if the port moved.
@@ -109,9 +110,10 @@ export default function App() {
 
   const openRun = (id: string) => { setView('home'); setTab('activity'); setRunId(id) }
 
-  // Full-page routes (no run open): New run / Settings / Repos.
+  // Full-page routes (no run open): New run / Settings / Repos / Lessons.
   if (!runId && view === 'settings') return <div className="app"><SettingsPage onClose={() => setView('home')} /></div>
   if (!runId && view === 'repos') return <div className="app"><ReposPage onClose={() => setView('home')} /></div>
+  if (!runId && view === 'lessons') return <div className="app"><LessonStorePage onClose={() => setView('home')} onOpenRun={openRun} /></div>
   if (!runId && view === 'newrun') return <div className="app"><NewRunPage onRun={openRun} onCancel={() => setView('home')} onManageRepos={() => setView('repos')} /></div>
 
   return (
@@ -126,6 +128,7 @@ export default function App() {
           <div className="topbar-actions">
             <a className="ghost" href={GRAFANA_DASHBOARD} target="_blank" rel="noreferrer" title="Cross-run metrics (Grafana)">Metrics ↗</a>
             <button className="ghost" onClick={() => setView('repos')} title="Repositories">Repos</button>
+            <button className="ghost" onClick={() => setView('lessons')} title="What the agents have learned per repo">Lessons</button>
             <button className="ghost gear" onClick={() => setView('settings')} title="Settings" aria-label="Settings">⚙</button>
             <button className="primary" onClick={() => setView('newrun')}>＋ New run</button>
           </div>

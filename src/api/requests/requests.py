@@ -98,3 +98,24 @@ class RepoUpdateRequest(BaseModel):
     label: Optional[str] = None
     token: Optional[str] = None
     push_branch_override: Optional[str] = None
+
+
+class LessonCreateRequest(BaseModel):
+    """Write an operator rule into a repo's lesson store (ADR 0034) — a standing
+    instruction the agents follow, as opposed to the advisory lessons they learn
+    themselves. `scope` picks who sees it: "plan" → the plan reviewer, "code" → the
+    coder and reflector."""
+    scope: str = "code"
+    summary: str
+    guidance: Optional[str] = None
+    failure_type: Optional[str] = None
+
+
+class LessonUpdateRequest(BaseModel):
+    """Edit a lesson — human-authored or agent-learned. Omitted fields keep their stored
+    value; '' clears the nullable ones. Any edit stamps `updated_at`, which makes the
+    lesson immune to the failed-run retraction (ADR 0034)."""
+    scope: Optional[str] = None
+    summary: Optional[str] = None
+    guidance: Optional[str] = None
+    failure_type: Optional[str] = None

@@ -258,14 +258,27 @@ class MicrotaskRow(BaseModel):
 
 class LessonView(BaseModel):
     """One per-repo lesson (ADR 0018) for the dashboard — what past runs on this repo
-    taught the system."""
+    taught the system, plus the operator rules a human typed (ADR 0034).
+
+    The dashboard derives the whole "why was this added" narrative from these fields —
+    nothing describing the provenance is stored twice:
+      `agent`      "reviewer" | "reflector" = agent-learned; "human" = an operator rule
+      `run_id`     the run that learned it; None for a human rule
+      `microtask_id` the microtask whose PASS confirmed a code lesson
+      `updated_at` set only by a human edit → "edited by human" + retraction immunity
+    """
     lesson_id: str
-    run_id: str
+    repo_url: str
+    run_id: Optional[str] = None   # None = human-authored operator rule
+    run_name: Optional[str] = None # resolved label for run_id; None when the run is gone
+    agent: str                     # reviewer | reflector | human
     scope: str                     # plan | code
+    microtask_id: Optional[str] = None
     failure_type: Optional[str] = None
     summary: str
     guidance: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class RunExportBundle(BaseModel):

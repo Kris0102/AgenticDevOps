@@ -26,13 +26,22 @@ class RunRequest(BaseModel):
     # already carried by `constraints`/`hitl`, pre-filled from global defaults by the UI.
     llm: Optional[LLMConfig] = None
     # Optional commit message for the eventual deploy push. Overridable at the deploy
-    # HITL gate; blank/None → "AgenticDevOps run <run_id>". ADR 0027.
+    # HITL gate; blank/None → a message built from the run (objective + microtasks +
+    # files)..
     commit_message: Optional[str] = None
+    # Optional per-run push branch. Wins over the repo registry's `push_branch_override`;
+    # blank/None → `agent/run-<run_id>`. Never the repo's default branch — refused at run
+    # creation (422) and again at deploy. .
+    push_branch: Optional[str] = None
     # Dry-run: the graph ends at DONE without deploying (no push, no PR). Relaxes the
     # run-start push-access requirement — a token-less/read-only repo can run and
     # propose nothing. Default False = a completing run deploys, so push access is
     # required at run-start (ADR 0029).
     skip_deploy: bool = False
+    # Open a PR after the deploy push, for THIS run. None → follow the global
+    # Settings.defaults.auto_create_pr. Resolved once at run creation: turning it on
+    # makes PR rights a run-start requirement (422 without them).
+    auto_create_pr: Optional[bool] = None
 
     @model_validator(mode="after")
     def _exactly_one_repo_source(self) -> "RunRequest":
@@ -103,8 +112,8 @@ class RepoUpdateRequest(BaseModel):
 class LessonCreateRequest(BaseModel):
     """Write an operator rule into a repo's lesson store (ADR 0034) — a standing
     instruction the agents follow, as opposed to the advisory lessons they learn
-    themselves. `scope` picks who sees it: "plan" → the plan reviewer, "code" → the
-    coder and reflector."""
+    themselves. `scope` picks who sees it: "plan" → the planner + plan reviewer, "code"
+    → the coder and reflector."""
     scope: str = "code"
     summary: str
     guidance: Optional[str] = None

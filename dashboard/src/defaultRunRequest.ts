@@ -16,7 +16,9 @@ export interface NewRunOpts {
   maxMicrotaskAttempts?: number
   maxTotalTokens?: number | null
   commitMessage?: string | null          // deploy commit message; editable again at the deploy gate
+  pushBranch?: string | null             // push target; wins over the repo's registry override. Never the default branch (422)
   skipDeploy?: boolean                   // dry-run: end at DONE, no push/PR (no push token needed)
+  autoCreatePr?: boolean | null          // open a PR after the push; null = follow the global Settings default
 }
 
 export function buildRunRequest(opts: NewRunOpts) {
@@ -37,7 +39,9 @@ export function buildRunRequest(opts: NewRunOpts) {
     base_sha: opts.baseSha || null,
     llm: opts.llm ?? null,
     commit_message: opts.commitMessage ?? null,
+    push_branch: opts.pushBranch || null,
     skip_deploy: opts.skipDeploy ?? false,
+    auto_create_pr: opts.autoCreatePr ?? null,
     constraints: {
       time_budget_minutes: 60,
       cost_budget_usd: 10.0,

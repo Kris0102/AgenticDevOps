@@ -25,7 +25,10 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
   const [task, setTask] = useState('')
   const taskRef = useRef<HTMLTextAreaElement | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
+  const [pushBranch, setPushBranch] = useState('')
   const [skipDeploy, setSkipDeploy] = useState(false)
+  // Seeded from the global Settings default, then overridable for this run only.
+  const [autoCreatePr, setAutoCreatePr] = useState(false)
   // Per-run, per-agent model override (GH #71), seeded from the global default.
   const [llm, setLlm] = useState<LLMConfig | null>(null)
   const [showModels, setShowModels] = useState(false)
@@ -37,6 +40,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
     api.getSettings().then((s) => {
       setSettings(s)
       setLlm(s.selected)
+      setAutoCreatePr(s.defaults.auto_create_pr)
       setGates(Object.fromEntries(GATES.map((g) => [g, s.defaults.hitl_checkpoints.includes(g)])))
     }).catch((e) => setError(String(e)))
     api.listRepos().then(setRepos).catch((e) => setError(String(e)))
@@ -89,7 +93,9 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
         maxMicrotaskAttempts: settings.defaults.max_microtask_attempts,
         maxTotalTokens: settings.defaults.max_total_tokens,
         commitMessage: commitMessage.trim() || null,
+        pushBranch: pushBranch.trim() || null,
         skipDeploy,
+        autoCreatePr,
       })
       const r = await api.createRun(req)
       onRun(r.run_id)
@@ -145,14 +151,32 @@ export function NewRunPage({ onRun, onCancel, onManageRepos }: {
             <textarea ref={taskRef} className="ta-task" placeholder="what should the agents implement?" value={task}
               onChange={(e) => setTask(e.target.value)} /></label>
           <label className="fld span2"><span>deploy commit message <em>optional — editable again at the deploy gate</em></span>
-            <input placeholder="AgenticDevOps run <run id>" value={commitMessage} disabled={skipDeploy}
+            <input placeholder="built from the objective, microtasks and changed files" value={commitMessage} disabled={skipDeploy}
               onChange={(e) => setCommitMessage(e.target.value)} /></label>
+          <label className="fld span2"><span>push branch <em>optional — overrides this repo's registry default</em></span>
+            <input placeholder="agent/run-<run id>" value={pushBranch} disabled={skipDeploy}
+              onChange={(e) => setPushBranch(e.target.value)} /></label>
           <div className="fld span2"><span>deployment</span>
             <label className={`chip ${skipDeploy ? 'on' : ''}`}>
               <input type="checkbox" checked={skipDeploy} onChange={(e) => setSkipDeploy(e.target.checked)} />
               dry-run — end at DONE, no push or PR
             </label>
+            {/* Seeded from Settings → defaults; ticking it makes PR rights a run-start
+                requirement, so the run is refused up-front if the token can't open one. */}
+            <label className={`chip ${autoCreatePr && !skipDeploy ? 'on' : ''}`}>
+              <input type="checkbox" checked={autoCreatePr} disabled={skipDeploy}
+                onChange={(e) => setAutoCreatePr(e.target.checked)} />
+              open a pull request after the push
+            </label>
             {skipDeploy && <em className="np-hint">no result branch is pushed; a token with push access is not required.</em>}
+            {!skipDeploy && autoCreatePr !== (settings?.defaults.auto_create_pr ?? false) && (
+              <em className="np-hint">
+                overrides the Settings default ({settings?.defaults.auto_create_pr ? 'on' : 'off'}) for this run only.
+              </em>
+            )}
+            {!skipDeploy && autoCreatePr && (
+              <em className="np-hint">the token needs pull-request access — the run is refused at start without it.</em>
+            )}
           </div>
 
           <div className="fld span2"><span>model per agent <em>overrides the default for this run</em></span>

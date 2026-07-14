@@ -53,7 +53,9 @@ from db.models import Artifact as ArtifactRow, Lesson, MicrotaskRecord, Run, San
 from db.models import Event as EventRow
 from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
+from gitops.commit_message import build_commit_message
 from gitops.github_api import GitHubRepoClient, RepoValidationKind, RepoValidationResult
+from gitops.gitops import GitOps
 from providers import cost_for, health_check, probe_cache
 from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
@@ -268,6 +270,7 @@ class Service:
                 status=RunStatus.NEEDS_BOOTSTRAP,
                 deploy_commit_message=request.commit_message,
                 skip_deploy=request.skip_deploy,
+                auto_create_pr=self.resolve_auto_create_pr(request), # if the request has a per-run override, use it; else use the global default
             )
             bootstrap = self._bootstrap(run_id, state)
             if bootstrap.get("status") == RunStatus.FAILED:
@@ -684,7 +687,7 @@ class Service:
         payload = self._pending_payload(run_id)
         if not payload:
             return None
-        state = graph.get_state(self._config(run_id)).values or {}
+        state = graph.get_state(self._config(run_id)).values or {} # blackboardstate
         phase = payload.get("phase")
         return HitlReviewContext(
             run_id=run_id,
@@ -694,12 +697,40 @@ class Service:
             prompt=payload.get("prompt", ""),
             plan=self._plan_view(state) if phase == Phase.PLAN.value else None,
             diff=self._gate_diff(phase, state),
-            # Deploy gate: the message the push WOULD use (per-run value or default),
-            # so the UI can prefill its editable commit-message input (ADR 0027).
-            deploy_commit_message=(
-                (state.get("deploy_commit_message") or "").strip()
-                or f"AgenticDevOps run {run_id}"
-            ) if phase == Phase.DEPLOY.value else None,
+            # Deploy gate: the message the push WOULD use (per-run value or the built
+            # default), so the UI can prefill its editable commit-message input (ADR 0027).
+            deploy_commit_message=self._deploy_message_preview(run_id, state) # If it already exists no default is created-User gave a commit message!
+            if phase == Phase.DEPLOY.value  else None,
+        )
+
+    # `state` is `dict`, not `BlackboardState`: it comes from `graph.get_state(...).values`,
+    # which is untyped — same as the `_plan_view` / `_gate_diff` siblings this is called
+    # beside. A TypedDict param would reject the caller's plain dict.
+    def _deploy_message_preview(self, run_id: str, state: dict) -> str:
+        """Exactly what `DeployRunner` would commit if the human approves without editing.
+
+        It MUST be the real default, not a placeholder: the human submits this box back
+        verbatim on approve, so whatever is shown here becomes the commit message. Prefilling
+        a stand-in ("AgenticDevOps run <id>") silently made the real default unreachable —
+        ADR 0035. Same builder as the deploy node, so the two cannot diverge again."""
+        existing = (state.get("deploy_commit_message") or "").strip()
+        if existing:
+            return existing
+        sandbox = state.get("sandbox")
+        files: List[str] = []
+        if sandbox is not None:
+            try:
+                files = GitOps(DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")) \
+                    .changed_files(sandbox_id=sandbox.sandbox_id)
+            except Exception as e:
+                # Preview only — a dead/slow sandbox must not break the gate the human is
+                # waiting on. Degrades to the message without its file list.
+                _log.warning("hitl.deploy_preview_files_failed", run_id=run_id, error=str(e))
+        return build_commit_message(
+            run_id=run_id,
+            objective=state.get("objective"),
+            microtasks=list(state.get("microtasks") or []),
+            files=files,
         )
 
     def is_paused(self, run_id: str) -> bool:
@@ -1102,9 +1133,9 @@ class Service:
         if auto_create_pr and not result.can_create_pr:
             raise RepoValidationFailedError(
                 RepoValidationKind.NO_PR_ACCESS,
-                "auto-create-PR is enabled in Settings but the token has no "
-                "pull-request access to this repository — disable auto-create-PR "
-                "or use a token with pull-request permission",
+                "auto-create-PR is enabled for this run but the token has no "
+                "pull-request access to this repository — turn auto-create-PR off "
+                "(on the run, or in Settings) or use a token with pull-request permission",
             )
 
     def repo_branches(self, repo_id: str) -> List[str]:
@@ -1132,20 +1163,22 @@ class Service:
         its token applies), then validated the same way. Either path also checks PR
         rights via `_require_run_rights` when auto_create_pr is on — unlike add_repo,
         a run must not start without the rights it will actually need."""
-        auto_create_pr = SettingsStore.get().defaults.auto_create_pr
+        auto_create_pr = self.resolve_auto_create_pr(request)
         if request.repo_id:
             entry = RepoStore.get(request.repo_id)            # RepoNotFoundError → 404
             result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(entry.repo_id))
             RepoStore.record_validation(entry.repo_id, result)
             self._reject_if_unusable(result, skip_deploy=request.skip_deploy)
             self._require_run_rights(result, auto_create_pr=auto_create_pr, skip_deploy=request.skip_deploy)
+            default_branch = result.default_branch or entry.default_branch
             return Repo(
                 repo_url=entry.repo_url,
                 repo_id=entry.repo_id,
-                default_branch=result.default_branch or entry.default_branch,
+                default_branch=default_branch,
                 base_ref=request.base_ref,
                 base_sha=request.base_sha,
                 workspace_branch="agentic-devops-workspace",
+                branch_to_push_to=self._validated_push_branch(request.push_branch, default_branch),
             )
 
         legacy = request.repo
@@ -1161,11 +1194,45 @@ class Service:
             RepoStore.record_validation(repo_id, result)
         self._reject_if_unusable(result, skip_deploy=request.skip_deploy)
         self._require_run_rights(result, auto_create_pr=auto_create_pr, skip_deploy=request.skip_deploy)
+        default_branch = result.default_branch or legacy.default_branch
         return legacy.model_copy(update={
             "repo_url": canonical,
             "repo_id": repo_id,
-            "default_branch": result.default_branch or legacy.default_branch,
+            "default_branch": default_branch,
+            "branch_to_push_to": self._validated_push_branch(request.push_branch, default_branch),
         })
+
+    @staticmethod
+    def resolve_auto_create_pr(request: RunRequest) -> bool:
+        """Whether THIS run opens a PR: per-run `RunRequest.auto_create_pr` › the global
+        `Settings.defaults.auto_create_pr` (None = the caller didn't say).
+
+        One resolver, two consumers — the run-start PR-rights preflight and the
+        blackboard the deploy node reads — so the value a run was validated against is
+        the value it deploys with (ADR 0035)."""
+        if request.auto_create_pr is not None:
+            return request.auto_create_pr
+        return SettingsStore.get().defaults.auto_create_pr
+
+    @staticmethod
+    def _validated_push_branch(push_branch: Optional[str], default_branch: Optional[str]) -> Optional[str]:
+        """The run's push-branch override, refused NOW if it is unusable (ValueError → 422).
+
+        Rejecting at run creation rather than at deploy is the point: the deploy node is the
+        last step of a completed run, so a bad branch discovered there wastes the whole run.
+        `DeployRunner` re-checks and `GitOps.push_branch` re-checks again — a push to the
+        default branch is the one thing that must never happen, so it is guarded at every
+        layer rather than trusted to the one above (ADR 0012)."""
+        branch = (push_branch or "").strip()
+        if not branch:
+            return None
+        if branch.startswith("-") or ".." in branch or branch.endswith("/") or " " in branch:
+            raise ValueError(f"push branch '{branch}' is not a valid git branch name")
+        if default_branch and branch == default_branch:
+            raise ValueError(
+                f"push branch '{branch}' is the repo's default branch — the agent never pushes there"
+            )
+        return branch
 
     def export_run(self, run_id: str) -> Optional[RunExportBundle]:
         """Everything durable about one run in one self-describing JSON bundle (run row +

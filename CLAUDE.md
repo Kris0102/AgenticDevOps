@@ -55,6 +55,7 @@ src/
   gitops/
     gitops.py                    # GitOps — GitHub boundary (ADR 0012): clone_and_checkout (honors base_ref), push_branch (agent/run-<run_id> or per-repo override; default-branch push hard-refused), create_pr (real GitHub PR, ADR 0027). Token centralized here
     pr_body.py                   # build_pr_body — deterministic PR description from run data (objective + microtasks + fileset), no LLM (ADR 0027)
+    commit_message.py            # build_commit_message — deterministic default commit message from run data, no LLM. SINGLE source for both the deploy node (what it pushes) and the deploy gate's prefill (what the human approves) — they diverged once, see ADR 0035
     github_api.py                # GitHubRepoClient — repo validation (GET /repos/{owner}/{repo}) + live branch list for the repo registry (ADR 0024) + create_pull_request (POST /pulls, the deploy auto-PR, ADR 0027)
   db/
     db.py                        # SQLAlchemy engine + session_scope
@@ -124,10 +125,18 @@ bootstrapper runs OUTSIDE the graph (RunLauncher calls it directly) — see ADR 
   emits `READY_TO_DEPLOY`, funnels through the shared `hitl` gate). Approve →
   `deploy_push` drives `gitops.GitOps` to stage/commit/push the sandbox to
   `agent/run-<run_id>` (bypasses ToolGateway — not an LLM agent), then END. Reject → `DONE` → END
-  (run finished, un-deployed). See ADR 0012. Commit message: gate-approve input ›
-  per-run `RunRequest.commit_message` › `AgenticDevOps run <id>`; with
-  `defaults.auto_create_pr` on, a GitHub PR (deterministic body) is opened after the
-  push — PR failure degrades, never fails the run (ADR 0027).
+  (run finished, un-deployed). See ADR 0012. **Push branch** (ADR 0035): per-run
+  `RunRequest.push_branch` (→ `Repo.branch_to_push_to`, validated at run creation → 422)
+  › registry `push_branch_override` › `agent/run-<run_id>`; the repo's default branch is
+  refused at four layers. Commit message: gate-approve input ›
+  per-run `RunRequest.commit_message` › `gitops/commit_message.py::build_commit_message`
+  (objective title + microtasks + fileset — the gate PREFILLS this exact string, ADR 0035).
+  **Auto-PR** is per-run (ADR 0035): `RunRequest.auto_create_pr` (None → global
+  `defaults.auto_create_pr`) is resolved ONCE at creation by `Service.resolve_auto_create_pr`
+  onto `BlackboardState.auto_create_pr` — the deploy node reads that, NOT Settings live, so
+  the value run-start preflighted PR rights against (ADR 0029) is the one it deploys with.
+  On → a GitHub PR (deterministic body) is opened after the push; PR failure degrades, never
+  fails the run (ADR 0027).
 - **Planning loop**: `planner → plan_reviewer`. Reviewer rejects (`NEEDS_PLAN`) → back to
   planner to revise; approves (`NEEDS_CODE`) → coder.
 - **Execution loop** (ADR 0016): `coder → tester`. The **Tester owns its verdict**

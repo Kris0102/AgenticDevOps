@@ -62,8 +62,11 @@ export function HitlPanel({ runId, phase }: { runId: string; phase: string }) {
         {phase === 'deploy' && (
           <label className="commit-message">
             Commit message for the push
-            <input
-              type="text"
+            {/* Prefilled with the real default the push would use (subject + objective +
+                microtasks + files) — a multi-line git message, so a textarea, not an input.
+                Edit to override; approving as-is pushes exactly what is shown. */}
+            <textarea
+              rows={10}
               value={commitMsg}
               onChange={(e) => setCommitMsg(e.target.value)}
               placeholder={`AgenticDevOps run ${runId}`}

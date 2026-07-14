@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from db.db import db
 from db.event_log import EventLogger
 from db.repo_store import RepoNotFoundError, RepoStore
-from db.settings_store import SettingsStore
 from Exceptions.RunExecutionError import RunExecutionError
+from gitops.commit_message import build_commit_message
 from gitops.github_api import PrCreationError
 from gitops.gitops import GitOps
 from gitops.pr_body import build_pr_body
@@ -19,9 +19,9 @@ _log = get_logger(Category.DEPLOYER)
 
 
 class DeployRunner:
-    """GitOps deployer: push the sandbox working tree to the run branch
-    (`agent/run-<run_id>`) and, when `defaults.auto_create_pr` is on, open a PR
-    (ADR 0027).
+    """GitOps deployer: push the sandbox working tree to the run's push branch
+    (per-run override › the repo registry's › `agent/run-<run_id>`) and, when the run
+    resolved `auto_create_pr` on, open a PR (ADR 0027).
 
     Not an LLM agent, so it deliberately BYPASSES the ToolGateway — the gateway's
     job is per-agent tool allowlisting + audit, and there is no allowlist to enforce
@@ -82,10 +82,11 @@ class DeployRunner:
 
             fileset = self.gitops.changed_files(sandbox_id=sandbox.sandbox_id)
             # Gate-entered message › per-run message (both on deploy_commit_message,
-            # the gate overwrote the seed) › the default. ADR 0027.
+            # the gate overwrote the seed) › the built default. 
             commit_message = (self.state.get("deploy_commit_message") or "").strip() \
-                or self._create_detailed_commit_message()
-            self.state.update({"deploy_commit_message": commit_message})  # carry it for the run's audit
+                or self._default_commit_message(fileset) # the self._default_commit_message only fires if deploy is ungated, Otherwise the 
+                #_deploy_message_preview in service.py created the default commit message for the user to view, (Exacrtly the same string, 
+                # Both use Gitops.build_commit_message)
             try:
                 results = self.gitops.push_branch(
                     sandbox_id=sandbox.sandbox_id,
@@ -115,30 +116,19 @@ class DeployRunner:
             return {"repo": repo.model_copy(update={"pr_url": pr_url})}
         return {}
     
-    def _create_detailed_commit_message(self) -> str:
-        """Commit message from the run objective + microtask titles + changed files.
-        Falls back to a minimal default on any error."""
+    def _default_commit_message(self, fileset: List[str]) -> str:
+        """The message the push uses when nobody supplied one. Takes the fileset the caller
+        already computed rather than re-shelling into the sandbox for it.
+
+        `Service._hitl_context` builds the SAME string to prefill the deploy gate's box, so
+        approving without editing pushes exactly what the gate showed (ADR 0035)."""
         try:
-            objective = self.state.get("objective")
-            microtasks = self.state.get("microtasks") or []
-            fileset = self.gitops.changed_files(sandbox_id=self.state.get("sandbox").sandbox_id)
-
-            subject = (objective.title.strip() if objective and objective.title.strip()
-                    else f"AgenticDevOps run {self.run_id}")[:72]
-
-            body: List[str] = []
-            if objective:
-                body.append(f"Objective:\n{objective.description}")
-            if microtasks:
-                lines = "\n".join(f"- {mt.title}" for mt in sorted(microtasks, key=lambda m: m.idx))
-                body.append(f"Microtasks:\n{lines}")
-            if fileset:
-                shown = fileset[:50]
-                more = len(fileset) - len(shown)
-                files = "\n".join(f"- {f}" for f in shown) + (f"\n- …and {more} more" if more > 0 else "")
-                body.append(f"Files touched:\n{files}")
-            body.append(f"Run: {self.run_id}")
-            return f"{subject}\n\n" + "\n\n".join(body)
+            return build_commit_message(
+                run_id=self.run_id,
+                objective=self.state.get("objective"),
+                microtasks=list(self.state.get("microtasks") or []),
+                files=fileset,
+            )
         except Exception as e:
             _log.error("deployer.commit_message_failed", message="reverting to default", error=str(e))
             return f"AgenticDevOps run {self.run_id}"
@@ -152,10 +142,15 @@ class DeployRunner:
         commit_message: str,
         fileset: List[str],
     ) -> Tuple[Optional[str], Optional[str]]:
-        """(pr_url, pr_error) — open the auto-PR when the global setting is on.
+        """(pr_url, pr_error) — open the auto-PR when this run asked for one.
         A PR failure never fails the run: the push already landed, so it degrades to
-        a logged error carried in the gitops.pushed payload (ADR 0027)."""
-        if not SettingsStore.get().defaults.auto_create_pr:
+        a logged error carried in the gitops.pushed payload (ADR 0027).
+
+        Reads the run's OWN resolved flag (per-run RunRequest.auto_create_pr › the global
+        default, fixed at run creation), not Settings live: run-start already preflighted
+        PR rights against exactly this value, so re-reading the global here would let a
+        settings flip mid-run attempt a PR the run was never checked for"""
+        if not self.state.get("auto_create_pr"): # no PR should be created!
             return None, None
         if not fileset:
             # Nothing shipped → "No commits between base and head" is guaranteed.
@@ -188,19 +183,32 @@ class DeployRunner:
         return pr_url, None
 
     def _resolve_push_target(self, repo: Repo) -> tuple:
-        """(push branch, forbidden branch). Registry `push_branch_override` wins over
-        the default `agent/run-<run_id>`; the repo's default branch is always
-        forbidden. Unregistered/deleted repos fall back to the defaults."""
-        branch = GitOps.branch_name(self.run_id) # TODO Maybe allow user to set branch name in the future (e.g., for hotfixes) — but it must be a run-specific branch, never main/master.
+        """(push branch, forbidden branch). Precedence: the run's own `branch_to_push_to`
+        (`RunRequest.push_branch`) › the registry's `push_branch_override` › the default
+        `agent/run-<run_id>`. The repo's default branch is always forbidden.
+        Unregistered/deleted repos fall back to the defaults."""
         forbidden = repo.default_branch
+        registry_override: Optional[str] = None
         if repo.repo_id:
             try:
                 entry = RepoStore.get(repo.repo_id)
-                branch = entry.push_branch_override or branch
+                registry_override = entry.push_branch_override
                 forbidden = entry.default_branch or forbidden
             except RepoNotFoundError:
                 _log.warning("deployer.repo_entry_missing", repo_id=repo.repo_id,
-                             recovery="pushing to the default run branch")
+                             recovery=f"pushing to the default run branch {GitOps.branch_name(self.run_id)}")
+        branch = repo.branch_to_push_to or registry_override or GitOps.branch_name(self.run_id)
+
+        # Both overrides are validated where they're set (run creation → 422, add_repo), so
+        # this only catches a value that went stale afterwards — e.g. the repo's default
+        # branch was renamed onto it. Degrade rather than fail: the run is finished and only
+        # its push target is wrong, so land the work on the always-safe run branch instead of
+        # throwing it away. Checked outside the repo_id block on purpose — a per-run override
+        # on an unregistered repo needs the same guard.
+        if forbidden and branch == forbidden:
+            _log.warning("deployer.push_target_conflict", branch=branch, forbidden=forbidden,
+                         recovery=f"pushing to the default run branch {GitOps.branch_name(self.run_id)}")
+            branch = GitOps.branch_name(self.run_id)
         return branch, forbidden
 
     def _emit_push_event(self, db_session, branch: str, results: List[ExecResult], pr_url,

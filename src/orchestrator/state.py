@@ -125,6 +125,7 @@ class Repo(BaseModel):
     base_sha: Optional[str] = None
     workspace_branch: str
     pr_url: Optional[str] = None
+    branch_to_push_to: Optional[str] = None
 
     @field_validator("repo_url", "base_ref", "base_sha", "default_branch", "workspace_branch", mode="before")
     @classmethod
@@ -283,8 +284,12 @@ class RunDefaults(BaseModel):
     # Never fires for a stalled run — its container must survive for /continue.
     teardown_on_terminal: bool = False
     # After a successful deploy push, open a GitHub PR (pushed branch → the run's base
-    # branch) with a deterministically generated description. Read live at deploy time
-    # (like teardown_on_terminal). A PR failure never fails a run whose push succeeded.
+    # branch) with a deterministically generated description. The DEFAULT only: a run
+    # resolves this once at creation (per-run RunRequest.auto_create_pr wins) onto
+    # BlackboardState.auto_create_pr, which is what the deploy node reads — unlike
+    # teardown_on_terminal, it is NOT re-read live, because run-start preflights PR
+    # rights against it. A PR failure never fails a run whose push
+    # succeeded.
     auto_create_pr: bool = False
 
 
@@ -593,13 +598,21 @@ class BlackboardState(TypedDict):
 
     # Commit message for the deploy push. Seeded from RunRequest.commit_message at run
     # creation; overwritten by a message entered at the deploy HITL gate (approve
-    # payload). None/blank → "AgenticDevOps run <run_id>". Read by DeployRunner. ADR 0027.
+    # payload). None/blank → built from the run by gitops/commit_message.py. Read by
+    # DeployRunner. ADR 0027 / ADR 0035.
     deploy_commit_message: Optional[str]
 
     # Dry-run: when True the graph ends at DONE without deploying (no push, no PR) —
     # the tester/hitl DONE routers go straight to END instead of the deploy node.
     # Requires no push access at run-start (ADR 0029). Default False.
     skip_deploy: bool
+
+    # Open a PR after a successful push. RESOLVED ONCE at run creation (per-run
+    # RunRequest.auto_create_pr › global Settings.defaults.auto_create_pr), so the value
+    # the run-start PR-rights preflight validated against (ADR 0029) is the same one the
+    # deploy node acts on — reading Settings live at deploy would let a mid-run settings
+    # flip try a PR the run was never checked for. ADR 0035.
+    auto_create_pr: bool
 
 
 def _utc_now_iso() -> str:
@@ -620,6 +633,7 @@ def create_initial_blackboard_state(
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
     deploy_commit_message: Optional[str] = None,
     skip_deploy: bool = False,
+    auto_create_pr: bool = False,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
     now = _utc_now_iso()
@@ -666,4 +680,5 @@ def create_initial_blackboard_state(
         suite_baseline_failures=None,
         deploy_commit_message=deploy_commit_message,
         skip_deploy=skip_deploy,
+        auto_create_pr=auto_create_pr,
     )

@@ -1,5 +1,7 @@
-# Tells Grafana to load every dashboard JSON under /var/lib/grafana/dashboards
-# (baked in by the Dockerfile) at boot and hot-reload edits every 10s.
+# Tells Grafana to load every dashboard JSON under /etc/grafana/dashboards
+# (baked in by the Dockerfile) at boot and hot-reload edits every 10s. NOTE: this path is
+# deliberately OUTSIDE /var/lib/grafana — that dir is a named volume (grafana_data) that would
+# mask the baked-in files, so a rebuild could never update them.
 apiVersion: 1
 
 providers:
@@ -11,5 +13,5 @@ providers:
     updateIntervalSeconds: 10
     allowUiUpdates: true
     options:
-      path: /var/lib/grafana/dashboards
+      path: /etc/grafana/dashboards
       foldersFromFilesStructure: false

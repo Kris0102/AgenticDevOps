@@ -2,7 +2,7 @@
 
 # 1. Start Docker
 source venv/bin/activate
-docker-compose -f ./deploy/docker-compose.yml up -d
+docker-compose -f ./deploy/docker-compose.yml up --build -d
 
 # 2. Run concurrently and explicitly force it to use bash
 npx concurrently \

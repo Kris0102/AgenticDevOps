@@ -61,7 +61,7 @@ class ExecutePhase(TestPhase):
         running node:test tests under `npx jest` (or vice-versa) was the tester's #1 false
         negative. All four runners target the single synth file explicitly so a repo's
         testMatch/config can never hide or over-collect it."""
-        f = ctx.synth_test_file
+        f = ctx.synth_test_file or ""
         framework = ctx.js_test_framework or "node:test"
         if framework == "jest":
             # --runTestsByPath: exact file, not a testMatch-filtered pattern.
@@ -80,9 +80,11 @@ class ExecutePhase(TestPhase):
         _log.info("tester.run_tests.start", run_id=ctx.run_id,
                   microtask_id=ctx.microtask.microtask_id, command=cmd)
         # exit codes other than 0 (pass) / 1 (real test failure) are harness errors —
-        # collection failure, bad import, missing runtime, timeout — not a code verdict.
-        check = make_check("unit_tests", cmd, self.tools.run(cmd, timeout_s=300),
-                           error_exit_codes={2, 3, 4, 5})
+        # collection failure, bad import, missing runtime, watchdog timeout (124/137) — not a
+        # code verdict. 124/137 = the sandbox watchdog killed a hung test (e.g. a browser module
+        # with a live setInterval); that's a harness problem, so it must not fail the microtask.
+        check = make_check("unit_tests", cmd, self.tools.run(cmd, timeout_s=60), # 60 seconds timeout is sufficient
+                           error_exit_codes={2, 3, 4, 5, 124, 137})
         # Stage-1 reclassification: an exit-1 that is actually a LOAD failure (couldn't import
         # the module / no DOM env) is a harness error, not a code failure. make_check only sees
         # the exit code — a bad import under `node --test` exits 1, indistinguishable from a

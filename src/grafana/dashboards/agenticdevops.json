@@ -6,14 +6,39 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": {
     "from": "now-30d",
     "to": "now"
   },
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "include_failed",
+        "label": "Include failed runs",
+        "type": "custom",
+        "query": "yes,no",
+        "current": {
+          "text": "yes",
+          "value": "yes"
+        },
+        "options": [
+          {
+            "text": "yes",
+            "value": "yes",
+            "selected": true
+          },
+          {
+            "text": "no",
+            "value": "no",
+            "selected": false
+          }
+        ],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
   },
   "annotations": {
     "list": []
@@ -182,7 +207,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT avg(EXTRACT(EPOCH FROM (updated_at - created_at))) AS avg_seconds FROM runs WHERE status IN ('DONE', 'FAILED');",
+          "rawSql": "SELECT avg(EXTRACT(EPOCH FROM (updated_at - created_at))) AS avg_seconds FROM runs WHERE status IN ('DONE','FAILED') AND ('${include_failed}' = 'yes' OR status <> 'FAILED');",
           "format": "table"
         }
       ]
@@ -249,6 +274,719 @@
       ]
     },
     {
+      "id": 30,
+      "type": "row",
+      "title": "MAS Quality & Autonomy",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "panels": []
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "First-Pass Yield",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(100.0 * count(*) FILTER (WHERE attempts <= 1 AND status IN ('COMPLETED','DONE')) / NULLIF(count(*) FILTER (WHERE status IN ('COMPLETED','DONE')),0),1) AS fpy FROM microtasks;",
+          "format": "table"
+        }
+      ],
+      "description": "Microtasks that passed the tester on the FIRST attempt (no reflector loop). Core autonomy-quality metric."
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Self-Correction Rate",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(100.0 * count(*) FILTER (WHERE attempts > 1 AND status IN ('COMPLETED','DONE')) / NULLIF(count(*) FILTER (WHERE attempts > 1),0),1) AS rate FROM microtasks;",
+          "format": "table"
+        }
+      ],
+      "description": "Of microtasks that failed at least once, the % the coder\u2194tester\u2194reflector loop recovered to green."
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "HITL Approval Rate",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(100.0 * count(*) FILTER (WHERE payload_json->>'decision'='approve') / NULLIF(count(*),0),1) AS approve_pct FROM events WHERE event_type='hitl.decided';",
+          "format": "table"
+        }
+      ],
+      "description": "Share of human gate decisions that APPROVED the agent's proposal (vs reject). High = the system needed little correction."
+    },
+    {
+      "id": 34,
+      "type": "stat",
+      "title": "Deploy Rate",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "WITH done AS (SELECT run_id FROM runs WHERE status='DONE'), pushed AS (SELECT DISTINCT run_id FROM events WHERE event_type='gitops.pushed') SELECT round(100.0 * count(*) FILTER (WHERE d.run_id IN (SELECT run_id FROM pushed)) / NULLIF(count(*),0),1) AS deploy_pct FROM done d;",
+          "format": "table"
+        }
+      ],
+      "description": "Of DONE runs, the % that actually pushed a branch (gitops.pushed) \u2014 end-to-end delivery."
+    },
+    {
+      "id": 35,
+      "type": "stat",
+      "title": "Cost per Successful Run",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD",
+          "decimals": 4
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(SUM((payload_json->>'cost_usd')::numeric) / NULLIF((SELECT count(*) FROM runs WHERE status='DONE'),0),4) AS cost FROM events WHERE event_type='llm.usage';",
+          "format": "table"
+        }
+      ],
+      "description": "Total spend divided by DONE runs \u2014 money per delivered outcome."
+    },
+    {
+      "id": 36,
+      "type": "stat",
+      "title": "Cost per Delivered Microtask",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD",
+          "decimals": 4
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(SUM((payload_json->>'cost_usd')::numeric) / NULLIF((SELECT count(*) FROM microtasks WHERE status IN ('COMPLETED','DONE')),0),4) AS cost FROM events WHERE event_type='llm.usage';",
+          "format": "table"
+        }
+      ],
+      "description": "Total spend divided by completed microtasks \u2014 unit economics of shipped work."
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "Avg Microtasks per Run",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(count(*)::numeric / NULLIF(count(DISTINCT run_id),0),2) AS avg_mt FROM microtasks;",
+          "format": "table"
+        }
+      ],
+      "description": "Planner decomposition granularity."
+    },
+    {
+      "id": 38,
+      "type": "stat",
+      "title": "Plan Reviews per Run",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "decimals": 2
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round((SELECT count(*) FROM events WHERE event_type='plan.reviewed')::numeric / NULLIF((SELECT count(DISTINCT run_id) FROM events WHERE event_type='plan.reviewed'),0),2) AS avg_reviews;",
+          "format": "table"
+        }
+      ],
+      "description": "Planner\u2194Reviewer actor-critic loop depth \u2014 reviews before a plan is approved."
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Verification Outcomes over Time (microtask checks)",
+      "description": "The grounded-verification loop: microtasks passing (green) vs failing (red) the tester each day.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "completed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "format": "table",
+          "rawSql": "SELECT date_trunc('day', ts) AS time, count(*) FILTER (WHERE event_type='microtask.completed') AS completed, count(*) FILTER (WHERE event_type='microtask.failed') AS failed FROM events WHERE event_type IN ('microtask.completed','microtask.failed') GROUP BY 1 ORDER BY 1;"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "barchart",
+      "title": "Agent Division of Labor (tool calls)",
+      "description": "How the five agents share the work \u2014 sandbox/tool actions per role. Shows the MAS actually collaborating.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "planner"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reviewer"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "coder"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tester"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reflector"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        },
+        "colorByField": "agent"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "format": "table",
+          "rawSql": "SELECT actor AS agent, count(*) AS tool_calls FROM events WHERE event_type='tool.executed' GROUP BY 1 ORDER BY 2 DESC;"
+        }
+      ]
+    },
+    {
       "id": 5,
       "type": "piechart",
       "title": "Runs by Status",
@@ -256,7 +994,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 4
+        "y": 21
       },
       "datasource": {
         "type": "postgres",
@@ -289,7 +1027,162 @@
           "rawSql": "SELECT status AS metric, count(*) AS value FROM runs GROUP BY status ORDER BY value DESC;",
           "format": "table"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DONE"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "COMPLETED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "FAILED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "BLOCKED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "STALLED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "STOPPED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PENDING"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IN_PROGRESS"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Running/Stalled"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Other"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": 6,
@@ -299,7 +1192,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 4
+        "y": 21
       },
       "datasource": {
         "type": "postgres",
@@ -347,7 +1240,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 4
+        "y": 21
       },
       "datasource": {
         "type": "postgres",
@@ -380,7 +1273,162 @@
           "rawSql": "SELECT status AS metric, count(*) AS value FROM microtasks GROUP BY status ORDER BY value DESC;",
           "format": "table"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DONE"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "COMPLETED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "FAILED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "BLOCKED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "STALLED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "STOPPED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PENDING"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IN_PROGRESS"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Running/Stalled"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Other"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": 8,
@@ -390,7 +1438,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 29
       },
       "datasource": {
         "type": "postgres",
@@ -418,7 +1466,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT run_id, tokens_used_total FROM runs ORDER BY created_at DESC LIMIT 20;",
+          "rawSql": "SELECT COALESCE(NULLIF(run_name,''), left(run_id,8)) AS run, tokens_used_total FROM runs WHERE ('${include_failed}' = 'yes' OR status <> 'FAILED') ORDER BY created_at DESC LIMIT 20;",
           "format": "table"
         }
       ]
@@ -431,7 +1479,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 37
       },
       "datasource": {
         "type": "postgres",
@@ -466,6 +1514,71 @@
                 "value": "short"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "DONE": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "COMPLETED": {
+                        "color": "green",
+                        "index": 1
+                      },
+                      "FAILED": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "BLOCKED": {
+                        "color": "orange",
+                        "index": 3
+                      },
+                      "STALLED": {
+                        "color": "orange",
+                        "index": 4
+                      },
+                      "STOPPED": {
+                        "color": "purple",
+                        "index": 5
+                      },
+                      "PENDING": {
+                        "color": "blue",
+                        "index": 6
+                      },
+                      "IN_PROGRESS": {
+                        "color": "blue",
+                        "index": 7
+                      },
+                      "Running/Stalled": {
+                        "color": "text",
+                        "index": 8
+                      },
+                      "Other": {
+                        "color": "text",
+                        "index": 9
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              }
+            ]
           }
         ]
       },
@@ -475,7 +1588,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT created_at, run_id, repo_url, status, llm_model AS model, tokens_used_total AS tokens, EXTRACT(EPOCH FROM (updated_at - created_at))::int AS duration_s FROM runs ORDER BY created_at DESC LIMIT 50;",
+          "rawSql": "SELECT created_at, COALESCE(NULLIF(run_name,''), left(run_id,8)) AS run, repo_url, status, llm_model AS model, tokens_used_total AS tokens, EXTRACT(EPOCH FROM (updated_at - created_at))::int AS duration_s FROM runs WHERE ('${include_failed}' = 'yes' OR status <> 'FAILED') ORDER BY created_at DESC LIMIT 50;",
           "format": "table"
         }
       ]
@@ -489,7 +1602,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 29
+        "y": 46
       },
       "datasource": {
         "type": "postgres",
@@ -553,7 +1666,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 29
+        "y": 46
       },
       "datasource": {
         "type": "postgres",
@@ -615,7 +1728,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 29
+        "y": 46
       },
       "datasource": {
         "type": "postgres",
@@ -651,7 +1764,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT round(avg(tokens_used_total / NULLIF(EXTRACT(EPOCH FROM (updated_at - created_at)), 0))::numeric, 1) AS tokens_per_sec FROM runs WHERE status IN ('DONE', 'FAILED') AND updated_at > created_at;",
+          "rawSql": "SELECT round(avg(tokens_used_total / NULLIF(EXTRACT(EPOCH FROM (updated_at - created_at)),0))::numeric,1) AS tokens_per_sec FROM runs WHERE status IN ('DONE','FAILED') AND updated_at > created_at AND ('${include_failed}' = 'yes' OR status <> 'FAILED');",
           "format": "table"
         }
       ]
@@ -665,7 +1778,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 29
+        "y": 46
       },
       "datasource": {
         "type": "postgres",
@@ -709,18 +1822,61 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 33
+        "y": 50
       },
       "datasource": {
         "type": "postgres",
         "uid": "agenticdevops-pg"
       },
       "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DONE"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "FAILED"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Other"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
           }
-        }
+        ]
       },
       "options": {
         "orientation": "auto",
@@ -735,7 +1891,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT CASE WHEN status = 'DONE' THEN 'DONE' WHEN status = 'FAILED' THEN 'FAILED' ELSE 'Running/Stalled' END AS outcome, count(*) AS value FROM runs GROUP BY 1 ORDER BY value DESC;",
+          "rawSql": "SELECT count(*) FILTER (WHERE status='DONE') AS \"DONE\", count(*) FILTER (WHERE status='FAILED') AS \"FAILED\", count(*) FILTER (WHERE status NOT IN ('DONE','FAILED')) AS \"Other\" FROM runs;",
           "format": "table"
         }
       ]
@@ -748,7 +1904,7 @@
         "h": 8,
         "w": 16,
         "x": 8,
-        "y": 33
+        "y": 50
       },
       "datasource": {
         "type": "postgres",
@@ -795,7 +1951,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 58
       },
       "datasource": {
         "type": "postgres",
@@ -826,7 +1982,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT round(EXTRACT(EPOCH FROM (updated_at - created_at))::numeric, 0) AS duration_s, tokens_used_total AS tokens FROM runs WHERE status IN ('DONE', 'FAILED') AND updated_at > created_at ORDER BY 1;",
+          "rawSql": "SELECT round(EXTRACT(EPOCH FROM (updated_at - created_at))::numeric,0) AS duration_s, tokens_used_total AS tokens FROM runs WHERE status IN ('DONE','FAILED') AND updated_at > created_at AND ('${include_failed}' = 'yes' OR status <> 'FAILED') ORDER BY 1;",
           "format": "table"
         }
       ]
@@ -840,7 +1996,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 58
       },
       "datasource": {
         "type": "postgres",
@@ -871,7 +2027,7 @@
             "type": "postgres",
             "uid": "agenticdevops-pg"
           },
-          "rawSql": "SELECT length(task_description) AS desc_chars, round(EXTRACT(EPOCH FROM (updated_at - created_at))::numeric, 0) AS duration_s FROM runs WHERE task_description IS NOT NULL AND status IN ('DONE', 'FAILED') AND updated_at > created_at ORDER BY 1;",
+          "rawSql": "SELECT length(task_description) AS desc_chars, round(EXTRACT(EPOCH FROM (updated_at - created_at))::numeric,0) AS duration_s FROM runs WHERE task_description IS NOT NULL AND status IN ('DONE','FAILED') AND updated_at > created_at AND ('${include_failed}' = 'yes' OR status <> 'FAILED') ORDER BY 1;",
           "format": "table"
         }
       ]
@@ -884,7 +2040,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 67
       },
       "datasource": {
         "type": "postgres",
@@ -941,7 +2097,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 75
       },
       "datasource": {
         "type": "postgres",
@@ -1011,7 +2167,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 75
       },
       "datasource": {
         "type": "postgres",
@@ -1040,7 +2196,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 83
       },
       "panels": []
     },
@@ -1053,7 +2209,7 @@
         "h": 4,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 84
       },
       "datasource": {
         "type": "postgres",
@@ -1099,7 +2255,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 84
       },
       "datasource": {
         "type": "postgres",
@@ -1145,7 +2301,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 71
+        "y": 88
       },
       "datasource": {
         "type": "postgres",
@@ -1195,7 +2351,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 71
+        "y": 88
       },
       "datasource": {
         "type": "postgres",
@@ -1244,7 +2400,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 79
+        "y": 96
       },
       "datasource": {
         "type": "postgres",
@@ -1311,7 +2467,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 79
+        "y": 96
       },
       "datasource": {
         "type": "postgres",

@@ -13,6 +13,9 @@ ENV GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
 # manual clicking (reproducible for the graded demo). DB creds are injected at
 # runtime from the compose env (see datasources/postgres.yml -> $__env{...}).
 COPY provisioning /etc/grafana/provisioning
-COPY dashboards /var/lib/grafana/dashboards
+# /etc/grafana is NOT under the grafana_data volume (which mounts /var/lib/grafana and would
+# MASK baked-in dashboards there — a rebuild couldn't update them). Ship dashboards here so a
+# rebuild always wins. See provisioning/dashboards/dashboards.yml.
+COPY dashboards /etc/grafana/dashboards
 
 EXPOSE 3000

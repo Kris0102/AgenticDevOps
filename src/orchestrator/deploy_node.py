@@ -85,6 +85,7 @@ class DeployRunner:
             # the gate overwrote the seed) › the default. ADR 0027.
             commit_message = (self.state.get("deploy_commit_message") or "").strip() \
                 or self._create_detailed_commit_message()
+            self.state.update({"deploy_commit_message": commit_message})  # carry it for the run's audit
             try:
                 results = self.gitops.push_branch(
                     sandbox_id=sandbox.sandbox_id,
@@ -190,7 +191,7 @@ class DeployRunner:
         """(push branch, forbidden branch). Registry `push_branch_override` wins over
         the default `agent/run-<run_id>`; the repo's default branch is always
         forbidden. Unregistered/deleted repos fall back to the defaults."""
-        branch = GitOps.branch_name(self.run_id)
+        branch = GitOps.branch_name(self.run_id) # TODO Maybe allow user to set branch name in the future (e.g., for hotfixes) — but it must be a run-specific branch, never main/master.
         forbidden = repo.default_branch
         if repo.repo_id:
             try:

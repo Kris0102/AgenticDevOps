@@ -280,10 +280,16 @@ class DockerSandboxTools:
         container = self.client.containers.get(cid)
 
         start = time.time()
-        # docker SDK exec_run has a timeout only for API, not process kill.
-        # For PoC: we rely on Docker not hanging; for production implement a watchdog.
+        # Enforce timeout_s. `docker exec` (exec_run) has NO process-kill timeout — it blocks
+        # until the command exits — so a hanging command (a synth test with a live setInterval,
+        # an infinite loop, a server that listen()s, a stalled install) used to freeze the whole
+        # run FOREVER with no recovery but a manual kill. Wrap in coreutils `timeout` (always in
+        # the Debian base image): it SIGTERMs the command at timeout_s, then SIGKILLs 5s later if
+        # it ignores TERM. The wrapped process then exits 124 (or 137 if it needed the KILL) —
+        # callers classify those as a harness ERROR, never a code verdict.
+        wrapped = ["timeout", "--kill-after=5", str(timeout_s), *cmd]
         res = container.exec_run(
-            cmd=cmd,
+            cmd=wrapped,
             workdir=cwd,
             environment=env,
             demux=True,  # returns (stdout, stderr)
@@ -294,6 +300,12 @@ class DockerSandboxTools:
         stdout_b, stderr_b = res.output if res.output is not None else (b"", b"")
         stdout = (stdout_b or b"").decode("utf-8", errors="replace")
         stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+
+        # Make a watchdog kill self-describing so it reads as "harness stopped it", not a silent
+        # negative. 124 = timeout fired; 137 = 128+SIGKILL (ignored TERM, got --kill-after).
+        if exit_code in (124, 137):
+            note = f"[sandbox watchdog] command exceeded {timeout_s}s and was killed (exit {exit_code})"
+            stderr = f"{stderr}\n{note}".strip() if stderr else note
 
         return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr, duration_ms=duration_ms)
 

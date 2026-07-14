@@ -114,7 +114,7 @@ export default function App() {
   if (!runId && view === 'settings') return <div className="app"><SettingsPage onClose={() => setView('home')} /></div>
   if (!runId && view === 'repos') return <div className="app"><ReposPage onClose={() => setView('home')} /></div>
   if (!runId && view === 'lessons') return <div className="app"><LessonStorePage onClose={() => setView('home')} onOpenRun={openRun} /></div>
-  if (!runId && view === 'newrun') return <div className="app"><NewRunPage onRun={openRun} onCancel={() => setView('home')} onManageRepos={() => setView('repos')} /></div>
+  if (!runId && view === 'newrun') return <div className="app"><NewRunPage onRun={openRun} onCancel={() => setView('home')} onManageRepos={() => setView('repos')} onManageLessons={() => setView('lessons')} /></div>
 
   return (
     <div className="app">

@@ -279,6 +279,12 @@ class LessonView(BaseModel):
     guidance: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # Operator rules only: is this rule actually reaching the agents' prompts?
+    # False = displaced by newer rules in its scope (LessonStore.OPERATOR_RULE_LIMIT), so
+    # it is stored but never sent — the dashboard must say so rather than let a rule the
+    # human wrote quietly do nothing. None for agent-learned lessons: those are retrieved
+    # semantically per microtask, so whether one is used is not knowable from a list.
+    injected: Optional[bool] = None
 
 
 class RunExportBundle(BaseModel):

@@ -61,9 +61,9 @@ diagnosing agent). Caught by reading live data, not by reading the schema.
 
 ### 2. Operator rules are pinned, not ranked
 
-A human-authored lesson (`agent="human"`) is **always injected**, capped at 5, in its own
-prompt block framed as instructions — while agent-learned lessons keep ADR 0018's
-advisory framing ("may be stale, not rules"):
+A human-authored lesson (`agent="human"`) is **always injected**, capped per scope at
+`LessonStore.OPERATOR_RULE_LIMIT` (15), in its own prompt block framed as instructions —
+while agent-learned lessons keep ADR 0018's advisory framing ("may be stale, not rules"):
 
 ```
 ## Operator rules for this repo (written by a human — follow these)
@@ -151,8 +151,26 @@ by its own text.
   a remedy: a human can fix or delete one.
 - Expect **First-Pass Yield** (Grafana) to move — §4 converts known mistakes from
   detected-and-revised into avoided. That is the measurable claim of this ADR.
-- `lessons` has no prune/cap hygiene yet (ADR 0018 open item). Rule pinning is capped at 5,
-  but learned lessons still accumulate unbounded; retrieval stays O(top_k) so this is a
-  storage concern, not a prompt-size one.
+- `lessons` has no prune/cap hygiene yet (ADR 0018 open item). Learned lessons accumulate
+  unbounded; retrieval stays O(top_k) so this is a storage concern, not a prompt-size one.
+
+### Amendment 2026-07-14 — the rule cap must not drop rules silently
+
+`OPERATOR_RULE_LIMIT` (15/scope) exists because pinned rules are unranked: without a bound a
+growing list would eventually crowd out the task itself. But the cap keeps the NEWEST rules,
+so adding rule 16 silently evicts rule 1 — and the store listed all 16 as though they
+applied. That is precisely the failure §2 claims pinning prevents ("a rule the human typed
+must never silently do nothing"), reintroduced one layer up.
+
+`LessonView.injected` now carries the answer: `Service._injected_rule_ids` re-derives, from
+the same constant and the same newest-first ordering as `find_operator_rules`, which rules
+actually reach a prompt. Rules past the cut-off are badged "not sent to the agents" in red
+on both the store page and the run panel, plus a section warning. The cap number is NOT
+duplicated in the frontend — the UI counts the rules the server marked as injected, which
+*is* the cap whenever anything was dropped.
+
+Rejected: raising the cap alone (moves the cliff, doesn't remove it); a token budget instead
+of a count (better-modelled, still silent); refusing to store rule 16 (loudest, but blocks
+the user mid-flow to enforce a limit only the prompt cares about).
 - Rules are repo-scoped and scope-scoped. There is no global rule ("for all repos") — add
   one per repo. Deliberate: `repo_url` is the memory key throughout (ADR 0018/0024).

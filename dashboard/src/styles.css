@@ -811,6 +811,11 @@ button.primary.sm { padding: 4px 10px; font-size: 12px; font-weight: 500; }
 .lsguide-k { font-family: var(--mono); font-size: 11px; color: var(--muted); opacity: 0.7; margin-right: 6px; }
 .lstype { font-size: 11px; font-family: var(--mono); color: var(--muted); }
 .lsedited { font-size: 10.5px; color: var(--cat-deployer); border: 1px solid #e3b34155; border-radius: 4px; padding: 1px 5px; }
+/* A rule stored but never sent — red, because a rule that silently does nothing is the
+   one failure this store exists to prevent. */
+.lsdropped { font-size: 10.5px; color: var(--red); border: 1px solid #f8514955; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+.lscard.kind-human:has(.lsdropped) { border-left-color: var(--red); opacity: 0.82; }
+.sp-warn { margin: 6px 0 0; font-size: 12.5px; color: var(--yellow); }
 .lserr { color: var(--red); font-size: 11.5px; }
 .lsedit { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .lsedit textarea { resize: vertical; }
@@ -931,4 +936,24 @@ button.primary.sm { padding: 4px 10px; font-size: 12px; font-weight: 500; }
 .input-invalid { border-color: var(--red) !important; }
 .tbcached { color: var(--green); font-size: 11px; white-space: nowrap; }
 .np-hint { display: block; margin-top: 4px; font-size: 12px; font-style: normal; color: var(--muted); }
+/* Task size feedback: amber = still runnable but costly, red = refused (Start disabled). */
+.np-hint.warn { color: var(--yellow); }
+.np-hint.bad { color: var(--red); }
+
+/* Task field: label row carries the .txt/.md loader, foot row the provenance + size. */
+.task-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.task-head > span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.task-foot { display: flex; align-items: baseline; gap: 10px; }
+.task-spacer { flex: 1; }
+/* The real <input type=file> is unstyleable — hide it and let its label be the button. */
+.task-file input[type="file"] { display: none; }
+.task-file-btn { cursor: pointer; font-size: 11.5px; color: var(--accent); border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px; }
+.task-file-btn:hover { border-color: var(--accent); }
+
+/* Read-only preview of the rules the picked repo will impose on this run. Gold left edge =
+   human-authored, matching the operator-rule colour on the Lessons page and run panel. */
+.np-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.np-rules li { display: flex; align-items: baseline; gap: 8px; padding: 5px 9px; background: #0d1117;
+  border: 1px solid var(--border); border-left: 3px solid var(--cat-deployer); border-radius: 6px; }
+.np-rule-text { font-size: 12.5px; color: var(--fg); }
 .linklike { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }

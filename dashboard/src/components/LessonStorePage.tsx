@@ -95,6 +95,11 @@ function LessonCard({ lesson, onOpenRun, onChanged }: {
 
       <div className="lscard-foot">
         {lesson.failure_type && <span className="lstype">{lesson.failure_type}</span>}
+        {lesson.injected === false && (
+          <span className="lsdropped" title="stored, but newer rules in this scope pushed it past the limit — the agents never see it">
+            not sent to the agents
+          </span>
+        )}
         {isHumanReviewed(lesson) && (
           <span className="lsedited" title="a human reviewed this — it survives a failed run's retraction">
             edited by human
@@ -157,6 +162,16 @@ export function LessonStorePage({ onClose, onOpenRun }: {
     const ls = lessons ?? []
     return [ls.filter((l) => origin(l) === 'human'), ls.filter((l) => origin(l) !== 'human')]
   }, [lessons])
+
+  // Rules past the server's per-scope cap are stored but never sent. The cap itself is the
+  // server's business — we don't hard-code the number, we count the rules it marked as
+  // reaching a prompt, which IS the cap whenever anything got dropped.
+  const dropped = rules.filter((r) => r.injected === false)
+  const perScopeLimit = useMemo(() => {
+    const byScope = new Map<string, number>()
+    for (const r of rules.filter((r) => r.injected)) byScope.set(r.scope, (byScope.get(r.scope) ?? 0) + 1)
+    return Math.max(0, ...byScope.values())
+  }, [rules])
 
   return (
     <section className="settingspage lessonstore">
@@ -226,6 +241,13 @@ export function LessonStorePage({ onClose, onOpenRun }: {
             <div className="sp-section-head">
               <h3>Operator rules <span className="rh-count">{rules.length}</span></h3>
               <p>Yours. Always sent to the agents.</p>
+              {dropped.length > 0 && (
+                <p className="sp-warn">
+                  {dropped.length} of these {dropped.length === 1 ? 'is' : 'are'} <strong>not being sent</strong> —
+                  only the newest {perScopeLimit} rules per scope reach a prompt, so the oldest drop out.
+                  Delete the ones you no longer need, or the rules marked below will never apply.
+                </p>
+              )}
             </div>
             {rules.length === 0
               ? <p className="empty-hint">none yet — add one above and the next run will follow it.</p>

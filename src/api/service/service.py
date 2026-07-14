@@ -47,7 +47,7 @@ from api.responses.responses import (
 )
 from db.db import db
 from db.event_log import EventLogger
-from db.lessons import LessonStore
+from db.lessons import HUMAN_AGENT, OPERATOR_RULE_LIMIT, LessonStore
 from db.semanticMemory.semantic_store import SemanticStore
 from db.models import Artifact as ArtifactRow, Lesson, MicrotaskRecord, Run, Sandbox
 from db.models import Event as EventRow
@@ -925,7 +925,7 @@ class Service:
             guidance=request.guidance,
             failure_type=request.failure_type,
         )
-        return self._lesson_view(lesson, {})
+        return self._lesson_view(lesson, {}, injected=self._rule_injected(lesson))
 
     def update_lesson(self, lesson_id: str, request: LessonUpdateRequest) -> LessonView:
         """Edit a lesson. Raises LessonNotFoundError / ValueError."""
@@ -936,7 +936,16 @@ class Service:
             guidance=request.guidance,
             failure_type=request.failure_type,
         )
-        return self._lesson_view(lesson, self._run_names([lesson]))
+        return self._lesson_view(lesson, self._run_names([lesson]),
+                                 injected=self._rule_injected(lesson))
+
+    def _rule_injected(self, lesson: Lesson) -> Optional[bool]:
+        """`injected` for a single rule, re-derived against the repo's current rules — a
+        write response must not claim a status the list view would immediately contradict.
+        None for agent-learned lessons (not knowable outside a run)."""
+        if lesson.agent != HUMAN_AGENT:
+            return None
+        return lesson.lesson_id in self._injected_rule_ids(LessonStore.list_for_repo(lesson.repo_url))
 
     def delete_lesson(self, lesson_id: str) -> None:
         """Forget a lesson permanently. Raises LessonNotFoundError."""
@@ -945,7 +954,35 @@ class Service:
     def _lesson_views(self, repo_url: str) -> List[LessonView]:
         lessons = LessonStore.list_for_repo(repo_url)
         names = self._run_names(lessons)
-        return [self._lesson_view(l, names) for l in lessons]
+        injected = self._injected_rule_ids(lessons)
+        return [
+            self._lesson_view(
+                l, names,
+                injected=(l.lesson_id in injected) if l.agent == HUMAN_AGENT else None,
+            )
+            for l in lessons
+        ]
+
+    @staticmethod
+    def _injected_rule_ids(lessons: Sequence[Lesson]) -> set[str]:
+        """Which operator rules actually reach a prompt — mirrors `find_operator_rules`
+        (human-authored, per scope, newest first, capped at OPERATOR_RULE_LIMIT) against the
+        same rows the dashboard lists.
+
+        The cap silently drops the oldest rules, so the store has to be able to show which
+        ones are inert; deriving that here from the one shared constant keeps the answer
+        honest instead of hard-coding the number a second time in the UI. `list_for_repo`
+        already orders newest-first, which is the order the cap applies in."""
+        seen: Dict[str, int] = {}
+        keep: set[str] = set()
+        for lesson in lessons:                       # newest first
+            if lesson.agent != HUMAN_AGENT:
+                continue
+            rank = seen.get(lesson.scope, 0)
+            if rank < OPERATOR_RULE_LIMIT:
+                keep.add(lesson.lesson_id)
+            seen[lesson.scope] = rank + 1
+        return keep
 
     @staticmethod
     def _run_names(lessons: Sequence[Lesson]) -> Dict[str, str]:
@@ -960,7 +997,8 @@ class Service:
         return {rid: name for rid, name in rows if name}
 
     @staticmethod
-    def _lesson_view(lesson: Lesson, run_names: Dict[str, str]) -> LessonView:
+    def _lesson_view(lesson: Lesson, run_names: Dict[str, str],
+                     injected: Optional[bool] = None) -> LessonView:
         return LessonView(
             lesson_id=lesson.lesson_id,
             repo_url=lesson.repo_url,
@@ -974,6 +1012,7 @@ class Service:
             guidance=lesson.guidance,
             created_at=lesson.created_at,
             updated_at=lesson.updated_at,
+            injected=injected,
         )
 
     # ----------------------------------------------------------------- settings

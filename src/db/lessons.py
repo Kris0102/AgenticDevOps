@@ -38,6 +38,16 @@ _log = get_logger(Category.SEMANTIC)
 # rather than one an agent learned — an "operator rule" (ADR 0034).
 HUMAN_AGENT = "human"
 
+# How many operator rules per scope actually reach a prompt. Rules are pinned (unranked),
+# so without a bound a growing list would eventually crowd out the task itself. 15 short
+# imperatives is ~400 tokens — negligible next to the file contents the coder already
+# carries — while still refusing an unbounded style essay (ADR 0034).
+#
+# Over the cap the OLDEST rules drop out, which is a silent failure the store must not hide:
+# `Service._lesson_views` marks each rule `injected` using this same constant so the
+# dashboard can say which rules aren't being sent. Change it here only.
+OPERATOR_RULE_LIMIT = 15
+
 
 class LessonNotFoundError(Exception):
     """Raised by the human CRUD path when a lesson_id does not exist."""
@@ -223,16 +233,19 @@ class LessonStore:
         repo_url: str,
         *,
         scope: Optional[str] = None,
-        limit: int = 5,
+        limit: int = OPERATOR_RULE_LIMIT,
     ) -> List[Dict[str, Any]]:
         """The human-authored rules for this repo — ALWAYS injected, never ranked (ADR 0034).
 
         Deliberately NOT a vector search: a rule a human typed is an instruction, not a
         retrieval candidate, and making it compete for a top-k slot against agent lessons
-        would let a freshly-typed rule silently lose the cosine race and do nothing. Newest
-        first, hard-capped so a growing rule list can never crowd out the prompt. Same dict
-        shape as `find_lessons` (minus `score`) so `render_block` handles both. Advisory
-        failure semantics: empty on error, never breaks the caller."""
+        would let a freshly-typed rule silently lose the cosine race and do nothing.
+
+        Newest first, capped per scope at OPERATOR_RULE_LIMIT so a growing rule list can
+        never crowd out the prompt. That cap drops the OLDEST rules — silently from here,
+        so the dashboard surfaces it (see the constant). Same dict shape as `find_lessons`
+        (minus `score`) so `render_block` handles both. Advisory failure semantics: empty
+        on error, never breaks the caller."""
         if not repo_url:
             return []
         try:

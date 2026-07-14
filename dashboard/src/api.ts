@@ -247,6 +247,11 @@ export interface LessonView {
   guidance?: string | null
   created_at: string
   updated_at?: string | null // set only by a human edit
+  // Operator rules only: is this rule actually reaching the agents' prompts? false = newer
+  // rules in its scope displaced it past the server's cap, so it is stored but never sent.
+  // The server decides — the cap is NOT duplicated here. null for agent-learned lessons
+  // (retrieved per microtask, so not knowable from a list).
+  injected?: boolean | null
 }
 
 // Add an operator rule to a repo's store — a standing instruction, not an advisory note.

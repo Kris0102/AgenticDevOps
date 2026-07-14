@@ -36,6 +36,11 @@ export function LessonsPanel({ runId, live }: { runId: string; live: boolean }) 
             </div>
             <div className="lmeta">
               <span className="lorigin">{originLabel(l)}</span>
+              {l.injected === false && (
+                <span className="lsdropped" title="past the per-scope rule limit — stored but never sent to the agents">
+                  not sent
+                </span>
+              )}
               {l.failure_type && <span className="ltype">{l.failure_type}</span>}
               {isHumanReviewed(l) && <span className="lsedited">edited</span>}
             </div>

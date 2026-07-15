@@ -410,6 +410,10 @@ Below is a recommended event type registry.
   - payload required: `pr_url`, `branch`, `base_sha`, `title`
 - **`gitops.pr_updated`**
   - payload required: `pr_url`, `branch`, `commit_sha`
+- **`gitops.exported_local`** (ADR 0036 — LOCAL_ONLY deploy: bundle fetched into the user's local clone)
+  - payload required: `branch`, `local_repo_path`, `steps`, `commit_message`, `files`, `file_count`
+- **`gitops.deploy_skipped`** (ADR 0036 — DRY_RUN deploy approved: nothing shipped, fileset recorded for audit)
+  - payload required: `mode`, `files`, `file_count`
 - **`gitops.merge_requested`**
   - payload required: `pr_url`, `target_branch`
 - **`gitops.merged`**

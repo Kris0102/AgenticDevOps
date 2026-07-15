@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from gitops.github_api import GitHubRepoClient
@@ -6,6 +9,11 @@ from observability import Category, get_logger
 from sandbox.sandbox_tools import DockerSandboxTools, ExecResult, SandboxError
 
 _log = get_logger(Category.DEPLOYER)
+
+
+class LocalExportError(SandboxError):
+    """A local-only export (git bundle → the user's clone, ADR 0036) failed. Subclasses
+    SandboxError so the deploy node's existing gitops failure handling catches it."""
 
 
 class GitOps:
@@ -134,31 +142,17 @@ class GitOps:
         repo_cwd = f"{self.sandbox.workdir}/{repo_dir}"
         results: List[ExecResult] = []
 
+        if not self._stage_and_commit(
+            sandbox_id=sandbox_id, repo_cwd=repo_cwd, results=results,
+            commit_message=commit_message or f"AgenticDevOps run {run_id}",
+            author_name=author_name, author_email=author_email,
+        ):
+            _log.info("gitops.nothing_to_commit", branch=branch)
+            return results
+
         def _run(cmd: List[str], *, timeout_s: int = 60, allow_fail: bool = False) -> ExecResult:
-            res = self.sandbox.sandbox_exec(sandbox_id=sandbox_id, cmd=cmd, timeout_s=timeout_s, cwd=repo_cwd)
-            results.append(res)
-            if res.exit_code != 0 and not allow_fail:
-                raise SandboxError(f"{' '.join(cmd)} failed: {res.stderr or res.stdout}")
-            return res
-
-        # Commit identity — a fresh container has none, so `git commit` would fail.
-        _run(["git", "config", "user.email", author_email])
-        _run(["git", "config", "user.name", author_name])
-
-        # Stage changes, then hard-unstage deps/secrets/ephemeral synth tests even if the
-        # repo shipped no (or an incomplete) .gitignore. Deterministic backstop to the
-        # bootstrap-seeded .gitignore — see ADR 0019 + STAGE_EXCLUDES note (why not
-        # `:(exclude)` pathspecs). The reset exits 0 when nothing matches.
-        _run(["git", "add", "-A", "--", "."])
-        _run(["git", "reset", "-q", "--"] + self.STAGE_EXCLUDES)
-        message = commit_message or f"AgenticDevOps run {run_id}"
-        commit = _run(["git", "commit", "-m", message], allow_fail=True)
-        if commit.exit_code != 0:
-            blob = f"{commit.stdout} {commit.stderr}".lower()
-            if "nothing to commit" in blob:
-                _log.info("gitops.nothing_to_commit", branch=branch)
-                return results
-            raise SandboxError(f"git commit failed: {commit.stderr or commit.stdout}")
+            return self._sandbox_git(sandbox_id=sandbox_id, repo_cwd=repo_cwd, cmd=cmd,
+                                     results=results, timeout_s=timeout_s, allow_fail=allow_fail)
 
         # Authenticated remote, re-run-safe: add, or re-point if it already exists.
         authed_url = self._authenticated_url(remote_url, token)
@@ -170,8 +164,125 @@ class GitOps:
         _run(["git", "push", "auth-origin", f"HEAD:refs/heads/{branch}"])
         _log.info("gitops.pushed", branch=branch, repo_dir=repo_dir)
         return results
-    
-    
+
+    def _sandbox_git(self, *, sandbox_id: str, repo_cwd: str, cmd: List[str],
+                     results: List[ExecResult], timeout_s: int = 60,
+                     allow_fail: bool = False) -> ExecResult:
+        """One git step inside the sandbox, appended to the caller's audit list.
+        Non-zero exit raises unless `allow_fail` (caller inspects the result)."""
+        res = self.sandbox.sandbox_exec(sandbox_id=sandbox_id, cmd=cmd, timeout_s=timeout_s, cwd=repo_cwd)
+        results.append(res)
+        if res.exit_code != 0 and not allow_fail:
+            raise SandboxError(f"{' '.join(cmd)} failed: {res.stderr or res.stdout}")
+        return res
+
+    def _stage_and_commit(self, *, sandbox_id: str, repo_cwd: str, results: List[ExecResult],
+                          commit_message: str, author_name: str, author_email: str) -> bool:
+        """Stage the sandbox working tree (with the STAGE_EXCLUDES backstop) and commit
+        it. Shared by the remote push and the local bundle export — the commit both ship
+        is built identically (ADR 0036). Returns False when there was nothing to commit.
+
+        The Coder edits on a detached HEAD (base_sha), so changes are uncommitted until
+        here. Idempotent: "nothing to commit" is tolerated."""
+        def _run(cmd: List[str], *, timeout_s: int = 60, allow_fail: bool = False) -> ExecResult:
+            return self._sandbox_git(sandbox_id=sandbox_id, repo_cwd=repo_cwd, cmd=cmd,
+                                     results=results, timeout_s=timeout_s, allow_fail=allow_fail)
+
+        # Commit identity — a fresh container has none, so `git commit` would fail.
+        _run(["git", "config", "user.email", author_email])
+        _run(["git", "config", "user.name", author_name])
+
+        # Stage changes, then hard-unstage deps/secrets/ephemeral synth tests even if the
+        # repo shipped no (or an incomplete) .gitignore. Deterministic backstop to the
+        # bootstrap-seeded .gitignore — see ADR 0019 + STAGE_EXCLUDES note (why not
+        # `:(exclude)` pathspecs). The reset exits 0 when nothing matches.
+        _run(["git", "add", "-A", "--", "."])
+        _run(["git", "reset", "-q", "--"] + self.STAGE_EXCLUDES)
+        commit = _run(["git", "commit", "-m", commit_message], allow_fail=True)
+        if commit.exit_code != 0:
+            blob = f"{commit.stdout} {commit.stderr}".lower()
+            if "nothing to commit" in blob:
+                return False
+            raise SandboxError(f"git commit failed: {commit.stderr or commit.stdout}")
+        return True
+
+    def export_local_branch(
+        self,
+        *,
+        sandbox_id: str,
+        run_id: str,
+        local_repo_path: str,
+        repo_dir: str = "repo",
+        commit_message: Optional[str] = None,
+        author_name: str = "AgenticDevOps",
+        author_email: str = "agentic-devops@users.noreply.github.com",
+        branch: Optional[str] = None,
+    ) -> List[ExecResult]:
+        """LOCAL_ONLY deploy (ADR 0036): stage → commit → `git bundle` the sandbox HEAD →
+        fetch the bundle into the user's local clone as a NEW branch. No remote is ever
+        touched. Transfers the real sandbox commit (identity, message, parent) — not a
+        re-applied patch.
+
+        Host-side git runs via subprocess: the API process and the target clone share
+        the machine (self-hosted deployment model); run creation already validated the
+        path is a git repo. Fails (LocalExportError) rather than degrades — the human
+        chose this mode to receive a branch, and silently not delivering one would look
+        like success."""
+        branch = branch or self.branch_name(run_id)
+        repo_cwd = f"{self.sandbox.workdir}/{repo_dir}"
+        bundle_in_sandbox = f"{self.sandbox.workdir}/agentic-export.bundle"
+        results: List[ExecResult] = []
+
+        if not self._stage_and_commit(
+            sandbox_id=sandbox_id, repo_cwd=repo_cwd, results=results,
+            commit_message=commit_message or f"AgenticDevOps run {run_id}",
+            author_name=author_name, author_email=author_email,
+        ):
+            _log.info("gitops.nothing_to_commit", branch=branch)
+            return results
+
+        self._sandbox_git(sandbox_id=sandbox_id, repo_cwd=repo_cwd, results=results,
+                          cmd=["git", "bundle", "create", bundle_in_sandbox, "HEAD"])
+        bundle_bytes = self.sandbox.fs_read_file_bytes(sandbox_id=sandbox_id, path=bundle_in_sandbox)
+
+        def _host_git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["git", "-C", local_repo_path, *args],
+                                  capture_output=True, text=True, timeout=60)
+
+        # Re-check the target now (run creation validated it, but the deploy may land
+        # hours later): still a git repo, branch still free. `git fetch` itself refuses
+        # to move an existing/checked-out ref, so these only improve the error message.
+        if _host_git("rev-parse", "--git-dir").returncode != 0:
+            raise LocalExportError(f"'{local_repo_path}' is not a git repository (anymore?)")
+        if _host_git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+            raise LocalExportError(
+                f"branch '{branch}' already exists in '{local_repo_path}' — refusing to overwrite"
+            )
+
+        bundle_on_host = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="agentic-run-", suffix=".bundle",
+                                             delete=False) as f:
+                f.write(bundle_bytes)
+                bundle_on_host = f.name
+            fetch = _host_git("fetch", bundle_on_host, f"HEAD:refs/heads/{branch}")
+            if fetch.returncode != 0:
+                raise LocalExportError(
+                    f"git fetch of the run bundle into '{local_repo_path}' failed: "
+                    f"{fetch.stderr or fetch.stdout}"
+                )
+        finally:
+            if bundle_on_host:
+                try:
+                    os.unlink(bundle_on_host)
+                except OSError:
+                    pass
+
+        _log.info("gitops.exported_local", branch=branch, local_repo_path=local_repo_path,
+                  bundle_bytes=len(bundle_bytes))
+        return results
+
+
     def scan_secrets(self, *, sandbox_id: str, repo_dir: str = "repo") -> List[Dict[str, Any]]:
         """Content-scan the working tree for committed secrets with gitleaks BEFORE a push.
         Filename-based ignores can't catch a secret hardcoded in a source file — this does.

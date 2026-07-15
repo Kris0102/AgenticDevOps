@@ -40,24 +40,59 @@ def _test_file_path(microtask_id: str, project_type: str) -> str:
 class SynthesisPhase(TestPhase):
     name = "synthesis"
 
+    # What each harness can actually import and assert against. A target outside this set
+    # (e.g. a .tsx React component under a pytest harness) is untestable by Track B — the
+    # LLM asked to test it anyway produces reject-bait (run 27198e26: a pytest file where
+    # every test was @skip-decorated "non-Python file", which the trivial-guard rejected
+    # and the old verdict then turned into an eternal FAIL). Refuse up-front instead.
+    # vitest is the one JS runner that loads TS/TSX natively; the others get plain JS only.
+    _TESTABLE_EXTS = {
+        "python": (".py",),
+        "javascript": (".js", ".mjs", ".cjs"),
+    }
+    _VITEST_EXTS = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
+
     def __init__(self, tools: TesterTools, python_agent, js_agent, recursion_limit: int, config: RunConfig):
         self.tools = tools
         self.python_agent = python_agent
         self.js_agent = js_agent
         self.recursion_limit = recursion_limit
-        self.llm_config = config.llm.tester  # for token accounting    
+        self.llm_config = config.llm.tester  # for token accounting
 
     def should_run(self, ctx: TestContext) -> bool:
         """Synthesize ONLY when needed — otherwise the test becomes a moving target the
         coder can never converge on (it satisfies vN, we regenerate vN+1, it fails, …).
         Write the test (a) the first time, or (b) when a rewrite was explicitly requested
         (reflector fix_target="test" / HITL test-reject → rejection_note set). On a normal
-        coder-retry, reuse the existing test — it still runs as part of Track A."""
+        coder-retry, reuse the existing test — it still runs as part of Track A.
+
+        Never synthesize for a microtask whose target files the harness can't import —
+        the result can only be a skip/trivial file that the guard rejects (see
+        `_untestable_reason`); the verdict then reports 'unverified' instead."""
         if ctx.skip or ctx.project_type not in ("python", "javascript"):
+            return False
+        untestable = self._untestable_reason(ctx)
+        if untestable:
+            ctx.synth_untestable_reason = untestable
+            _log.info("tester.synth_skipped_untestable", run_id=ctx.run_id,
+                      microtask_id=ctx.microtask.microtask_id, reason=untestable)
             return False
         if ctx.rejection_note:
             return True                       # explicit rewrite requested
         return not self._test_exists(ctx)     # first time only
+
+    def _untestable_reason(self, ctx: TestContext) -> str:
+        """Non-empty when NO declared target file is importable by the detected harness."""
+        targets = ctx.microtask.target_files or []
+        if not targets:
+            return ""    # nothing declared — let synthesis try from the criteria alone
+        exts = self._TESTABLE_EXTS[ctx.project_type]
+        if ctx.project_type == "javascript" and ctx.js_test_framework == "vitest":
+            exts = self._VITEST_EXTS
+        if any(f.endswith(exts) for f in targets):
+            return ""
+        return (f"no target file is testable by the {ctx.project_type} harness "
+                f"(targets: {', '.join(targets)})")
 
     def _test_exists(self, ctx: TestContext) -> bool:
         test_file = _test_file_path(ctx.microtask.microtask_id, ctx.project_type)

@@ -72,6 +72,29 @@ class RunStatus(str, Enum):
     def __str__(self) -> str:
         return self.value
     
+class DeployMode(str, Enum):
+    """What happens after the final tester PASS (the run's deploy step). Resolved ONCE at
+    run creation (per-run RunRequest.deploy_mode › the global default derived from
+    Settings.defaults.auto_create_pr) so the rights the run-start preflight validated are
+    the rights the deploy node uses — same invariant as the old auto_create_pr flag
+    (ADR 0035). Every mode still funnels through the deploy HITL gate when configured;
+    the mode only decides what an approve DOES (ADR 0036).
+
+    DRY_RUN     — nothing leaves the sandbox; approve just ends the run.
+    PUSH        — push the run branch to the GitHub remote, no PR.
+    PR          — push the run branch and open a GitHub PR (ADR 0027).
+    LOCAL_ONLY  — no remote at all: git-bundle the sandbox commit and fetch it into the
+                  user's local clone (RunRequest.local_export_path) as the run branch.
+    """
+    DRY_RUN = "dry_run"
+    PUSH = "push"
+    PR = "pr"
+    LOCAL_ONLY = "local_only"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class EventType(str, Enum):
     RUN_CREATED = "run.created"
     RUN_STATUS_CHANGED = "run.status_changed"
@@ -87,6 +110,8 @@ class EventType(str, Enum):
     GITOPS_PUSHED = "gitops.pushed"
     GITOPS_PR_CREATED = "gitops.pr_created"
     GITOPS_SECRET_BLOCKED = "gitops.secret_blocked"
+    GITOPS_EXPORTED_LOCAL = "gitops.exported_local"
+    GITOPS_DEPLOY_SKIPPED = "gitops.deploy_skipped"
     RUN_FAILED = "run.failed"
     RUN_STALLED = "run.stalled"
     RUN_RESUMED = "run.resumed"
@@ -283,13 +308,12 @@ class RunDefaults(BaseModel):
     # Destroy the run's Docker sandbox once it reaches a TERMINAL state (completed/failed).
     # Never fires for a stalled run — its container must survive for /continue.
     teardown_on_terminal: bool = False
-    # After a successful deploy push, open a GitHub PR (pushed branch → the run's base
-    # branch) with a deterministically generated description. The DEFAULT only: a run
-    # resolves this once at creation (per-run RunRequest.auto_create_pr wins) onto
-    # BlackboardState.auto_create_pr, which is what the deploy node reads — unlike
-    # teardown_on_terminal, it is NOT re-read live, because run-start preflights PR
-    # rights against it. A PR failure never fails a run whose push
-    # succeeded.
+    # Global seed for the run's DEFAULT DeployMode when the request doesn't pick one
+    # (ADR 0036): True → PR (push + auto-PR), False → PUSH (branch only). DRY_RUN and
+    # LOCAL_ONLY are per-run intents, never a global default. A run resolves its mode
+    # once at creation onto BlackboardState.deploy_mode — unlike teardown_on_terminal
+    # this is NOT re-read live, because run-start preflights push/PR rights against it
+    # (ADR 0029/0035). A PR failure never fails a run whose push succeeded.
     auto_create_pr: bool = False
 
 
@@ -602,17 +626,16 @@ class BlackboardState(TypedDict):
     # DeployRunner. ADR 0027 / ADR 0035.
     deploy_commit_message: Optional[str]
 
-    # Dry-run: when True the graph ends at DONE without deploying (no push, no PR) —
-    # the tester/hitl DONE routers go straight to END instead of the deploy node.
-    # Requires no push access at run-start (ADR 0029). Default False.
-    skip_deploy: bool
+    # What the deploy step does (ADR 0036): dry_run | push | pr | local_only. RESOLVED
+    # ONCE at run creation (per-run RunRequest.deploy_mode › the global default), so the
+    # rights the run-start preflight validated (ADR 0029) are the rights the deploy node
+    # acts with — reading Settings live at deploy would let a mid-run settings flip
+    # attempt a push/PR the run was never checked for (ADR 0035).
+    deploy_mode: DeployMode
 
-    # Open a PR after a successful push. RESOLVED ONCE at run creation (per-run
-    # RunRequest.auto_create_pr › global Settings.defaults.auto_create_pr), so the value
-    # the run-start PR-rights preflight validated against (ADR 0029) is the same one the
-    # deploy node acts on — reading Settings live at deploy would let a mid-run settings
-    # flip try a PR the run was never checked for. ADR 0035.
-    auto_create_pr: bool
+    # LOCAL_ONLY target: absolute path of the user's local clone on the host. Validated
+    # at run creation (exists + is a git repo → 422 otherwise). None for other modes.
+    local_export_path: Optional[str]
 
 
 def _utc_now_iso() -> str:
@@ -632,8 +655,8 @@ def create_initial_blackboard_state(
     config: Optional[RunConfig] = None,
     status: RunStatus = RunStatus.NEEDS_BOOTSTRAP,
     deploy_commit_message: Optional[str] = None,
-    skip_deploy: bool = False,
-    auto_create_pr: bool = False,
+    deploy_mode: DeployMode = DeployMode.PUSH,
+    local_export_path: Optional[str] = None,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
     now = _utc_now_iso()
@@ -679,6 +702,6 @@ def create_initial_blackboard_state(
         test_resynth_count=0,
         suite_baseline_failures=None,
         deploy_commit_message=deploy_commit_message,
-        skip_deploy=skip_deploy,
-        auto_create_pr=auto_create_pr,
+        deploy_mode=deploy_mode,
+        local_export_path=local_export_path,
     )

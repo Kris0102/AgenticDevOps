@@ -2,7 +2,7 @@ from typing import Optional
 
 from pydantic import BaseModel, model_validator
 
-from orchestrator.state import HITL, Constraints, LLMConfig, Objective, Policy, Repo, Trigger
+from orchestrator.state import HITL, Constraints, DeployMode, LLMConfig, Objective, Policy, Repo, Trigger
 
 
 class RunRequest(BaseModel):
@@ -33,20 +33,29 @@ class RunRequest(BaseModel):
     # blank/None → `agent/run-<run_id>`. Never the repo's default branch — refused at run
     # creation (422) and again at deploy. .
     push_branch: Optional[str] = None
-    # Dry-run: the graph ends at DONE without deploying (no push, no PR). Relaxes the
-    # run-start push-access requirement — a token-less/read-only repo can run and
-    # propose nothing. Default False = a completing run deploys, so push access is
-    # required at run-start (ADR 0029).
-    skip_deploy: bool = False
-    # Open a PR after the deploy push, for THIS run. None → follow the global
-    # Settings.defaults.auto_create_pr. Resolved once at run creation: turning it on
-    # makes PR rights a run-start requirement (422 without them).
-    auto_create_pr: Optional[bool] = None
+    # What THIS run's deploy step does (ADR 0036): dry_run | push | pr | local_only.
+    # None → the global default (Settings.defaults.auto_create_pr: True → pr, False →
+    # push). Resolved once at run creation; the mode decides which rights the run-start
+    # preflight requires (pr → PR rights, push → push rights, dry_run/local_only →
+    # clone/read only). Every mode still passes the deploy HITL gate when configured.
+    deploy_mode: Optional[DeployMode] = None
+    # LOCAL_ONLY target: absolute path of a git clone on the host this API runs on —
+    # the run branch is fetched into it via a git bundle, no remote touched. Required
+    # exactly when deploy_mode is local_only; filesystem-validated at run creation (422).
+    local_export_path: Optional[str] = None
 
     @model_validator(mode="after")
     def _exactly_one_repo_source(self) -> "RunRequest":
         if (self.repo is None) == (self.repo_id is None):
             raise ValueError("provide exactly one of 'repo' or 'repo_id'")
+        return self
+
+    @model_validator(mode="after")
+    def _local_export_path_matches_mode(self) -> "RunRequest":
+        if self.deploy_mode == DeployMode.LOCAL_ONLY and not (self.local_export_path or "").strip():
+            raise ValueError("deploy_mode 'local_only' requires local_export_path")
+        if self.local_export_path and self.deploy_mode != DeployMode.LOCAL_ONLY:
+            raise ValueError("local_export_path is only valid with deploy_mode 'local_only'")
         return self
 
 

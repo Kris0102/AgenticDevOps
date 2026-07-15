@@ -7,11 +7,11 @@ from db.repo_store import RepoNotFoundError, RepoStore
 from Exceptions.RunExecutionError import RunExecutionError
 from gitops.commit_message import build_commit_message
 from gitops.github_api import PrCreationError
-from gitops.gitops import GitOps
+from gitops.gitops import GitOps, LocalExportError
 from gitops.pr_body import build_pr_body
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
-from orchestrator.state import BlackboardState, EventType, Repo, Sandbox
+from orchestrator.state import BlackboardState, DeployMode, EventType, Repo, Sandbox
 from sandbox.sandbox_tools import DockerSandboxTools, ExecResult, SandboxError
 from tool_gateway.Roles import Roles
 
@@ -19,9 +19,12 @@ _log = get_logger(Category.DEPLOYER)
 
 
 class DeployRunner:
-    """GitOps deployer: push the sandbox working tree to the run's push branch
-    (per-run override › the repo registry's › `agent/run-<run_id>`) and, when the run
-    resolved `auto_create_pr` on, open a PR (ADR 0027).
+    """GitOps deployer, dispatched on the run's resolved DeployMode (ADR 0036):
+    dry_run → nothing leaves the sandbox (audit event only); push/pr → the sandbox
+    working tree is pushed to the run's push branch (per-run override › the repo
+    registry's › `agent/run-<run_id>`), plus a GitHub PR for 'pr' (ADR 0027);
+    local_only → the commit is git-bundled into the user's local clone as that same
+    branch, no remote touched.
 
     Not an LLM agent, so it deliberately BYPASSES the ToolGateway — the gateway's
     job is per-agent tool allowlisting + audit, and there is no allowlist to enforce
@@ -41,6 +44,10 @@ class DeployRunner:
         if sandbox is None or repo is None:
             _log.warning("deployer.missing_state", has_sandbox=sandbox is not None, has_repo=repo is not None)
             return {}
+
+        mode: DeployMode = self.state.get("deploy_mode") or DeployMode.PUSH
+        if mode == DeployMode.DRY_RUN:
+            return self._finish_dry_run(sandbox)
 
         branch, forbidden_branch = self._resolve_push_target(repo)
         token = RepoStore.resolve_token(repo.repo_id)
@@ -82,11 +89,15 @@ class DeployRunner:
 
             fileset = self.gitops.changed_files(sandbox_id=sandbox.sandbox_id)
             # Gate-entered message › per-run message (both on deploy_commit_message,
-            # the gate overwrote the seed) › the built default. 
+            # the gate overwrote the seed) › the built default.
             commit_message = (self.state.get("deploy_commit_message") or "").strip() \
-                or self._default_commit_message(fileset) # the self._default_commit_message only fires if deploy is ungated, Otherwise the 
-                #_deploy_message_preview in service.py created the default commit message for the user to view, (Exacrtly the same string, 
+                or self._default_commit_message(fileset) # the self._default_commit_message only fires if deploy is ungated, Otherwise the
+                #_deploy_message_preview in service.py created the default commit message for the user to view, (Exacrtly the same string,
                 # Both use Gitops.build_commit_message)
+
+            if mode == DeployMode.LOCAL_ONLY:
+                return self._export_local(db_session, sandbox, branch, commit_message, fileset)
+
             try:
                 results = self.gitops.push_branch(
                     sandbox_id=sandbox.sandbox_id,
@@ -102,7 +113,7 @@ class DeployRunner:
                 raise
 
             pr_url, pr_error = self._maybe_create_pr(
-                db_session, repo, branch, token, commit_message, fileset,
+                db_session, repo, branch, token, commit_message, fileset, mode,
             )
 
             self._emit_push_event(db_session, branch, results, pr_url, fileset,
@@ -116,6 +127,57 @@ class DeployRunner:
             return {"repo": repo.model_copy(update={"pr_url": pr_url})}
         return {}
     
+    def _finish_dry_run(self, sandbox: Sandbox) -> Dict[str, Any]:
+        """DRY_RUN approve: ship nothing, but leave a durable audit event carrying the
+        would-have-shipped fileset — the run's diff artifacts stay the full record."""
+        fileset = self.gitops.changed_files(sandbox_id=sandbox.sandbox_id)
+        with db.session_scope() as db_session:
+            EventLogger.log(db_session, self.run_id, self.name, EventType.GITOPS_DEPLOY_SKIPPED, {
+                "mode": DeployMode.DRY_RUN.value,
+                "files": fileset,
+                "file_count": len(fileset),
+            })
+        _log.info("deployer.dry_run_finished", files=len(fileset))
+        return {}
+
+    def _export_local(self, db_session, sandbox: Sandbox, branch: str,
+                      commit_message: str, fileset: List[str]) -> Dict[str, Any]:
+        """LOCAL_ONLY approve: bundle the sandbox commit into the user's local clone as
+        `branch`. Failure fails the run (the human chose this mode to receive a branch —
+        pretending success while delivering nothing would be worse than failing)."""
+        local_path = self.state.get("local_export_path")
+        if not local_path:
+            # Unreachable behind the RunRequest validator; guards direct/legacy callers.
+            return RunFailureHandler.handle(
+                db_session, self.run_id, self.name, self.state,
+                RunExecutionError(phase="deploy",
+                                  reason="deploy mode is local_only but no local_export_path is set"),
+            )
+        try:
+            results = self.gitops.export_local_branch(
+                sandbox_id=sandbox.sandbox_id,
+                run_id=self.run_id,
+                local_repo_path=local_path,
+                commit_message=commit_message,
+                branch=branch,
+            )
+        except (LocalExportError, SandboxError) as error:
+            _log.error("deployer.local_export_failed", branch=branch, path=local_path, error=str(error))
+            return RunFailureHandler.handle(
+                db_session, self.run_id, self.name, self.state,
+                RunExecutionError(phase="deploy", reason=f"local export failed: {error}"),
+            )
+        EventLogger.log(db_session, self.run_id, self.name, EventType.GITOPS_EXPORTED_LOCAL, {
+            "branch": branch,
+            "local_repo_path": local_path,
+            "steps": len(results),
+            "commit_message": commit_message,
+            "files": fileset,
+            "file_count": len(fileset),
+        })
+        _log.info("deployer.exported_local", branch=branch, path=local_path, files=len(fileset))
+        return {}
+
     def _default_commit_message(self, fileset: List[str]) -> str:
         """The message the push uses when nobody supplied one. Takes the fileset the caller
         already computed rather than re-shelling into the sandbox for it.
@@ -141,16 +203,17 @@ class DeployRunner:
         token: str,
         commit_message: str,
         fileset: List[str],
+        mode: DeployMode,
     ) -> Tuple[Optional[str], Optional[str]]:
-        """(pr_url, pr_error) — open the auto-PR when this run asked for one.
+        """(pr_url, pr_error) — open the auto-PR when this run's mode is 'pr'.
         A PR failure never fails the run: the push already landed, so it degrades to
         a logged error carried in the gitops.pushed payload (ADR 0027).
 
-        Reads the run's OWN resolved flag (per-run RunRequest.auto_create_pr › the global
+        Reads the run's OWN resolved mode (per-run RunRequest.deploy_mode › the global
         default, fixed at run creation), not Settings live: run-start already preflighted
         PR rights against exactly this value, so re-reading the global here would let a
-        settings flip mid-run attempt a PR the run was never checked for"""
-        if not self.state.get("auto_create_pr"): # no PR should be created!
+        settings flip mid-run attempt a PR the run was never checked for (ADR 0035/0036)."""
+        if mode != DeployMode.PR: # no PR should be created!
             return None, None
         if not fileset:
             # Nothing shipped → "No commits between base and head" is guaranteed.

@@ -189,6 +189,9 @@ class RunResponseWithDetails(RunResponse):
     run_name: Optional[str] = None    # optional human label for the run
     base_sha: Optional[str] = None
     task_description: Optional[str] = None   # what the run was asked to do
+    # The run's label on the list (ADR 0036): 'dry_run' | 'push' | 'pr' | 'local_only'.
+    # None for runs created before the column existed.
+    deploy_mode: Optional[str] = None
     pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)
     llm_provider: Optional[str] = None        # settings hub — provider/model this run used
     llm_model: Optional[str] = None
@@ -347,3 +350,7 @@ class HitlReviewContext(BaseModel):
     # Deploy gate only: the commit message that WOULD be used (per-run value or the
     # default), so the UI can prefill its editable commit-message input. ADR 0027.
     deploy_commit_message: Optional[str] = None
+    # Deploy gate only (ADR 0036): what an approve DOES — 'dry_run' | 'push' | 'pr' |
+    # 'local_only' — plus the local clone an approve would export into (local_only).
+    deploy_mode: Optional[str] = None
+    local_export_path: Optional[str] = None

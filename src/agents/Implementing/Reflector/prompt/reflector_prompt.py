@@ -2,6 +2,25 @@ from typing import List, Optional
 
 from orchestrator.state import Microtask
 
+
+def _elide_middle(text: str, limit: int) -> str:
+    """Head+tail display cut for long prompt sections (a diff's signal lives at both ends).
+    The marker names itself a DISPLAY cut: run 27198e26 blocked because the old head-only
+    `diff[:2000] + " [truncated]"` fed the model a mid-file cut labelled "truncated", which
+    it diagnosed as "the implementation is truncated/incomplete" — on a complete, correct
+    diff — and the coder then had nothing to fix (stagnation → BLOCKED)."""
+    if not text or len(text) <= limit:
+        return text or ""
+    head = limit * 2 // 3
+    tail = limit - head
+    dropped = len(text) - head - tail
+    return (
+        f"{text[:head]}\n"
+        f"… [{dropped} chars elided from this DISPLAY only — the underlying content continues; "
+        f"this is NOT a gap or truncation in the code itself] …\n"
+        f"{text[-tail:]}"
+    )
+
 REFLECTOR_SYSTEM_PROMPT = """
 You are the Reflector agent in an autonomous DevOps pipeline.
 You run after EVERY coder+tester iteration — whether tests passed or failed — and produce a structured assessment that either advances the pipeline or sends it back for improvement.
@@ -69,7 +88,9 @@ def build_investigation_prompt(
     )
 
     if diff:
-        trimmed = diff[:4000] + (" [truncated — use get_repo_diff for full diff]" if len(diff) > 4000 else "")
+        trimmed = _elide_middle(diff, 4000)
+        if len(diff) > 4000:
+            trimmed += "\n(use get_repo_diff for the full diff)"
         sections.append(f"CODE CHANGES (git diff):\n{trimmed}")
 
     if test_output:
@@ -133,7 +154,11 @@ def build_diagnosis_prompt(
         "MICROTASK:\n"
         f"Title:        {microtask.title}\n"
         f"Description:  {microtask.description}\n"
-        f"Target files: {', '.join(microtask.target_files) or '(none declared)'}"
+        f"Target files: {', '.join(microtask.target_files) or '(none declared)'}\n\n"
+        "SCOPE: judge ONLY this microtask against ITS acceptance criteria and target files. "
+        "The plan splits work across microtasks — integration/wiring/imports assigned to a "
+        "LATER microtask (e.g. registering a new page in the app's navigation) is NOT "
+        "missing work here and must not drive an 'improve' decision."
     )
 
     # The spec the code+test must satisfy — the GROUND TRUTH for the code-vs-test call.
@@ -148,19 +173,21 @@ def build_diagnosis_prompt(
         )
 
     if diff:
-        trimmed = diff[:2000] + (" [truncated]" if len(diff) > 2000 else "")
-        sections.append(f"CODE CHANGES:\n{trimmed}")
+        sections.append(
+            "CODE CHANGES (the Coder's full git diff; a long one has its middle elided "
+            "from display only — never diagnose 'truncated/missing implementation' from "
+            "an elision marker):\n" + _elide_middle(diff, 12000)
+        )
 
     if test_output:
-        trimmed = test_output[:2000] + (" [truncated]" if len(test_output) > 2000 else "")
-        sections.append(f"TEST OUTPUT:\n{trimmed}")
+        sections.append(f"TEST OUTPUT:\n{_elide_middle(test_output, 6000)}")
 
     # The synthesized test itself — so the reflector can judge the failing ASSERTION, not
     # just the failure output. Absent for a Track-A-only failure (repo's own suite).
     if synth_test_source:
-        trimmed = synth_test_source[:2500] + (" [truncated]" if len(synth_test_source) > 2500 else "")
         sections.append(
-            "SYNTHESIZED TEST UNDER SUSPICION (system-generated; may itself be wrong):\n" + trimmed
+            "SYNTHESIZED TEST UNDER SUSPICION (system-generated; may itself be wrong):\n"
+            + _elide_middle(synth_test_source, 4000)
         )
 
     sections.append(f"INVESTIGATION / ASSESSMENT FINDINGS:\n{investigation_summary}")

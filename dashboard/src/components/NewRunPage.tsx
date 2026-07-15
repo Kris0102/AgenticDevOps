@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, LLM_AGENTS, type AppSettings, type LessonView, type LLMConfig, type RepoView } from '../api'
+import { api, LLM_AGENTS, type AppSettings, type DeployMode, type LessonView, type LLMConfig, type RepoView } from '../api'
 import { buildRunRequest } from '../defaultRunRequest'
 import { audience } from '../lessonInfo'
 import { ModelPicker } from './ModelPicker'
 
 const GATES = ['plan', 'code', 'test', 'deploy'] as const
 const AGENT_LABELS = { planner: 'Planner', reviewer: 'Reviewer', coder: 'Coder', tester: 'Tester', reflector: 'Reflector' } as const
+
+// Deploy modes in picker order (ADR 0036). Every mode still passes the deploy gate when
+// it's ticked — the mode only decides what an approve DOES.
+const DEPLOY_MODES: { mode: DeployMode; label: string; hint: string }[] = [
+  { mode: 'dry_run', label: 'dry run', hint: 'nothing leaves the sandbox — review the diff at the gate, then the run just ends. No push token needed.' },
+  { mode: 'push', label: 'push branch', hint: 'push the run branch to GitHub, no pull request.' },
+  { mode: 'pr', label: 'push + PR', hint: 'push the run branch and open a pull request — the token needs PR access (checked at start).' },
+  { mode: 'local_only', label: 'local branch', hint: 'no remote at all — the commit lands as a new branch in a git clone on this machine. No push token needed.' },
+]
 
 // The task becomes objective.description, which is injected VERBATIM (never truncated)
 // into every planner synthesis attempt and every reviewer pass — so its size is multiplied
@@ -67,9 +76,10 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
   const [taskFile, setTaskFile] = useState<string | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [pushBranch, setPushBranch] = useState('')
-  const [skipDeploy, setSkipDeploy] = useState(false)
-  // Seeded from the global Settings default, then overridable for this run only.
-  const [autoCreatePr, setAutoCreatePr] = useState(false)
+  // Seeded from the global Settings default (auto_create_pr: on → 'pr', off → 'push'),
+  // then overridable for this run only (ADR 0036).
+  const [deployMode, setDeployMode] = useState<DeployMode>('push')
+  const [localExportPath, setLocalExportPath] = useState('')
   // Per-run, per-agent model override (GH #71), seeded from the global default.
   const [llm, setLlm] = useState<LLMConfig | null>(null)
   const [showModels, setShowModels] = useState(false)
@@ -85,7 +95,7 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
     api.getSettings().then((s) => {
       setSettings(s)
       setLlm(s.selected)
-      setAutoCreatePr(s.defaults.auto_create_pr)
+      setDeployMode(s.defaults.auto_create_pr ? 'pr' : 'push')
       setGates(Object.fromEntries(GATES.map((g) => [g, s.defaults.hitl_checkpoints.includes(g)])))
     }).catch((e) => setError(String(e)))
     api.listRepos().then(setRepos).catch((e) => setError(String(e)))
@@ -184,7 +194,9 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
         baseRef: baseRef || null, 
         baseSha,
         task,
-        hitlCheckpoints: GATES.filter((g) => gates[g] && !(g === 'deploy' && skipDeploy)),
+        // Every deploy mode passes the deploy gate (ADR 0036) — even a dry-run pauses
+        // there so the human sees the final diff before the run ends.
+        hitlCheckpoints: GATES.filter((g) => gates[g]),
         runName: runName || null,  // Include the run name in the request optional
         llm,
         maxPlannerReviewerIterations: settings.defaults.max_planner_reviewer_iterations,
@@ -192,8 +204,8 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
         maxTotalTokens: settings.defaults.max_total_tokens,
         commitMessage: commitMessage.trim() || null,
         pushBranch: pushBranch.trim() || null,
-        skipDeploy,
-        autoCreatePr,
+        deployMode,
+        localExportPath: deployMode === 'local_only' ? localExportPath.trim() || null : null,
       })
       const r = await api.createRun(req)
       onRun(r.run_id)
@@ -294,33 +306,29 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
             </div>
           )}
           <label className="fld span2"><span>deploy commit message <em>optional — editable again at the deploy gate</em></span>
-            <input placeholder="built from the objective, microtasks and changed files" value={commitMessage} disabled={skipDeploy}
+            <input placeholder="built from the objective, microtasks and changed files" value={commitMessage} disabled={deployMode === 'dry_run'}
               onChange={(e) => setCommitMessage(e.target.value)} /></label>
-          <label className="fld span2"><span>push branch <em>optional — overrides this repo's registry default</em></span>
-            <input placeholder="agent/run-<run id>" value={pushBranch} disabled={skipDeploy}
+          <label className="fld span2"><span>{deployMode === 'local_only' ? 'branch name' : 'push branch'} <em>optional — overrides this repo's registry default</em></span>
+            <input placeholder="agent/run-<run id>" value={pushBranch} disabled={deployMode === 'dry_run'}
               onChange={(e) => setPushBranch(e.target.value)} /></label>
           <div className="fld span2"><span>deployment</span>
-            <label className={`chip ${skipDeploy ? 'on' : ''}`}>
-              <input type="checkbox" checked={skipDeploy} onChange={(e) => setSkipDeploy(e.target.checked)} />
-              dry-run — end at DONE, no push or PR
-            </label>
-            {/* Seeded from Settings → defaults; ticking it makes PR rights a run-start
-                requirement, so the run is refused up-front if the token can't open one. */}
-            <label className={`chip ${autoCreatePr && !skipDeploy ? 'on' : ''}`}>
-              <input type="checkbox" checked={autoCreatePr} disabled={skipDeploy}
-                onChange={(e) => setAutoCreatePr(e.target.checked)} />
-              open a pull request after the push
-            </label>
-            {skipDeploy && <em className="np-hint">no result branch is pushed; a token with push access is not required.</em>}
-            {!skipDeploy && autoCreatePr !== (settings?.defaults.auto_create_pr ?? false) && (
-              <em className="np-hint">
-                overrides the Settings default ({settings?.defaults.auto_create_pr ? 'on' : 'off'}) for this run only.
-              </em>
-            )}
-            {!skipDeploy && autoCreatePr && (
-              <em className="np-hint">the token needs pull-request access — the run is refused at start without it.</em>
-            )}
+            {/* One mode per run (ADR 0036), seeded from Settings → auto_create_pr. */}
+            <div className="gatechips">
+              {DEPLOY_MODES.map(({ mode, label }) => (
+                <label key={mode} className={`chip ${deployMode === mode ? 'on' : ''}`}>
+                  <input type="radio" name="deploy-mode" checked={deployMode === mode}
+                    onChange={() => setDeployMode(mode)} />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <em className="np-hint">{DEPLOY_MODES.find((m) => m.mode === deployMode)?.hint}</em>
           </div>
+          {deployMode === 'local_only' && (
+            <label className="fld span2"><span>local clone path <em>absolute path of a git clone on the machine the API runs on</em></span>
+              <input placeholder="/home/you/projects/your-clone" value={localExportPath}
+                onChange={(e) => setLocalExportPath(e.target.value)} /></label>
+          )}
 
           <div className="fld span2"><span>model per agent <em>overrides the default for this run</em></span>
             <button type="button" className="expert-toggle" onClick={() => setShowModels((v) => !v)}>
@@ -352,16 +360,12 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
 
           <div className="fld span2"><span>human review gates</span>
             <div className="gatechips">
-              {GATES.map((g) => {
-                // the deploy gate is meaningless on a dry-run (deploy never runs)
-                const disabled = g === 'deploy' && skipDeploy
-                return (
-                  <label key={g} className={`chip ${gates[g] && !disabled ? 'on' : ''} ${disabled ? 'chip-disabled' : ''}`}>
-                    <input type="checkbox" disabled={disabled} checked={!!gates[g] && !disabled}
-                      onChange={(e) => setGates({ ...gates, [g]: e.target.checked })} />{g}
-                  </label>
-                )
-              })}
+              {GATES.map((g) => (
+                <label key={g} className={`chip ${gates[g] ? 'on' : ''}`}>
+                  <input type="checkbox" checked={!!gates[g]}
+                    onChange={(e) => setGates({ ...gates, [g]: e.target.checked })} />{g}
+                </label>
+              ))}
             </div>
           </div>
         </div>
@@ -372,7 +376,8 @@ export function NewRunPage({ onRun, onCancel, onManageRepos, onManageLessons }: 
           <button className="ghost" onClick={onCancel}>Cancel</button>
           {/* task length is guarded here too, not just on file load — a paste reaches the
               same prompts by the same path. */}
-          <button className="primary" disabled={busy || !repoId || !task.trim() || !settings || task.length > TASK_MAX_CHARS} onClick={start}>
+          <button className="primary" disabled={busy || !repoId || !task.trim() || !settings || task.length > TASK_MAX_CHARS
+            || (deployMode === 'local_only' && !localExportPath.trim())} onClick={start}>
             {busy ? 'preflighting…' : 'Start run'}
           </button>
         </div>

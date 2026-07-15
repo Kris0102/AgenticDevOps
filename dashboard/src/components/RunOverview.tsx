@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type EventView, type MicrotaskRow, type PipelineProgress, type RunResponseWithDetails } from '../api'
+import { api, DEPLOY_MODE_LABEL, type EventView, type MicrotaskRow, type PipelineProgress, type RunResponseWithDetails } from '../api'
 
 // "What happened in this run" at a glance, built ONLY from durable tables (events +
 // microtasks) — so it's just as rich for a run finished last week as for a live one.
@@ -145,6 +145,8 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
       : 0
     const duration = isFinite(rawDuration) ? rawDuration - stalledMs : rawDuration
     const pushed = events.find((e) => e.event_type === 'gitops.pushed')
+    const exported = events.find((e) => e.event_type === 'gitops.exported_local')
+    const dryRunDone = events.some((e) => e.event_type === 'gitops.deploy_skipped')
     const toolMs = events
       .filter((e) => e.event_type === 'tool.executed')
       .reduce((acc, e) => acc + (typeof e.payload?.duration_ms === 'number' ? (e.payload.duration_ms as number) : 0), 0)
@@ -164,6 +166,9 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
       tokensUsed,
       capRaises,
       branch: pushed ? String(pushed.payload?.branch ?? '') : null,
+      exportedBranch: exported ? String(exported.payload?.branch ?? '') : null,
+      exportedPath: exported ? String(exported.payload?.local_repo_path ?? '') : null,
+      dryRunDone,
       blocked: count('gitops.secret_blocked') > 0,
     }
   }, [events])
@@ -202,7 +207,12 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
       </div>
 
       {info?.task_description && <p className="ov-task">{info.task_description}</p>}
-      {info?.llm_model && <p className="ov-model">model: <code>{info.llm_model}</code>{info.llm_provider ? ` · ${info.llm_provider}` : ''}</p>}
+      {info?.llm_model && (
+        <p className="ov-model">
+          model: <code>{info.llm_model}</code>{info.llm_provider ? ` · ${info.llm_provider}` : ''}
+          {info.deploy_mode && DEPLOY_MODE_LABEL[info.deploy_mode] ? ` · deploy: ${DEPLOY_MODE_LABEL[info.deploy_mode]}` : ''}
+        </p>
+      )}
 
       <div className="tiles">
         <div className="tile"><span className="tv">{tasks.length ? `${done}/${tasks.length}` : '—'}</span><span className="tl">microtasks done</span></div>
@@ -245,6 +255,10 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
         </div>
       ))}
       {stats.branch && <div className="pushedto">pushed to <code>{stats.branch}</code></div>}
+      {stats.exportedBranch && (
+        <div className="pushedto">exported locally as <code>{stats.exportedBranch}</code> in <code>{stats.exportedPath}</code></div>
+      )}
+      {stats.dryRunDone && <div className="pushedto">dry run — nothing was deployed</div>}
 
       {current && (
         <div className="nowworking">

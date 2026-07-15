@@ -108,11 +108,16 @@ class OrchestratorGraph:
         return HitlGate.apply(Phase.DEPLOY, {"status": RunStatus.READY_TO_DEPLOY}, state)
 
     def _deploy_push(self, state: BlackboardState) -> Dict[str, Any]:
-        """Actor: stages/commits/pushes the sandbox to a run_id-named branch. Reached
-        only after the deploy gate clears (or when no gate is configured)."""
+        """Actor: executes the run's DeployMode (push/PR, local export, or dry-run no-op,
+        ADR 0036). Reached only after the deploy gate clears (or when no gate is
+        configured). A FAILED verdict from the runner (secret block, forbidden branch,
+        local-export failure) must pass through untouched — stamping DONE over it left
+        the checkpoint DONE while the DB row said FAILED."""
         self._check_stop(state)
         _log.info("node.enter", node="deploy_push")
         result = DeployRunner(state).invoke()
+        if result.get("status") == RunStatus.FAILED:
+            return result
         return {**result, "status": RunStatus.DONE}
     
     def cleanup(self, state: BlackboardState) -> None:
@@ -190,8 +195,10 @@ class OrchestratorGraph:
         if status == RunStatus.NEEDS_CODE:
             return "coder"
         if status == RunStatus.DONE:
-            # Dry-run (ADR 0029): finish at DONE without deploying (no push, no PR).
-            return END if state.get("skip_deploy") else "deploy"
+            # EVERY deploy mode goes through the deploy node/gate — even a dry-run pauses
+            # there (when gated) so the human sees the final diff; the mode only decides
+            # what deploy_push then does (ADR 0036).
+            return "deploy"
         return END
 
     @staticmethod
@@ -225,9 +232,10 @@ class OrchestratorGraph:
             return "deploy_push"
         if status == RunStatus.DONE:
             # Distinguish CODE gate approve (→ deploy) from DEPLOY gate reject (→ END).
-            # A dry-run ends at DONE without deploying either way (ADR 0029).
+            # Dry-runs pass through the deploy gate like every mode (ADR 0036) — the
+            # deploy_push node is where the mode decides what actually happens.
             hitl_state = state.get("hitl")
-            if hitl_state and hitl_state.pending_approvals and not state.get("skip_deploy"):
+            if hitl_state and hitl_state.pending_approvals:
                 if hitl_state.pending_approvals[-1].type == Phase.CODE.value:
                     return "deploy"
         return END

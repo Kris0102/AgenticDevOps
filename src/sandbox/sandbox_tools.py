@@ -371,6 +371,29 @@ class DockerSandboxTools:
         if not ok:
             raise SandboxError("write_file failed: put_archive returned false")
 
+    def fs_read_file_bytes(self, *, sandbox_id: str, path: str) -> bytes:
+        """Pull one file out of the container as raw bytes via Docker's get_archive
+        (the SDK equivalent of `docker cp container:path -`). Binary-safe counterpart
+        to `fs_read_file` — needed for artifacts `cat` would mangle (git bundles,
+        ADR 0036). NOT gateway-exposed: only trusted host-side code (GitOps local
+        export) calls it, with paths it created itself."""
+        cid = self._require_container_id(sandbox_id)
+        container = self.client.containers.get(cid)
+        try:
+            stream, _stat = container.get_archive(path)
+        except Exception as e:
+            raise SandboxError(f"read_file_bytes failed for '{path}': {e}")
+
+        tar_stream = io.BytesIO(b"".join(stream))
+        with tarfile.open(fileobj=tar_stream, mode="r") as tar:
+            member = next((m for m in tar.getmembers() if m.isfile()), None)
+            if member is None:
+                raise SandboxError(f"read_file_bytes: '{path}' is not a regular file")
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                raise SandboxError(f"read_file_bytes: could not extract '{path}'")
+            return extracted.read()
+
     # ----------------------------
     # Internal helpers
     # ----------------------------

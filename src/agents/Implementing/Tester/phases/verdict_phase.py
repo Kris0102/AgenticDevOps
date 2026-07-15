@@ -10,10 +10,20 @@ Verdict rules (only PASSED/FAILED checks decide — SKIPPED/ERRORED do NOT):
 - unsupported project (`ctx.skip`)      → SKIPPED (nothing to verify; passes downstream)
 - any deciding check FAILED             → FAILED (a real code/build/type failure)
 - any deciding check PASSED             → PASSED
-- supported project, nothing decided    → FAILED "unverified" (do NOT silently pass; fix #2)
+- supported project, nothing decided    → SKIPPED "unverified" (passes through UN-GATED,
+  loudly labelled — see below)
 
 `lint` is advisory (excluded from gating); ERRORED (harness) checks are excluded from the
 decision so a flaky synthesized-test import can't be blamed on the code (fix #1).
+
+Why "unverified" passes through instead of failing (run 27198e26): a FAIL here routes to
+the Reflector with ZERO failing output to diagnose from — the failure is a property of the
+HARNESS (nothing could run: e.g. .tsx targets under a pytest harness), not of the code, so
+the Coder can never make it pass. The reflector then hallucinates a code defect, the coder
+changes nothing, and the stagnation detector BLOCKs the microtask — every time, on correct
+code. Passing through un-gated is the honest verdict: the reason string says exactly what
+was NOT verified, the CODE/DEPLOY gates still show the human the real diff, and Track A
+still gates whenever it produces any signal.
 """
 from __future__ import annotations
 
@@ -97,8 +107,13 @@ class VerdictPhase(TestPhase):
         elif any(c.status == CheckStatus.PASSED for c in deciding):
             status, reason = CheckStatus.PASSED, "checks passed"
         else:
-            # Supported project, but no check produced a real verdict — do NOT silently pass.
-            status, reason = CheckStatus.FAILED, self._unverified_reason(ctx, gating)
+            # Supported project, but no check produced a real verdict. NOT a failure: the
+            # coder can't fix "nothing could run", and failing it loops reflector+coder to
+            # BLOCKED on correct code (run 27198e26). SKIPPED passes downstream — loudly
+            # labelled unverified, human still reviews the diff at the gates.
+            status, reason = CheckStatus.SKIPPED, self._unverified_reason(ctx, gating)
+            _log.warning("tester.verdict_unverified", run_id=ctx.run_id,
+                         microtask_id=ctx.microtask.microtask_id, reason=reason)
 
         command = (ctx.synth_exec_check or (gating[0] if gating else None))
         return CheckResult(
@@ -144,15 +159,18 @@ class VerdictPhase(TestPhase):
 
     @staticmethod
     def _unverified_reason(ctx: TestContext, gating: List[CheckResult]) -> str:
+        tail = " — passing through UN-VERIFIED; review the diff at the gate"
+        if ctx.synth_untestable_reason:
+            return f"unverified — synthesis skipped: {ctx.synth_untestable_reason}; no other check decided{tail}"
         if ctx.synth_test_file and not ctx.guard_ok:
-            return f"unverified — synthesized tests were rejected ({ctx.guard_reason}) and no other check decided"
+            return f"unverified — synthesized tests were rejected ({ctx.guard_reason}) and no other check decided{tail}"
         if ctx.synth_exec_check and ctx.synth_exec_check.status == CheckStatus.ERRORED:
-            return "unverified — synthesized tests could not run (harness error) and no other check decided"
+            return f"unverified — synthesized tests could not run (harness error) and no other check decided{tail}"
         if (ctx.synth_exec_check and ctx.synth_exec_check.status == CheckStatus.FAILED
                 and not VerdictPhase._synth_gates(ctx)):
             return ("unverified — the synthesized test failed but is advisory (no concrete "
-                    "IOExamples to gate on) and no other check decided")
-        return "unverified — no runnable verification (no suite, no build, nothing synthesized)"
+                    f"IOExamples to gate on) and no other check decided{tail}")
+        return f"unverified — no runnable verification (no suite, no build, nothing synthesized){tail}"
 
     @staticmethod
     def _artifact_text(ctx: TestContext, status: CheckStatus, reason: str) -> str:
@@ -198,5 +216,10 @@ class VerdictPhase(TestPhase):
         if unit.status == CheckStatus.FAILED:
             return f"{scope} FAILED."
         if unit.status == CheckStatus.SKIPPED:
-            return f"{scope} skipped."
+            # "skipped" hides an important distinction the human needs at the gate:
+            # unsupported repo (nothing ever runs) vs UNVERIFIED (this change specifically
+            # could not be checked — look at the diff yourself).
+            if ctx.skip:
+                return f"{scope} skipped."
+            return f"{scope} UNVERIFIED — passed through without any check deciding."
         return f"{scope} passed."

@@ -1,4 +1,6 @@
 import asyncio
+import os
+import subprocess
 import threading
 import time
 import uuid
@@ -70,6 +72,7 @@ from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import (
     AppSettings,
     BlackboardState,
+    DeployMode,
     EventType,
     Iteration,
     LLMConfig,
@@ -269,8 +272,8 @@ class Service:
                 config=config or resolve_run_config(override=request.llm),
                 status=RunStatus.NEEDS_BOOTSTRAP,
                 deploy_commit_message=request.commit_message,
-                skip_deploy=request.skip_deploy,
-                auto_create_pr=self.resolve_auto_create_pr(request), # if the request has a per-run override, use it; else use the global default
+                deploy_mode=self.resolve_deploy_mode(request), # per-run override › global default
+                local_export_path=request.local_export_path,
             )
             bootstrap = self._bootstrap(run_id, state)
             if bootstrap.get("status") == RunStatus.FAILED:
@@ -701,6 +704,10 @@ class Service:
             # default), so the UI can prefill its editable commit-message input (ADR 0027).
             deploy_commit_message=self._deploy_message_preview(run_id, state) # If it already exists no default is created-User gave a commit message!
             if phase == Phase.DEPLOY.value  else None,
+            # What an approve DOES for this run (ADR 0036) — the gate UI states it
+            # explicitly so "Approve" is never a surprise (push vs PR vs local vs nothing).
+            deploy_mode=str(state.get("deploy_mode")) if state.get("deploy_mode") else None,
+            local_export_path=state.get("local_export_path"),
         )
 
     # `state` is `dict`, not `BlackboardState`: it comes from `graph.get_state(...).values`,
@@ -858,6 +865,7 @@ class Service:
             run_name=run.run_name,
             base_sha=run.base_sha,
             task_description=self._ensure_task(session, run),
+            deploy_mode=run.deploy_mode,
             pushed_files=pushed_files,
             llm_provider=run.llm_provider,
             llm_model=run.llm_model,
@@ -1136,45 +1144,45 @@ class Service:
         raise RepoValidationFailedError(result.kind, result.reason)
 
     @staticmethod
-    def _reject_if_unusable(result: RepoValidationResult, *, skip_deploy: bool) -> None:
-        """Run-start clone gate. A dry-run only needs read/clone, so a clone-only
-        (NO_PUSH_ACCESS) repo is fine for it; a deploying run additionally needs push
-        (enforced by `_require_run_rights`), so it must be fully `ok` here."""
-        if skip_deploy:
+    def _reject_if_unusable(result: RepoValidationResult, *, deploy_mode: DeployMode) -> None:
+        """Run-start clone gate. Dry-run and local-only never touch the remote after the
+        clone, so a clone-only (NO_PUSH_ACCESS) repo is fine for them; a remote-deploying
+        run (push/pr) additionally needs push (enforced by `_require_run_rights`), so it
+        must be fully `ok` here."""
+        if deploy_mode in (DeployMode.DRY_RUN, DeployMode.LOCAL_ONLY):
             Service._reject_if_unreadable(result)
             return
         if not result.ok:
             raise RepoValidationFailedError(result.kind, result.reason)
 
     @staticmethod
-    def _require_run_rights(result: RepoValidationResult, *, auto_create_pr: bool,
-                            skip_deploy: bool) -> None:
-        """Run-start preflight (NOT the add-repo path). A completing run auto-pushes
-        (tester DONE → deploy → deploy_push), so push access is REQUIRED — and
-        `result.ok` alone is not enough: an anonymous (no-token) request returns
+    def _require_run_rights(result: RepoValidationResult, *, deploy_mode: DeployMode) -> None:
+        """Run-start preflight (NOT the add-repo path). A completing push/pr run
+        auto-pushes (tester DONE → deploy → deploy_push), so push access is REQUIRED —
+        and `result.ok` alone is not enough: an anonymous (no-token) request returns
         `ok=True, can_push=None` (never probed), which would otherwise start a run
         guaranteed to fail at the final push. So we require `can_push is True`
         explicitly (catches both the anonymous None and a token that can't push).
         PR access is required only when the deploy flow will actually open one
-        (auto_create_pr on).
+        (deploy_mode 'pr').
 
-        A dry-run (`skip_deploy`) never reaches the deploy node, so it needs neither
-        push nor PR rights — clone/read is enough (ADR 0029)."""
-        if skip_deploy:
+        Dry-run and local-only never touch the remote after the clone, so they need
+        neither push nor PR rights — clone/read is enough (ADR 0029/0036)."""
+        if deploy_mode in (DeployMode.DRY_RUN, DeployMode.LOCAL_ONLY):
             return
         if result.can_push is not True:
             raise RepoValidationFailedError(
                 RepoValidationKind.NO_PUSH_ACCESS,
                 "a completing run pushes its result branch, but this repository has no "
                 "verified push access — add a token with push permission, or start the "
-                "run as a dry-run (skip deploy)",
+                "run as a dry-run or local-only export",
             )
-        if auto_create_pr and not result.can_create_pr:
+        if deploy_mode == DeployMode.PR and not result.can_create_pr:
             raise RepoValidationFailedError(
                 RepoValidationKind.NO_PR_ACCESS,
-                "auto-create-PR is enabled for this run but the token has no "
-                "pull-request access to this repository — turn auto-create-PR off "
-                "(on the run, or in Settings) or use a token with pull-request permission",
+                "deploy mode 'pr' needs pull-request access to this repository, but the "
+                "token has none — pick deploy mode 'push' (or change the global default "
+                "in Settings), or use a token with pull-request permission",
             )
 
     def repo_branches(self, repo_id: str) -> List[str]:
@@ -1199,16 +1207,18 @@ class Service:
         repo_id path: registry row + per-repo token, re-validated now (the snapshot is
         recorded either way so the repo list shows the red dot). Legacy raw-repo path:
         URL normalized, registry entry attached by canonical URL when one exists (so
-        its token applies), then validated the same way. Either path also checks PR
-        rights via `_require_run_rights` when auto_create_pr is on — unlike add_repo,
-        a run must not start without the rights it will actually need."""
-        auto_create_pr = self.resolve_auto_create_pr(request)
+        its token applies), then validated the same way. Either path also checks the
+        rights the resolved deploy_mode will actually need via `_require_run_rights` —
+        unlike add_repo, a run must not start without them. A local-only run's target
+        clone is filesystem-checked here too (ValueError → 422)."""
+        deploy_mode = self.resolve_deploy_mode(request)
+        self._validated_local_export_path(request.local_export_path, request.push_branch)
         if request.repo_id:
             entry = RepoStore.get(request.repo_id)            # RepoNotFoundError → 404
             result = self._github.validate_repo(entry.repo_url, RepoStore.resolve_token(entry.repo_id))
             RepoStore.record_validation(entry.repo_id, result)
-            self._reject_if_unusable(result, skip_deploy=request.skip_deploy)
-            self._require_run_rights(result, auto_create_pr=auto_create_pr, skip_deploy=request.skip_deploy)
+            self._reject_if_unusable(result, deploy_mode=deploy_mode)
+            self._require_run_rights(result, deploy_mode=deploy_mode)
             default_branch = result.default_branch or entry.default_branch
             return Repo(
                 repo_url=entry.repo_url,
@@ -1231,8 +1241,8 @@ class Service:
         result = self._github.validate_repo(canonical, RepoStore.resolve_token(repo_id))
         if repo_id:
             RepoStore.record_validation(repo_id, result)
-        self._reject_if_unusable(result, skip_deploy=request.skip_deploy)
-        self._require_run_rights(result, auto_create_pr=auto_create_pr, skip_deploy=request.skip_deploy)
+        self._reject_if_unusable(result, deploy_mode=deploy_mode)
+        self._require_run_rights(result, deploy_mode=deploy_mode)
         default_branch = result.default_branch or legacy.default_branch
         return legacy.model_copy(update={
             "repo_url": canonical,
@@ -1242,16 +1252,46 @@ class Service:
         })
 
     @staticmethod
-    def resolve_auto_create_pr(request: RunRequest) -> bool:
-        """Whether THIS run opens a PR: per-run `RunRequest.auto_create_pr` › the global
-        `Settings.defaults.auto_create_pr` (None = the caller didn't say).
+    def resolve_deploy_mode(request: RunRequest) -> DeployMode:
+        """THIS run's deploy mode: per-run `RunRequest.deploy_mode` › the global default
+        derived from `Settings.defaults.auto_create_pr` (True → PR, False → PUSH; the
+        exotic modes dry_run/local_only are per-run intents, never a global default).
 
-        One resolver, two consumers — the run-start PR-rights preflight and the
-        blackboard the deploy node reads — so the value a run was validated against is
-        the value it deploys with (ADR 0035)."""
-        if request.auto_create_pr is not None:
-            return request.auto_create_pr
-        return SettingsStore.get().defaults.auto_create_pr
+        One resolver, two consumers — the run-start rights preflight and the blackboard
+        the deploy node reads — so the mode a run was validated against is the mode it
+        deploys with (ADR 0035/0036)."""
+        if request.deploy_mode is not None:
+            return request.deploy_mode
+        return DeployMode.PR if SettingsStore.get().defaults.auto_create_pr else DeployMode.PUSH
+
+    @staticmethod
+    def _validated_local_export_path(local_export_path: Optional[str],
+                                     push_branch: Optional[str]) -> None:
+        """Filesystem preflight for a local-only run's target clone (ValueError → 422).
+        Rejecting NOW instead of at deploy is the point — the export is the last step of
+        a completed run (same rationale as `_validated_push_branch`). Checks: the path is
+        an existing git repo on this host, and an explicitly-chosen branch is neither
+        already present nor checked out there. The default `agent/run-<run_id>` branch
+        can't be checked (no run_id yet) — a fresh uuid can't collide, and
+        `GitOps.export_local_branch` re-checks everything at deploy anyway."""
+        path = (local_export_path or "").strip()
+        if not path:
+            return
+        if not os.path.isdir(path):
+            raise ValueError(f"local_export_path '{path}' is not a directory on this host")
+
+        def _git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=15)
+
+        if _git("rev-parse", "--git-dir").returncode != 0:
+            raise ValueError(f"local_export_path '{path}' is not a git repository")
+        branch = (push_branch or "").strip()
+        if branch:
+            if _git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+                raise ValueError(
+                    f"branch '{branch}' already exists in '{path}' — the local export "
+                    "creates a NEW branch, pick an unused name"
+                )
 
     @staticmethod
     def _validated_push_branch(push_branch: Optional[str], default_branch: Optional[str]) -> Optional[str]:
@@ -1306,6 +1346,7 @@ class Service:
                 base_sha=run.base_sha,
                 status=run.status or "FAILED",
                 task_description=run.task_description,
+                deploy_mode=run.deploy_mode,
                 created_at=run.created_at,
                 updated_at=run.updated_at,
             ))

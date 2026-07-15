@@ -69,6 +69,10 @@ class DeterministicChecksPhase(TestPhase):
                 self._js_typecheck(),    # tsc --noEmit, if tsconfig.json (gating)
                 self._js_lint(),         # eslint, if configured (advisory)
             ])
+        # Target-scoped JS/TS SUBPROJECT checks — root detection is blind to e.g. a
+        # dashboard/ inside a Python repo, which left .tsx microtasks with zero Track A
+        # signal (run 27198e26: verdict fell through to 'unverified' every attempt).
+        ctx.track_a_checks += self._subproject_js_checks(ctx)
         ctx.suite_current_failures = self._current_suite_failures(ctx)
         for c in ctx.track_a_checks:
             _log.info("tester.track_a.check", run_id=ctx.run_id, label=c.label, status=str(c.status))
@@ -143,10 +147,10 @@ class DeterministicChecksPhase(TestPhase):
         """True if the literal `token` appears in `path` (exit 0). Missing file → False."""
         return int(self.tools.run(["grep", "-qF", "--", token, path], timeout_s=10).get("exit_code", 1)) == 0
 
-    def _npm_has_script(self, name: str) -> bool:
+    def _npm_has_script(self, name: str, pkg_dir: str = ".") -> bool:
         probe = self.tools.run(
             ["node", "-e",
-             f"const s=(require('./package.json').scripts||{{}}).{name}||'';"
+             f"const s=(require('./{pkg_dir}/package.json').scripts||{{}}).{name}||'';"
              f"process.exit(s && !/no test specified/.test(s) ? 0 : 1)"],
             timeout_s=15)
         return int(probe.get("exit_code", 1)) == 0
@@ -286,3 +290,72 @@ class DeterministicChecksPhase(TestPhase):
             self.tools.run(["apt-get", "install", "-y", "--no-install-recommends", "nodejs", "npm"], timeout_s=120)
         self.tools.run(["npm", "install"], timeout_s=180)
         self._mark_deps_cached()
+
+    # ------------------------------------------------ JS/TS subproject checks (target-scoped)
+    # Root detection sees one project type; a JS app nested in a Python repo (this repo's
+    # own dashboard/) got NO deterministic check at all for its microtasks. These run the
+    # subproject's own build (or tsc) for the directories the CURRENT microtask touches —
+    # scoped to targets so an unrelated Python microtask never pays the npm cost.
+    _JS_EXTS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
+
+    def _subproject_js_checks(self, ctx: TestContext) -> List[CheckResult]:
+        dirs = sorted({
+            d for f in (ctx.microtask.target_files or [])
+            if f.endswith(self._JS_EXTS)
+            for d in [self._nearest_pkg_dir(self._repo_relative(f))]
+            if d and d != "."
+        })
+        checks: List[CheckResult] = []
+        for d in dirs:
+            self._install_subproject_deps(d)
+            check = self._subproject_build_check(d)
+            if check:
+                checks.append(check)
+        return checks
+
+    @staticmethod
+    def _repo_relative(path: str) -> str:
+        """Planner/Coder paths are sometimes absolute sandbox paths — normalize to
+        repo-root-relative so the ancestor walk works."""
+        for prefix in ("/workspace/repo/", "workspace/repo/"):
+            if path.startswith(prefix):
+                return path[len(prefix):]
+        return path.lstrip("/")
+
+    def _nearest_pkg_dir(self, path: str) -> Optional[str]:
+        """Closest ancestor directory of `path` (repo-relative) holding a package.json.
+        Root ('.') is excluded by the caller — the root branches already cover it."""
+        parts = path.split("/")[:-1]
+        while parts:
+            d = "/".join(parts)
+            probe = self.tools.run(["find", f"{d}/package.json", "-maxdepth", "0"], timeout_s=10)
+            if probe.get("stdout", "").strip():
+                return d
+            parts.pop()
+        return None
+
+    def _install_subproject_deps(self, d: str) -> None:
+        """`npm install` once per subproject per run — node_modules survives in the
+        run-lived sandbox across microtasks/retries, so presence is the cache marker."""
+        probe = self.tools.run(["find", f"{d}/node_modules", "-maxdepth", "0"], timeout_s=10)
+        if probe.get("stdout", "").strip():
+            return
+        _log.info("tester.subproject_deps_install", dir=d)
+        self.tools.run(["npm", "--prefix", d, "install"], timeout_s=600)
+
+    def _subproject_build_check(self, d: str) -> Optional[CheckResult]:
+        """The subproject's own build script (gating `build` — usually tsc+bundler, the
+        strongest signal it defines), else bare tsc when only a tsconfig exists. NB the
+        label may coexist with a root `build` check on a mixed-target microtask — the
+        verdict gates on the LIST, so both count; only the per-label artifact map keeps
+        the last one."""
+        if self._npm_has_script("build", pkg_dir=d):
+            cmd = ["npm", "--prefix", d, "run", "build"]
+            return make_check("build", cmd, self.tools.run(cmd, timeout_s=600))
+        if self.tools.run(["find", f"{d}/tsconfig.json", "-maxdepth", "0"],
+                          timeout_s=10).get("stdout", "").strip():
+            cmd = ["npx", "--yes", "tsc", "--noEmit", "-p", d]
+            return make_check("typecheck", cmd, self.tools.run(cmd, timeout_s=300))
+        _log.info("tester.subproject_no_check", dir=d,
+                  reason="no build script and no tsconfig.json — nothing deterministic to run")
+        return None

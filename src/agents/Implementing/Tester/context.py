@@ -42,6 +42,10 @@ class TestContext:
     # ---- Track B: synthesized tests (Synthesis/Guard/Execute phases) ----
     synth_test_file: Optional[str] = None
     synth_test_content: str = ""
+    # Set when synthesis was SKIPPED because no target file is testable by the detected
+    # harness (e.g. .tsx targets under a pytest harness) — flows into the unverified
+    # verdict reason so the dashboard says WHY nothing ran (run 27198e26).
+    synth_untestable_reason: str = ""
     guard_ok: bool = True
     guard_reason: str = ""
     synth_exec_check: Optional[CheckResult] = None

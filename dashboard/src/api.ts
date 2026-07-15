@@ -40,6 +40,13 @@ export interface RunResponse {
   progress?: PipelineProgress | null   // iteration/microtask-loop progress (ADR 0028)
 }
 
+// What the run's deploy step does (ADR 0036) — resolved once at run creation.
+export type DeployMode = 'dry_run' | 'push' | 'pr' | 'local_only'
+// Short display label per mode — the run-list chip and detail line share it.
+export const DEPLOY_MODE_LABEL: Record<DeployMode, string> = {
+  dry_run: 'dry run', push: 'push', pr: 'PR', local_only: 'local',
+}
+
 // A run row for the previous-runs home list (GET /runs). Extra fields are the box's
 // labels + sort keys. Mirrors responses.RunResponseWithDetails.
 export interface RunResponseWithDetails extends RunResponse {
@@ -48,6 +55,7 @@ export interface RunResponseWithDetails extends RunResponse {
   run_name?: string | null
   base_sha?: string | null
   task_description?: string | null   // what the run was asked to do
+  deploy_mode?: DeployMode | null    // the run's deploy label; null for pre-ADR-0036 runs
   pushed_files?: number | null       // files shipped by the deploy push
   llm_provider?: string | null       // provider/model this run used
   llm_model?: string | null
@@ -306,6 +314,9 @@ export interface HitlReviewContext {
   diff?: DiffData | null
   // Deploy gate only: the commit message the push would use — prefill for the editable input.
   deploy_commit_message?: string | null
+  // Deploy gate only (ADR 0036): what an approve DOES, so the gate can say it explicitly.
+  deploy_mode?: DeployMode | null
+  local_export_path?: string | null
 }
 
 export interface EventView {

@@ -29,6 +29,9 @@ class Run(Base):
     # Nullable: pre-existing runs are lazily backfilled from their checkpoint on first
     # read (Service._ensure_task).
     task_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The run's deploy label (ADR 0036, DeployMode value: dry_run/push/pr/local_only) —
+    # shown on the dashboard run list. Nullable: runs from before the column existed.
+    deploy_mode: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Which provider/model this run executed under (settings hub) — shown on the dashboard.
     llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     llm_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)

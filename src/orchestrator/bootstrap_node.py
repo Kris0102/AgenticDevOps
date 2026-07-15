@@ -113,6 +113,7 @@ class BootStrapper:
         config = self.state.get("config")   # settings hub — record the provider/model used
         constraints = self.state.get("constraints")
         run_name = self.state.get("run_name")  # New field for run name
+        deploy_mode = self.state.get("deploy_mode")  # the run's deploy label (ADR 0036)
 
         with db.session_scope() as session:
             existing = session.get(Run, run_id)
@@ -128,6 +129,7 @@ class BootStrapper:
                     base_sha=repo.base_sha,
                     status=status.value,
                     task_description=task,
+                    deploy_mode=str(deploy_mode) if deploy_mode else None,
                     # Denormalized headline model for the run list — the Coder is the
                     # headline agent (code gen). Per-agent models (GH #71) live on the
                     # checkpointed RunConfig; this column is display-only.

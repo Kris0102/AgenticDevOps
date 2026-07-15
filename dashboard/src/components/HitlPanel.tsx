@@ -59,7 +59,21 @@ export function HitlPanel({ runId, phase }: { runId: string; phase: string }) {
       {err && <div className="error">{err}</div>}
 
       <div className="decide">
-        {phase === 'deploy' && (
+        {/* What an approve DOES depends on the run's deploy mode (ADR 0036) — say it
+            explicitly so "Approve" is never a surprise. */}
+        {phase === 'deploy' && ctx?.deploy_mode === 'dry_run' && (
+          <p className="prompt">dry run — approving ends the run; nothing is pushed or exported.</p>
+        )}
+        {phase === 'deploy' && ctx?.deploy_mode === 'local_only' && (
+          <p className="prompt">local export — approving creates a new branch in <code>{ctx.local_export_path}</code> on this machine; no remote is touched.</p>
+        )}
+        {phase === 'deploy' && ctx?.deploy_mode === 'pr' && (
+          <p className="prompt">approving pushes the run branch to GitHub and opens a pull request.</p>
+        )}
+        {phase === 'deploy' && ctx?.deploy_mode === 'push' && (
+          <p className="prompt">approving pushes the run branch to GitHub (no pull request).</p>
+        )}
+        {phase === 'deploy' && ctx?.deploy_mode !== 'dry_run' && (
           <label className="commit-message">
             Commit message for the push
             {/* Prefilled with the real default the push would use (subject + objective +

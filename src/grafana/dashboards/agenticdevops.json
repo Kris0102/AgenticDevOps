@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 5,
   "refresh": "10s",
   "time": {
     "from": "now-30d",
@@ -274,6 +274,996 @@
       ]
     },
     {
+      "id": 50,
+      "type": "row",
+      "title": "Demo Headline \u2014 Autonomy, Safety & Delivery",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "panels": []
+    },
+    {
+      "id": 51,
+      "type": "stat",
+      "title": "Autonomy Ratio",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round((SELECT count(*) FROM events WHERE event_type='tool.executed')::numeric / NULLIF((SELECT count(*) FROM events WHERE event_type='hitl.decided'),0),1) AS actions_per_decision;",
+          "format": "table"
+        }
+      ],
+      "description": "Audited agent actions per human gate decision \u2014 the leverage multiplier. Every one of those actions went through the Tool Gateway and is in the audit trail."
+    },
+    {
+      "id": 52,
+      "type": "stat",
+      "title": "Gateway Denials",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 5
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(*) AS denials FROM events WHERE event_type='tool.denied';",
+          "format": "table"
+        }
+      ],
+      "description": "Tool calls refused by the deny-by-default Tool Gateway (per-role allowlists). 0 = every agent action stayed inside policy; any hit is a logged, blocked escape attempt."
+    },
+    {
+      "id": 53,
+      "type": "stat",
+      "title": "Secret Pushes Blocked",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 5
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(*) AS blocked FROM events WHERE event_type='gitops.secret_blocked';",
+          "format": "table"
+        }
+      ],
+      "description": "Deploys hard-blocked by the gitleaks pre-push scan (ADR 0019). A secret never leaves the sandbox."
+    },
+    {
+      "id": 54,
+      "type": "stat",
+      "title": "Audit Events Logged",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 5
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(*) AS events FROM events;",
+          "format": "table"
+        }
+      ],
+      "description": "Every decision, tool call and state change \u2014 the full episodic audit trail in Postgres."
+    },
+    {
+      "id": 55,
+      "type": "stat",
+      "title": "Branches Pushed",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 9
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(DISTINCT run_id) AS pushed FROM events WHERE event_type='gitops.pushed';",
+          "format": "table"
+        }
+      ],
+      "description": "Runs that delivered a real branch to GitHub."
+    },
+    {
+      "id": 56,
+      "type": "stat",
+      "title": "PRs Opened",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 9
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(DISTINCT run_id) AS prs FROM events WHERE event_type='gitops.pr_created';",
+          "format": "table"
+        }
+      ],
+      "description": "Real GitHub pull requests opened by the deploy node (ADR 0027)."
+    },
+    {
+      "id": 57,
+      "type": "stat",
+      "title": "Median Run Duration",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 9
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (updated_at - created_at)))::numeric, 0) AS p50_seconds FROM runs WHERE status IN ('DONE','FAILED') AND ('${include_failed}' = 'yes' OR status <> 'FAILED');",
+          "format": "table"
+        }
+      ],
+      "description": "p50 wall-clock of terminal runs \u2014 more honest than the mean, which one long run can skew."
+    },
+    {
+      "id": 58,
+      "type": "stat",
+      "title": "Avg Human Gate Wait",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 9
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "WITH gates AS (SELECT run_id, ts, event_type, lead(ts) OVER (PARTITION BY run_id ORDER BY seq) AS next_ts, lead(event_type) OVER (PARTITION BY run_id ORDER BY seq) AS next_type FROM events WHERE event_type IN ('hitl.requested','hitl.decided')) SELECT round(avg(EXTRACT(EPOCH FROM (next_ts - ts)))::numeric, 0) AS avg_wait_s FROM gates WHERE event_type='hitl.requested' AND next_type='hitl.decided';",
+          "format": "table"
+        }
+      ],
+      "description": "Time runs sat suspended at a HITL gate waiting for a human (hitl.requested \u2192 hitl.decided). The agents' speed vs the human's latency."
+    },
+    {
+      "id": 61,
+      "type": "stat",
+      "title": "Code Shipped (final diff per run)",
+      "description": "Lines added / removed in each run's FINAL workspace diff, summed across runs. Uses only the latest diff per run \u2014 intermediate attempt diffs are cumulative snapshots and would double-count.",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lines_removed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (run_id) run_id, content_text FROM artifacts WHERE kind='diff' AND content_text IS NOT NULL ORDER BY run_id, created_at DESC) SELECT sum((SELECT count(*) FROM regexp_split_to_table(content_text, E'\\n') l WHERE l LIKE '+%' AND l NOT LIKE '+++%'))::int AS lines_added, sum((SELECT count(*) FROM regexp_split_to_table(content_text, E'\\n') l WHERE l LIKE '-%' AND l NOT LIKE '---%'))::int AS lines_removed FROM latest;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "type": "stat",
+      "title": "Tests Authored by the Agent / Checks Executed",
+      "description": "tests_authored = test files the Tester SYNTHESIZED from the Planner's acceptance criteria (independent of the Coder \u2014 it cannot grade its own homework). check_executions = deterministic check runs recorded (unit/integration/build).",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tests_authored"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT (SELECT count(*) FROM artifacts WHERE kind='test-synth') AS tests_authored, (SELECT count(*) FROM artifacts WHERE kind LIKE 'test-%' AND kind <> 'test-synth') AS check_executions;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "type": "barchart",
+      "title": "Run Delivery Funnel",
+      "description": "How far runs get: started \u2192 plan approved \u2192 first green microtask \u2192 DONE \u2192 branch pushed \u2192 PR opened. Where the funnel narrows is where the system loses runs.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "continuous-GrYlRd"
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "format": "table",
+          "rawSql": "SELECT '1. Run started' AS stage, count(*)::int AS runs FROM runs UNION ALL SELECT '2. Plan approved', count(DISTINCT run_id)::int FROM events WHERE event_type='plan.reviewed' AND payload_json->>'decision'='approve' UNION ALL SELECT '3. First microtask green', count(DISTINCT run_id)::int FROM events WHERE event_type='microtask.completed' UNION ALL SELECT '4. Run DONE', count(*)::int FROM runs WHERE status='DONE' UNION ALL SELECT '5. Branch pushed', count(DISTINCT run_id)::int FROM events WHERE event_type='gitops.pushed' UNION ALL SELECT '6. PR opened', count(DISTINCT run_id)::int FROM events WHERE event_type='gitops.pr_created' ORDER BY 1;"
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "type": "barchart",
+      "title": "Where the Time Goes (avg per run)",
+      "description": "Wall-clock split across the pipeline, derived from the audit trail: planning+review (run start \u2192 first coder action), the code/test/reflect loop, and the deploy push.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "continuous-BlPu"
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "format": "table",
+          "rawSql": "WITH per_run AS (SELECT run_id, min(ts) AS started, min(ts) FILTER (WHERE actor='coder') AS first_code, max(ts) FILTER (WHERE actor IN ('coder','tester','reflector')) AS last_exec, max(ts) FILTER (WHERE event_type='gitops.pushed') AS pushed FROM events GROUP BY run_id) SELECT phase, avg_seconds FROM (SELECT 1 AS ord, '1. Plan + review' AS phase, round(avg(EXTRACT(EPOCH FROM (first_code - started))))::int AS avg_seconds FROM per_run WHERE first_code IS NOT NULL UNION ALL SELECT 2, '2. Code / test / reflect', round(avg(EXTRACT(EPOCH FROM (last_exec - first_code))))::int FROM per_run WHERE last_exec IS NOT NULL AND first_code IS NOT NULL UNION ALL SELECT 3, '3. Deploy push', round(avg(EXTRACT(EPOCH FROM (pushed - last_exec))))::int FROM per_run WHERE pushed IS NOT NULL AND last_exec IS NOT NULL) t ORDER BY ord;"
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "type": "row",
+      "title": "Learning & Recovery \u2014 does the system get better?",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "panels": []
+    },
+    {
+      "id": 71,
+      "type": "stat",
+      "title": "Lessons Learned / Operator Rules",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "description": "Cross-run failure memory (ADR 0018): lessons written by agents only on CONFIRMED outcomes (reviewer approve / tester pass), plus rules typed by a human in the dashboard (ADR 0034 \u2014 always injected).",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT (SELECT count(*) FROM lessons WHERE agent <> 'human') AS lessons_learned, (SELECT count(*) FROM lessons WHERE agent = 'human') AS operator_rules;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "type": "stat",
+      "title": "Agent Lessons per Run",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 26
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "decimals": 2
+        }
+      },
+      "description": "How often a run distills a durable lesson. Low is healthy \u2014 lessons are written only when a failure taught something confirmed, not on every run.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT round((SELECT count(*) FROM lessons WHERE agent <> 'human')::numeric / NULLIF((SELECT count(*) FROM runs),0),2) AS lessons_per_run;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "type": "stat",
+      "title": "Runs Started With Repo Memory",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        }
+      },
+      "description": "Runs whose repo already had lessons in memory at start \u2014 these get the lesson block injected into planner/reviewer/coder/reflector prompts.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "SELECT count(*) FILTER (WHERE had) AS with_memory, count(*) AS total_runs FROM (SELECT EXISTS (SELECT 1 FROM lessons l WHERE l.repo_url = r.repo_url AND l.created_at < r.created_at) AS had FROM runs r) t;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "type": "stat",
+      "title": "Recovery Rate After Stall",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 30
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "description": "Of runs that crashed or hit the token budget (run.stalled), the % that were continued from their checkpoint and still finished DONE. Nothing paid-for is thrown away.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "text": {
+          "titleSize": 14
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "WITH stalled AS (SELECT DISTINCT run_id FROM events WHERE event_type = 'run.stalled') SELECT round(100.0 * count(*) FILTER (WHERE r.status = 'DONE') / NULLIF(count(*), 0), 1) AS recovery_pct FROM stalled s JOIN runs r ON r.run_id = s.run_id;",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "type": "table",
+      "title": "Runs With vs Without Repo Memory",
+      "description": "The lesson-effectiveness proxy: cohort = whether the repo had lessons BEFORE the run started (that is when they get injected into prompts). Correlational, not causal \u2014 later runs can differ in task difficulty \u2014 but the direction across success rate, attempts and first-pass yield is consistent. Proper per-retrieval tracking is a known open item (ADR 0018).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "agenticdevops-pg"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 60
+                    },
+                    {
+                      "color": "green",
+                      "value": 85
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "first_pass_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "agenticdevops-pg"
+          },
+          "rawSql": "WITH flagged AS (SELECT r.run_id, r.status, EXISTS (SELECT 1 FROM lessons l WHERE l.repo_url = r.repo_url AND l.created_at < r.created_at) AS had_lessons FROM runs r), mt AS (SELECT f.had_lessons, count(*) AS microtasks, round(avg(m.attempts),2) AS avg_attempts, round(100.0*count(*) FILTER (WHERE m.attempts<=1 AND m.status IN ('COMPLETED','DONE'))/NULLIF(count(*) FILTER (WHERE m.status IN ('COMPLETED','DONE')),0),1) AS first_pass_pct FROM microtasks m JOIN flagged f USING (run_id) GROUP BY 1), rn AS (SELECT had_lessons, count(*) AS runs, round(100.0*count(*) FILTER (WHERE status='DONE')/NULLIF(count(*),0),1) AS success_pct FROM flagged GROUP BY 1) SELECT CASE WHEN rn.had_lessons THEN '2. With repo memory (lessons)' ELSE '1. First contact (no lessons)' END AS cohort, rn.runs, rn.success_pct, mt.avg_attempts, mt.first_pass_pct FROM rn JOIN mt USING (had_lessons) ORDER BY 1;",
+          "format": "table"
+        }
+      ]
+    },
+    {
       "id": 30,
       "type": "row",
       "title": "MAS Quality & Autonomy",
@@ -282,7 +1272,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 4
+        "y": 34
       },
       "panels": []
     },
@@ -298,7 +1288,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 5
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -364,7 +1354,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 5
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -430,7 +1420,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 5
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -496,7 +1486,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 5
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -562,7 +1552,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 9
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -621,7 +1611,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 9
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -680,7 +1670,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 9
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -738,7 +1728,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 9
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -804,7 +1794,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 43
       },
       "fieldConfig": {
         "defaults": {
@@ -883,7 +1873,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 43
       },
       "fieldConfig": {
         "defaults": {
@@ -994,7 +1984,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 21
+        "y": 51
       },
       "datasource": {
         "type": "postgres",
@@ -1192,7 +2182,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 21
+        "y": 51
       },
       "datasource": {
         "type": "postgres",
@@ -1240,7 +2230,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 21
+        "y": 51
       },
       "datasource": {
         "type": "postgres",
@@ -1438,7 +2428,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 59
       },
       "datasource": {
         "type": "postgres",
@@ -1479,7 +2469,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 37
+        "y": 67
       },
       "datasource": {
         "type": "postgres",
@@ -1602,7 +2592,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 46
+        "y": 76
       },
       "datasource": {
         "type": "postgres",
@@ -1666,7 +2656,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 46
+        "y": 76
       },
       "datasource": {
         "type": "postgres",
@@ -1728,7 +2718,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 46
+        "y": 76
       },
       "datasource": {
         "type": "postgres",
@@ -1778,7 +2768,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 46
+        "y": 76
       },
       "datasource": {
         "type": "postgres",
@@ -1822,7 +2812,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 50
+        "y": 80
       },
       "datasource": {
         "type": "postgres",
@@ -1904,7 +2894,7 @@
         "h": 8,
         "w": 16,
         "x": 8,
-        "y": 50
+        "y": 80
       },
       "datasource": {
         "type": "postgres",
@@ -1951,7 +2941,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 88
       },
       "datasource": {
         "type": "postgres",
@@ -1996,7 +2986,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 88
       },
       "datasource": {
         "type": "postgres",
@@ -2040,7 +3030,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 97
       },
       "datasource": {
         "type": "postgres",
@@ -2097,7 +3087,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 105
       },
       "datasource": {
         "type": "postgres",
@@ -2167,7 +3157,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 75
+        "y": 105
       },
       "datasource": {
         "type": "postgres",
@@ -2196,7 +3186,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 83
+        "y": 113
       },
       "panels": []
     },
@@ -2209,7 +3199,7 @@
         "h": 4,
         "w": 12,
         "x": 0,
-        "y": 84
+        "y": 114
       },
       "datasource": {
         "type": "postgres",
@@ -2255,7 +3245,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 84
+        "y": 114
       },
       "datasource": {
         "type": "postgres",
@@ -2301,7 +3291,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 88
+        "y": 118
       },
       "datasource": {
         "type": "postgres",
@@ -2351,7 +3341,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 88
+        "y": 118
       },
       "datasource": {
         "type": "postgres",
@@ -2400,7 +3390,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 96
+        "y": 126
       },
       "datasource": {
         "type": "postgres",
@@ -2467,7 +3457,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 96
+        "y": 126
       },
       "datasource": {
         "type": "postgres",

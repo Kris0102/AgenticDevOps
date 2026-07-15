@@ -85,6 +85,8 @@ scripts/
   snapshot_db.sh                       # Dump DB to scripts/snapshots/<label>.sql
   load_snapshot.sh                     # Restore DB from snapshot
 docs/
+  ARCHITECTURE.md                # AS-BUILT architecture (implemented state, demo/reference doc — start here)
+  MAS_PATTERNS.md                # Catalogue of every MAS pattern + design choice used (what/where/why/cost)
   ARCHITECTURE_preview.md        # Full system spec (state machine, data flow)
   Design_preview.md              # Agent patterns and cognitive architecture
   MCP_AND_TOOLS.md               # Tool Gateway + MCP contracts

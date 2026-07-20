@@ -18,11 +18,19 @@ REPO_ROOT = "/workspace/repo"
 
 
 def to_sandbox_path(path: str) -> str:
-    """Normalize a repo-relative path (how the Planner declares target_files)
-    to the absolute sandbox path fs.read_file/fs.write_file require."""
-    if path.startswith("/"):
-        return path
-    return f"{REPO_ROOT}/{path}"
+    """Normalize a path to its absolute location under the sandbox repo root.
+
+    Handles the repo-relative form the Planner declares AND re-roots a malformed absolute
+    path that dropped the `repo` segment (`/workspace/astropy/...` → `/workspace/repo/...`) —
+    the coder must never read/write outside the git tree (a write there is invisible to
+    `git diff`; run b6487b43). Backstop to the planner-side normalisation in quality.py, for
+    any path the coder itself constructs at runtime."""
+    p = path.strip()
+    if p == REPO_ROOT or p.startswith(REPO_ROOT + "/"):
+        return p
+    if p.startswith("/workspace/"):
+        return f"{REPO_ROOT}/{p[len('/workspace/'):]}"
+    return f"{REPO_ROOT}/{p.lstrip('/')}"
 
 
 # Like PlannerTools, this can later become an MCP tool implementation exposing a

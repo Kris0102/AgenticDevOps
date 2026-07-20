@@ -70,7 +70,9 @@ skills*.json
 demo*
 .agentic_tests/
 .settings_key
-logs/
+/docs/src-guide
+/logs
 
 # Full DB snapshots incl. secrets (scripts/snapshot_full.sh) — never commit
 scripts/snapshot_secrets/
+code-docs/

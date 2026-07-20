@@ -27,7 +27,6 @@ from api.service.service import (
     InvalidTokenBudgetError,
     ProviderUnreachableError,
     RepoValidationFailedError,
-    RunActiveError,
     RunAlreadyExistsError,
     RunAlreadyTerminalError,
     RunNotDeletableError,

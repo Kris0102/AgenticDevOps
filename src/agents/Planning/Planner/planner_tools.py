@@ -24,10 +24,11 @@ class PlannerTools:
             func=self.execute_in_sandbox,
             name="execute_in_sandbox",
             description=(
-                "Run an allowlisted command inside the Docker sandbox at /workspace. "
+                "Run an allowlisted command inside the Docker sandbox. The repo is at "
+                "/workspace/repo. "
                 "Pass a single argv string with no shell, pipes, or redirects. "
                 "Allowed bases: " + ", ".join(get_permissions(Roles.PLANNER).allowed_commands) + ". "
-                "Examples: 'ls -la /workspace', 'grep -rn Planner src/'"
+                "Examples: 'ls -la /workspace/repo', 'grep -rn Planner /workspace/repo/src'"
             ),
         )
         
@@ -49,8 +50,16 @@ class PlannerTools:
         if not self.gateway:
             raise RuntimeError("Sandbox tools are not available. Docker initialization failed.")
     
-        cmd_list = shlex.split(command)
-        
+        # The command is LLM-authored — an unbalanced quote makes shlex raise
+        # ("No closing quotation"). Catch it and hand the error back as an observation so
+        # the model re-issues the command with fixed quoting, instead of the ValueError
+        # propagating out and killing the whole investigation (→ run FAILED, empty patch).
+        try:
+            cmd_list = shlex.split(command)
+        except ValueError as exc:
+            return (f"Command parse error: {exc}. Re-issue the command with balanced "
+                    f"quotes (or avoid quotes entirely).")
+
         result = self.gateway.execute_tool(
             actor_role=self.role, 
             tool_name=Tools.SANDBOX_RUN, 

@@ -298,6 +298,7 @@ class Service:
         process that can't assume the sandbox survived — see ADR 0005. Not our case.)"""
         bind_run(run_id)
         try:
+            self._reject_if_terminal(run_id)   # never drive a finished run (defense in depth)
             if not self._has_pending_interrupt(run_id):
                 raise HitlNotPausedError(f"run {run_id} is not paused at a HITL gate")
             log_bus.reset(run_id)   # paused run is producing again — reopen its live stream
@@ -556,6 +557,7 @@ class Service:
         that simply stopped being driven."""
         bind_run(run_id)
         try:
+            self._reject_if_terminal(run_id)   # a terminal run must never be re-driven (ADR 0033)
             log_bus.reset(run_id)   # stalled run is producing again — reopen its live stream
             # A stalled run's work lives in its sandbox container. If the container is gone
             # (host restart, `docker rm`, prune), the in-progress checkout/edits can't be
@@ -586,6 +588,17 @@ class Service:
         finally:
             self.mark_inactive(run_id)
             clear_context()
+
+    # A run that already finished must never be re-driven. The HTTP routes pre-check this,
+    # but these Service methods are also called directly (benchmark adapter, scripts, tests)
+    # where no route guard runs — and a re-drive of a finished run against a torn-down sandbox
+    # is exactly what produced the zombie DONE→deploy cascade on run b6487b43.
+    _TERMINAL_RUN_STATES = (RunState.COMPLETED, RunState.FAILED, RunState.STOPPED)
+
+    def _reject_if_terminal(self, run_id: str) -> None:
+        state = self._response(run_id).run_state
+        if state in self._TERMINAL_RUN_STATES:
+            raise RunAlreadyTerminalError(f"run {run_id} is already {state.value} — cannot re-drive it")
 
     def status(self, run_id: str) -> RunResponse:
         """Current lifecycle snapshot for the run — the dashboard's poll target."""

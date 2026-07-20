@@ -11,9 +11,24 @@ from tool_gateway.gateway import ToolGateway
 from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 from sandbox.Tools import Tools
+from sandbox.sandbox_tools import SandboxError
 
 # The repo is always cloned to <workdir>/repo by the bootstrapper.
 REPO_ROOT = "/workspace/repo"
+
+# Gateway-error signatures that mean the sandbox itself is GONE (registry row / container
+# missing), not that a command merely failed. These must NOT be swallowed as an empty
+# command result — a dead sandbox that reads as "no output" makes detection find nothing →
+# no Track A checks → the verdict falls through to "nothing decided → unverified PASS"
+# (ADR 0037), laundering a destroyed sandbox into a green DONE (run b6487b43). Raise instead
+# so it escapes the tester node and STALLS the run (recoverable), never a fake pass.
+_SANDBOX_GONE_SIGNATURES = ("Unknown sandbox_id", "Unknown run_id", "No such container")
+
+
+def _raise_if_sandbox_gone(result: dict) -> None:
+    error = result.get("error")
+    if error and any(sig in str(error) for sig in _SANDBOX_GONE_SIGNATURES):
+        raise SandboxError(f"tester: sandbox unreachable — {error}")
 
 
 def to_sandbox_path(path: str) -> str:
@@ -113,6 +128,7 @@ class TesterTools:
             tool_name=Tools.REPO_DIFF,
             args={},
         )
+        _raise_if_sandbox_gone(result)   # dead sandbox → stall, don't return "" as a clean diff
         if "error" in result:
             return result["error"]
         return result.get("diff", "")
@@ -120,12 +136,19 @@ class TesterTools:
     def run(self, argv: list[str], timeout_s: int = 300) -> dict:
         """Raw allowlisted sandbox command — returns the gateway result dict
         (exit_code/stdout/stderr/duration_ms). Used by the deterministic test phases
-        (detect / install / run-suite); LLM-facing string wrappers are separate."""
-        return self.gateway.execute_tool(
+        (detect / install / run-suite); LLM-facing string wrappers are separate.
+
+        Raises SandboxError if the sandbox is GONE (see `_raise_if_sandbox_gone`): the
+        deterministic phases treat a `{'error': …}` dict as "empty output", so a destroyed
+        sandbox would silently yield no checks and pass the microtask unverified. A dead
+        sandbox must stall the run, not decide a verdict."""
+        result = self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.SANDBOX_RUN,
             args={"cmd": argv, "cwd": REPO_ROOT, "timeout_s": timeout_s},
         )
+        _raise_if_sandbox_gone(result)
+        return result
 
     def execute_in_sandbox(self, command: str) -> str:
         cmd_list = shlex.split(command)

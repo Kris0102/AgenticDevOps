@@ -121,6 +121,39 @@ def _quality_report(result: "PlannerOutput") -> str:
     return summary + "\n" + "\n".join(lines)
 
 
+# The sandbox always clones the repo to /workspace/repo (bootstrapper). Any target/context
+# path must resolve UNDER that root.
+_REPO_ROOT = "/workspace/repo"
+
+
+def _normalize_repo_path(path: str) -> str:
+    """Re-root a planner-emitted file path to the real sandbox repo root.
+
+    The synthesis contract asks for `/workspace/repo/...` absolute paths, but a weaker model
+    drops the `repo` segment and emits `/workspace/astropy/modeling/separable.py` (run
+    b6487b43). That path exists NOWHERE — the repo is at `/workspace/repo/astropy/...` — so
+    the coder's pre-read comes back empty, its edit (if any) lands outside the git tree
+    (invisible to `git diff`), and the tester's build check hits `[Errno 2]`. The coder then
+    rationalises "file already correct, no change needed" and the microtask loops to BLOCKED
+    on a path typo. Normalise every form to an absolute path under the repo root:
+      /workspace/repo/x  → unchanged
+      /workspace/x       → /workspace/repo/x   (the dropped-`repo` bug)
+      /x  or  x          → /workspace/repo/x   (any other absolute/relative → repo-relative)
+    """
+    p = path.strip()
+    if not p:
+        return p
+    if p == _REPO_ROOT or p.startswith(_REPO_ROOT + "/"):
+        return p
+    if p.startswith("/workspace/"):
+        return _REPO_ROOT + "/" + p[len("/workspace/"):]
+    return _REPO_ROOT + "/" + p.lstrip("/")
+
+
+def _normalize_paths(paths: List[str]) -> List[str]:
+    return [_normalize_repo_path(p) for p in paths]
+
+
 # Imported to the planner.py
 def _normalize_output(result: "PlannerOutput") -> "PlannerOutput":
     from agents.Planning.Planner.planner import PlannerOutput
@@ -129,6 +162,13 @@ def _normalize_output(result: "PlannerOutput") -> "PlannerOutput":
     errors: List[str] = []
 
     for idx, task in enumerate(result.microtasks):
+        # Re-root file paths BEFORE the quality checks read them — the coder, its pre-read,
+        # and the tester's build check all consume these, so a dropped-`repo` typo must be
+        # corrected here, at the single point microtasks are finalised.
+        task = task.model_copy(update={
+            "target_files": _normalize_paths(task.target_files),
+            "context_files": _normalize_paths(task.context_files or []),
+        })
         tid = f"'{task.title}' ({task.microtask_id})"
         flags = _check_microtask(task)
 

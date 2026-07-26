@@ -47,12 +47,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
+
+import docker
+from docker import errors as docker_errors
 
 # This script lives in scripts/swebench/ but imports the app package under src/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -72,15 +74,71 @@ from orchestrator.state import (                                   # noqa: E402
     Repo,
     Trigger,
 )
+from orchestrator.state import SandboxSpec                        # noqa: E402
 from sandbox.sandbox_tools import DockerSandboxTools               # noqa: E402
 
 _AGENTS = ("planner", "reviewer", "coder", "tester", "reflector")
 
-# The engine's fixed sandbox image / layout (matches DockerSandboxTools defaults used
-# everywhere else in the service).
-_SANDBOX_IMAGE = "agentic-sandbox:0.1"
-_SANDBOX_WORKDIR = "/workspace"
-_REPO_DIR = "repo"
+# SWE-bench instance images check the repo out at /testbed (DOCKER_WORKDIR) with no nesting,
+# and install its dependencies into a conda env rather than the system interpreter. Putting
+# that env first on PATH is enough to make `python`/`pytest` resolve to it — no `conda
+# activate` wrapper needed (verified against the real images).
+_SWEBENCH_WORKDIR = "/testbed"
+_SWEBENCH_PATH_PREPEND = "/opt/miniconda3/envs/testbed/bin"
+# Docker Hub org publishing the per-instance images. Passed to swebench's own resolver so we
+# never hand-roll its `__` → `_1776_` tag mangling.
+_SWEBENCH_NAMESPACE = "swebench"
+
+
+def _instance_image(instance: dict, namespace: str) -> str:
+    """The official per-instance image name, from swebench's own resolver.
+
+    Deliberately NOT reimplemented: the name embeds an arch, a tag, and a `__` → `_1776_`
+    substitution that only exists for remote images. Deriving it here would silently drift
+    from whatever the installed swebench version actually grades against.
+    """
+    from typing import Any, cast
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
+    # `instance` is a plain dict at runtime; mypy/pyright expect a SWEbenchInstance
+    # typed object. Cast to Any to satisfy the type checker while keeping runtime
+    # behaviour unchanged.
+    return make_test_spec(cast(Any, instance), namespace=namespace).instance_image_key
+
+
+def _sandbox_spec(instance: dict, args: argparse.Namespace) -> Optional[SandboxSpec]:
+    """Container shape for this instance, or None to use the generic agent sandbox.
+
+    The generic sandbox is `python:3.14-slim` + pytest and has none of the instance's
+    dependencies — nor even its Python version (SWE-bench targets 3.9), so a bootstrap
+    `pip install` cannot fix it. Running inside the instance image is what lets the Tester
+    actually EXECUTE the repo's suite instead of skipping it as unverifiable.
+    """
+    if args.generic_sandbox:
+        return None
+    return SandboxSpec(
+        image=_instance_image(instance, args.sandbox_namespace),
+        workdir=_SWEBENCH_WORKDIR,
+        repo_dir="",                      # the image checks out straight into /testbed
+        path_prepend=_SWEBENCH_PATH_PREPEND,
+        network_mode=args.sandbox_network,
+    )
+
+
+def _ensure_image(image: str) -> None:
+    """Make sure `image` is present locally, pulling once if not.
+
+    These are ~4GB each, so this is the step that decides how far a batch can scale — prune
+    between batches rather than assuming 500 instances will fit.
+    """
+    client = docker.from_env()
+    try:
+        client.images.get(image)
+        return
+    except docker_errors.ImageNotFound:
+        pass
+    print(f"  pulling {image} (~4GB, first time only) …", flush=True)
+    client.images.pull(image)
 
 
 def _objective(instance: dict) -> Objective:
@@ -150,7 +208,6 @@ def _run_request(instance: dict, args: argparse.Namespace) -> RunRequest:
             max_planner_reviewer_iterations=args.max_planner_reviewer_iterations,
             max_microtask_attempts=args.max_microtask_attempts,
             max_total_tokens=args.max_tokens,
-            allowed_network="none",
             risk_level="low",
         ),
         policy=Policy(
@@ -165,41 +222,61 @@ def _run_request(instance: dict, args: argparse.Namespace) -> RunRequest:
         # DEPLOY only so the run pauses there with the sandbox intact.
         hitl=HITL(required=True, hitl_checkpoints=[Phase.DEPLOY]),
         deploy_mode=DeployMode.DRY_RUN,      # ship nothing — we only read the diff
+        # The pre-provisioned instance image (unless --generic-sandbox). Bootstrap detects
+        # the repo already present at /testbed and skips the clone.
+        sandbox_spec=_sandbox_spec(instance, args),
     )
 
 
-def _extract_patch(sandbox: DockerSandboxTools, run_id: str) -> str:
-    """Unified diff vs base_commit, INCLUDING new files, read straight from the sandbox.
+# Never part of a submitted patch: the Tester's ephemeral synth tests, and the .gitignore
+# bootstrap may have seeded. Both are harness artefacts, not the model's solution.
+_PATCH_EXCLUDES = (":(exclude).agentic_tests", ":(exclude).gitignore")
 
-    Stage everything except the Tester's ephemeral `.agentic_tests/`, then diff the index
-    against HEAD (= the checked-out base_commit). `git add -A` picks up untracked new files
-    that a plain `git diff` would miss — SWE-bench solutions often add files."""
+
+def _extract_patch(sandbox: DockerSandboxTools, run_id: str, workspace_path: str) -> str:
+    """Unified diff vs the image/clone's HEAD, INCLUDING new files, read from the sandbox.
+
+    Stage everything except our own artefacts, then diff the index against HEAD. `git add -A`
+    picks up untracked new files that a plain `git diff` would miss — SWE-bench solutions
+    often add files.
+
+    On HEAD: a SWE-bench instance image sits ONE commit above `base_commit` (a build fix to
+    pyproject.toml). Diffing against HEAD rather than `base_commit` is therefore both correct
+    and preferable — the harness applies our patch onto that same image state, so the build-fix
+    delta stays out of our patch instead of conflicting with it.
+    """
     sandbox_id = sandbox.get_sandbox_id(run_id=run_id, verify=False)
     if not sandbox_id or not sandbox.sandbox_exists(
         sandbox_id=sandbox_id, start_if_created_but_not_running=True
     ):
         return ""   # run failed before/at bootstrap, or sandbox already gone → unresolved
-    cwd = f"{_SANDBOX_WORKDIR}/{_REPO_DIR}"
     sandbox.sandbox_exec(
         sandbox_id=sandbox_id,
-        cmd=["git", "add", "-A", "--", ".", ":(exclude).agentic_tests"],
+        cmd=["git", "add", "-A", "--", ".", *_PATCH_EXCLUDES],
         timeout_s=60,
-        cwd=cwd,
+        cwd=workspace_path,
     )
     res = sandbox.sandbox_exec(
         sandbox_id=sandbox_id,
-        cmd=["git", "diff", "--cached", "HEAD", "--", ".", ":(exclude).agentic_tests"],
+        cmd=["git", "diff", "--cached", "HEAD", "--", ".", *_PATCH_EXCLUDES],
         timeout_s=60,
-        cwd=cwd,
+        cwd=workspace_path,
     )
     return res.stdout or ""
 
 
-def _solve_one(service: Service, sandbox: DockerSandboxTools, instance: dict,
-               args: argparse.Namespace) -> dict:
+def _solve_one(service: Service, instance: dict, args: argparse.Namespace) -> dict:
     """Drive one instance to the deploy pause (or terminal), pull the patch, close the run."""
     model_name = args.model_name
     request = _run_request(instance, args)
+    # Each instance has its OWN container shape (its own pre-provisioned image), so the
+    # sandbox handle is built per instance rather than once for the batch.
+    spec = request.sandbox_spec or SandboxSpec()
+    _ensure_image(spec.image)
+    sandbox = DockerSandboxTools(
+        image=spec.image, workdir=spec.workdir, path_prepend=spec.path_prepend,
+        network_mode=spec.network_mode,
+    )
     # Same preflight the HTTP route does: validate repo + resolve LLM config.
     request = request.model_copy(update={"repo": service.resolve_repo(request)})
     config = service.resolve_and_preflight(request)
@@ -208,12 +285,9 @@ def _solve_one(service: Service, sandbox: DockerSandboxTools, instance: dict,
     patch = ""
     try:
         response = service.run(request, run_id, config)   # blocks: drives to deploy pause / END
-        if response.run_state == RunState.PAUSED_HITL:
-            patch = _extract_patch(sandbox, run_id)
-        else:
-            # Terminal without reaching deploy (FAILED / already DONE with nothing to ship).
-            # Try the sandbox anyway — it may still exist if teardown_on_terminal is off.
-            patch = _extract_patch(sandbox, run_id)
+        # Same extraction either way: on a terminal-without-deploy the sandbox may still
+        # exist (teardown_on_terminal off), and an empty patch is the correct answer if not.
+        patch = _extract_patch(sandbox, run_id, spec.workspace_path)
     finally:
         # Close the run out so its container is freed regardless of outcome.
         try:
@@ -272,6 +346,22 @@ def main() -> None:
                    help="cap on the planner↔reviewer loop (default 3)")
     g.add_argument("--max-microtask-attempts", type=int, default=3,
                    help="cap on the coder↔tester↔reflector cycle per microtask (default 3)")
+
+    # --- sandbox (container the agents work in) --------------------------------------
+    s = ap.add_argument_group("sandbox")
+    s.add_argument("--generic-sandbox", action="store_true",
+                   help="use the generic agentic-sandbox:0.1 instead of the per-instance "
+                        "SWE-bench image. The repo's dependencies (and Python version) will "
+                        "NOT be present, so the Tester cannot execute its suite — patches "
+                        "still generate, but unverified. Mainly for comparison runs.")
+    s.add_argument("--sandbox-namespace", default=_SWEBENCH_NAMESPACE,
+                   help=f"Docker Hub org for the per-instance images (default "
+                        f"{_SWEBENCH_NAMESPACE})")
+    s.add_argument("--sandbox-network", default=None,
+                   help="docker network mode for the sandbox: bridge (default) | none | host. "
+                        "'none' is viable with a pre-provisioned image (no clone needed) and "
+                        "denies the agents egress, but also breaks any test that installs or "
+                        "downloads at runtime.")
     args = ap.parse_args()
 
     from datasets import load_dataset      # imported late so --help works without datasets
@@ -291,7 +381,6 @@ def main() -> None:
         print(f"resume: {len(done)} instances already in {out_path}, skipping them")
 
     service = Service()
-    sandbox = DockerSandboxTools(image=_SANDBOX_IMAGE, workdir=_SANDBOX_WORKDIR)
 
     total = len(instances)
     with out_path.open("a") as fh:
@@ -302,7 +391,7 @@ def main() -> None:
             t0 = time.monotonic()
             print(f"[{n}/{total}] {iid} …", flush=True)
             try:
-                pred = _solve_one(service, sandbox, instance, args)
+                pred = _solve_one(service, instance, args)
             except Exception as exc:            # noqa: BLE001 — never let one instance kill the batch
                 print(f"  ! {iid} errored: {exc}", file=sys.stderr)
                 pred = {"instance_id": iid, "model_name_or_path": args.model_name,

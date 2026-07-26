@@ -10,7 +10,8 @@ from gitops.gitops import GitOps
 from observability import Category, get_logger
 from Exceptions.RunExecutionError import RunExecutionError
 from orchestrator.state import BlackboardState, EventType, RunStatus, Sandbox
-from sandbox.sandbox_tools import DockerSandboxTools, SandboxError
+from sandbox.factory import sandbox_for, spec_from
+from sandbox.sandbox_tools import SandboxError
 from tool_gateway.Roles import Roles
 
 _log = get_logger(Category.BOOTSTRAP)
@@ -18,13 +19,13 @@ _log = get_logger(Category.BOOTSTRAP)
 
 class BootStrapper:
 
-    IMAGE = "agentic-sandbox:0.1"
-    WORKDIR = "/workspace"
-
     def __init__(self, blackboard: BlackboardState):
         self.state = blackboard
         self.name = Roles.BOOTSTRAPPER.value
-        self.sandbox_tools = DockerSandboxTools(image=self.IMAGE, workdir=self.WORKDIR)
+        # Container shape comes from the run's spec (defaults = the historic
+        # agentic-sandbox:0.1 at /workspace with the repo in repo/).
+        self.spec = spec_from(blackboard)
+        self.sandbox_tools = sandbox_for(blackboard)
         self.gitops = GitOps(self.sandbox_tools)
 
     def invoke(self) -> Dict[str, Any]:
@@ -42,12 +43,18 @@ class BootStrapper:
         # 2. Ensure sandbox container is running — always, regardless of status
         self._ensure_sandbox_running()
 
-        # 3. Clone repo — retry whenever it hasn't actually happened yet (covers both
-        # the first run and a resume after a clone failure). workspace_path is still
-        # the pre-clone default (WORKDIR) until GitOps.clone_and_checkout succeeds.
-        if sandbox_state.workspace_path == self.WORKDIR:
-            workspace_path = self._clone_repository()
-            self._ensure_gitignore(sandbox_id, workspace_path)
+        # 3. Materialize the repo — retry whenever it hasn't actually happened yet (covers
+        # both the first run and a resume after a clone failure). workspace_path is still
+        # the pre-clone sentinel (the spec's workdir) until the repo is in place.
+        if sandbox_state.workspace_path == self.spec.workdir:
+            workspace_path, cloned = self._materialize_repo(sandbox_id)
+            # A pre-provisioned image arrives with a pristine tree at the base commit.
+            # Seeding .gitignore there would DIRTY a tracked file and leak into every diff
+            # we extract (benchmark patches especially). Its purpose — keeping deps and
+            # secrets out of a push (ADR 0019) — is also moot: deps are already installed
+            # into the image, not vendored into the tree, and these runs don't push.
+            if cloned:
+                self._ensure_gitignore(sandbox_id, workspace_path)
             chunks_ingested = self._ingest_baseline(sandbox_id, workspace_path)
 
             result = {
@@ -149,10 +156,10 @@ class BootStrapper:
         run_id = self.state.get("run_id")
 
         try:
-            self.sandbox_tools.client.images.get(self.IMAGE)
+            self.sandbox_tools.client.images.get(self.spec.image)
         except Exception:
-            _log.warning("bootstrap.image_missing", image=self.IMAGE,
-                         hint="run docker-compose build")
+            _log.warning("bootstrap.image_missing", image=self.spec.image,
+                         hint="run docker-compose build, or docker pull for a benchmark image")
 
         result = self.sandbox_tools.sandbox_create(run_id=run_id)
         _log.info("bootstrap.sandbox_ready", sandbox_id=result.sandbox_id,
@@ -197,11 +204,79 @@ class BootStrapper:
         else:
             _log.info("bootstrap.gitignore_seeded", workspace_path=workspace_path)
 
+    def _materialize_repo(self, sandbox_id: str) -> tuple[str, bool]:
+        """Ensure the repo is present in the container. Returns (workspace_path, cloned).
+
+        A PRE-PROVISIONED image already ships the repo (SWE-bench instance images check it
+        out at /testbed with its dependency env installed). We detect that by probing for a
+        git repo at the spec's `workspace_path` — DERIVED from the container, not declared by
+        a flag — and adopt it instead of cloning over the top. Cloning would be both wasteful
+        and wrong: the bare base commit lacks the image's build fixes, so the pre-installed
+        environment would no longer match the tree.
+        """
+        expected = self.spec.workspace_path
+        if self._is_git_repo(sandbox_id, expected):
+            self._adopt_provisioned_repo(sandbox_id, expected)
+            return expected, False
+        return self._clone_repository(), True
+
+    def _is_git_repo(self, sandbox_id: str, path: str) -> bool:
+        """True when `path` is a git work tree inside the container."""
+        res = self.sandbox_tools.sandbox_exec(
+            sandbox_id=sandbox_id,
+            cmd=["git", "rev-parse", "--is-inside-work-tree"],
+            timeout_s=30,
+            cwd=path,
+        )
+        return res.exit_code == 0 and "true" in (res.stdout or "").lower()
+
+    def _adopt_provisioned_repo(self, sandbox_id: str, workspace_path: str) -> None:
+        """Adopt a repo the image shipped, verifying it is actually the commit we asked for.
+
+        `base_sha` must be REACHABLE from HEAD rather than equal to it: SWE-bench instance
+        images add one commit on top of the base commit (a build fix to pyproject.toml), so an
+        equality check would reject every valid image. A base_sha that isn't an ancestor means
+        the image doesn't match the instance — fail loudly rather than silently benchmark the
+        wrong tree.
+        """
+        repo = self.state.get("repo")
+        # The image's repo is owned by root and checked out by a different build user; git
+        # refuses to operate on it as "dubious ownership" without this. Idempotent.
+        self.sandbox_tools.sandbox_exec(
+            sandbox_id=sandbox_id,
+            cmd=["git", "config", "--global", "--add", "safe.directory", workspace_path],
+            timeout_s=30,
+            cwd=workspace_path,
+        )
+        head = self.sandbox_tools.sandbox_exec(
+            sandbox_id=sandbox_id, cmd=["git", "rev-parse", "HEAD"], timeout_s=30,
+            cwd=workspace_path,
+        )
+        head_sha = (head.stdout or "").strip()
+
+        if repo.base_sha:
+            check = self.sandbox_tools.sandbox_exec(
+                sandbox_id=sandbox_id,
+                cmd=["git", "merge-base", "--is-ancestor", repo.base_sha, "HEAD"],
+                timeout_s=30,
+                cwd=workspace_path,
+            )
+            if check.exit_code != 0:
+                raise RunExecutionError(
+                    phase="bootstrap.adopt",
+                    reason=(f"image {self.spec.image} has HEAD {head_sha[:12]}, which does not "
+                            f"contain the requested base_sha {repo.base_sha[:12]} — wrong image "
+                            f"for this run"),
+                )
+        _log.info("bootstrap.repo_provisioned", workspace_path=workspace_path,
+                  image=self.spec.image, head=head_sha[:12],
+                  base_sha=(repo.base_sha or "")[:12], cloned=False)
+
     def _clone_repository(self) -> str:
         sandbox_state: Sandbox = self.state.get("sandbox")
         sandbox_id = sandbox_state.sandbox_id
         repo = self.state.get("repo")
-        repo_dir = "repo"
+        repo_dir = self.spec.repo_dir
         _log.info("bootstrap.cloning", repo_url=repo.repo_url, base_ref=repo.base_ref,
                   base_sha=repo.base_sha)
         try:

@@ -72,6 +72,7 @@ demo*
 .settings_key
 /docs/src-guide
 /logs
+tum/
 
 # Full DB snapshots incl. secrets (scripts/snapshot_full.sh) — never commit
 scripts/snapshot_secrets/

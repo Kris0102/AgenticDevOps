@@ -18,6 +18,7 @@ from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
+from sandbox.factory import sandbox_for
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -77,7 +78,7 @@ class PlannerRunner:
 
     def _init_tools(self, db_session) -> list[BaseTool]:
         try:
-            self.sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            self.sandbox_tools = sandbox_for(self.state)
             repo = self.state.get("repo")
             # Search-only ContextEngine (no sandbox_tools needed — reads the index, not the repo).
             context_engine = ContextEngine()

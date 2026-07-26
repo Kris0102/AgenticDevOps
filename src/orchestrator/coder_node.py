@@ -25,7 +25,7 @@ from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
 from sandbox.Tools import Tools
-from sandbox.sandbox_tools import DockerSandboxTools
+from sandbox.factory import sandbox_for
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 
@@ -150,7 +150,7 @@ class CoderRunner:
             )
 
     def _init_gateway(self, db_session) -> ToolGateway:
-        sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+        sandbox_tools = sandbox_for(self.state)
         repo = self.state.get("repo")
         # Search-only ContextEngine (reads the index, not the repo) so the Coder can query
         # the semantic code memory while editing — "where is X / what calls Y" (GH #71 follow-up).
@@ -270,7 +270,7 @@ class CoderRunner:
         if not repo or not sandbox:
             return 0
         try:
-            sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            sandbox_tools = sandbox_for(self.state)
             engine = ContextEngine(sandbox_tools=sandbox_tools)
             return engine.sync_workspace(
                 sandbox_id=sandbox.sandbox_id,

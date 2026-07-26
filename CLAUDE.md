@@ -10,7 +10,8 @@ Multi-agent system that autonomously plans, implements, tests, and proposes code
 - **Tool Gateway**: all environment actions (file reads, shell commands, git) go through `ToolGateway` — deny-by-default, every call logged.
 - **Star topology**: all agent-to-agent communication is mediated by Orchestrator via blackboard, not direct calls.
 - **Docker-per-run**: each run gets its own container. Sandbox is the source of truth for code during a run.
-- **Bootstrap always first**: `bootstrapper_node` runs unconditionally on every invocation (upserts Run, ensures sandbox running, clones on first run). No side effects in routers.
+- **Per-run container shape (ADR 0038)**: image/workdir/PATH/network live in `SandboxSpec` on the blackboard, built via `sandbox.factory.sandbox_for(state)`. Default = the generic `agentic-sandbox:0.1`; a benchmark run points at a PRE-PROVISIONED image (SWE-bench instance image) that already ships the repo + its dependency env, which is the only way the Tester can actually execute a target repo's suite.
+- **Bootstrap always first**: `bootstrapper_node` runs unconditionally on every invocation (upserts Run, ensures sandbox running, clones on first run — unless the image already ships the repo, which it DERIVES by probing for `<workspace_path>/.git`). No side effects in routers.
 - **DB-backed sandbox registry**: sandbox container IDs stored in `sandboxes` table — survives process restarts, no in-memory dict.
 
 ## Project layout
@@ -50,8 +51,9 @@ src/
     Roles.py                     # AgentRole enum
   sandbox/
     sandbox_tools.py             # DockerSandboxTools: create/exec/destroy + repo_diff (DB-backed). Pure sandbox exec — no remote git
+    factory.py                   # sandbox_for(state) — THE construction site for DockerSandboxTools; shape comes from SandboxSpec on the blackboard (ADR 0038). Never hardcode the image
     Tools.py                     # Tools enum — sandbox tool identifiers, dispatched via match/case in gateway
-    Dockerfile                   # Base sandbox image (agentic-sandbox:0.1)
+    Dockerfile                   # Generic sandbox image (agentic-sandbox:0.1) — the DEFAULT, not the only one. A run may point SandboxSpec.image at a pre-provisioned image instead (ADR 0038)
   gitops/
     gitops.py                    # GitOps — GitHub boundary (ADR 0012): clone_and_checkout (honors base_ref), push_branch (agent/run-<run_id> or per-repo override; default-branch push hard-refused), create_pr (real GitHub PR, ADR 0027). Token centralized here
     pr_body.py                   # build_pr_body — deterministic PR description from run data (objective + microtasks + fileset), no LLM (ADR 0027)
@@ -354,6 +356,7 @@ See `docs/decisions/0001-architecture-audit-2026-06-07.md` for full evidence + f
 - New agents go in `src/agents/<Phase>/<agent_name>.py` and must be wired into `orchestrator.py`.
 - New tool types must be registered in `sandbox/Tools.py` (the `Tools` enum), and in `permissions.py` — add/extend the relevant `RolePermissions` subclass's `tools` / `allowed_commands`, plus `Roles.py` for new roles.
 - Sandbox is always pre-created by `bootstrapper_node` — agent nodes must never call `sandbox_create()`. Get sandbox_id from `state.get("sandbox").sandbox_id`.
+- **Never construct `DockerSandboxTools(image="agentic-sandbox:0.1", ...)`** — call `sandbox.factory.sandbox_for(self.state)`. The image/workdir/PATH/network come from the run's `SandboxSpec`; a hardcoded literal silently ignores a benchmark run's pre-provisioned image (ADR 0038). Ten such literals existed before that ADR.
 - `Run.status` must be updated in DB whenever LangGraph status changes — do it in the node, not in a router.
 - Use OOP for new classes.
 - Operational logging: never `print()`. Use `from observability import get_logger, Category; _log = get_logger(Category.X)` (module-level) then `_log.info("dotted.event.name", key=val, ...)`. This is ephemeral debug/ops output (console or JSON), SEPARATE from the durable `events` audit trail — keep emitting `EventLogger` events too. `run_id` is auto-attached (bound once in `RunLauncher`). Interactive CLI prompts (HITL `input()` banners) stay as `print()`. Never name a package `logging` (shadows stdlib) — the package is `observability/`.

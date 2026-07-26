@@ -248,7 +248,6 @@ class RunLauncher:
             max_microtask_attempts=3,
             allowed_languages=["python", "javascript"],
             forbidden_paths=["src/secrets/"],
-            allowed_network="none",
             risk_level="medium"
         )
         

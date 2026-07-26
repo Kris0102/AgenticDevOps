@@ -2,7 +2,17 @@ from typing import Optional
 
 from pydantic import BaseModel, model_validator
 
-from orchestrator.state import HITL, Constraints, DeployMode, LLMConfig, Objective, Policy, Repo, Trigger
+from orchestrator.state import (
+    HITL,
+    Constraints,
+    DeployMode,
+    LLMConfig,
+    Objective,
+    Policy,
+    Repo,
+    SandboxSpec,
+    Trigger,
+)
 
 
 class RunRequest(BaseModel):
@@ -43,6 +53,12 @@ class RunRequest(BaseModel):
     # the run branch is fetched into it via a git bundle, no remote touched. Required
     # exactly when deploy_mode is local_only; filesystem-validated at run creation (422).
     local_export_path: Optional[str] = None
+    # Container shape for this run. None → the generic agent sandbox (agentic-sandbox:0.1 at
+    # /workspace). Set to a PRE-PROVISIONED image — one shipping the repo plus its dependency
+    # env — by the SWE-bench adapter, which is how the Tester gets a runnable test
+    # environment instead of skipping for missing dependencies. Not exposed in the dashboard;
+    # scripted/benchmark callers only.
+    sandbox_spec: Optional[SandboxSpec] = None
 
     @model_validator(mode="after")
     def _exactly_one_repo_source(self) -> "RunRequest":

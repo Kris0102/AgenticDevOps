@@ -115,6 +115,7 @@ class DockerSandboxTools:
         mem_limit: Optional[str] = None,
         network_mode: Optional[str] = None,
         labels_base: Optional[Dict[str, str]] = None,
+        path_prepend: Optional[str] = None,
     ) -> None:
         self.image = image
         self.workdir = workdir
@@ -122,7 +123,28 @@ class DockerSandboxTools:
         self.mem_limit = mem_limit
         self.network_mode = network_mode  # e.g. "none" for no network
         self.labels_base = labels_base or {}
+        # Prepended to the image's own PATH at container creation, so EVERY exec — including
+        # ones that pass no `env` — resolves an in-image interpreter (conda env, venv) first.
+        self.path_prepend = path_prepend
         self.client = docker.from_env()
+
+    def _container_env(self) -> Optional[List[str]]:
+        """Container environment for creation. Resolves the IMAGE's real PATH and prepends
+        `path_prepend` to it, rather than assuming a default — a wrong PATH silently breaks
+        every command in the container, so it is read from the image config."""
+        if not self.path_prepend:
+            return None
+        base_path = ""
+        try:
+            for entry in self.client.images.get(self.image).attrs["Config"]["Env"] or []:
+                if entry.startswith("PATH="):
+                    base_path = entry[len("PATH="):]
+                    break
+        except Exception as exc:  # noqa: BLE001 — fall back to a sane default, but say so
+            _log.warning("sandbox.image_path_unreadable", image=self.image, error=str(exc))
+        if not base_path:
+            base_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        return [f"PATH={self.path_prepend}:{base_path}"]
 
     # ---- lifecycle ----s
     def get_sandbox_id(self, *, run_id: str, verify: bool = True) -> str:
@@ -178,20 +200,26 @@ class DockerSandboxTools:
 
         labels = dict(self.labels_base)
         labels.update({"agentic.run_id": run_id, "agentic.sandbox_id": sandbox_id})
+        
+        try:
+            container = self.client.containers.run(
+                self.image,
+                name=sandbox_id,
+                command=["sleep", "infinity"],
+                detach=True,
+                working_dir=self.workdir,
+                labels=labels,
+                network_mode=self.network_mode,
+                mem_limit=self.mem_limit,
+                cpu_quota=self.cpu_quota,
+                environment=self._container_env(),
+            )
 
-        container = self.client.containers.run(
-            self.image,
-            name=sandbox_id,
-            command=["sleep", "infinity"],
-            detach=True,
-            working_dir=self.workdir,
-            labels=labels,
-            network_mode=self.network_mode,
-            mem_limit=self.mem_limit,
-            cpu_quota=self.cpu_quota,
-        )
-
-        container.exec_run(cmd=["mkdir", "-p", self.workdir], workdir="/")
+            container.exec_run(cmd=["mkdir", "-p", self.workdir], workdir="/")
+        except Exception as exc:
+            _log.error("sandbox.create_failed", sandbox_id=sandbox_id, error=str(exc))
+            raise SandboxError(f"sandbox.create failed: {exc}")
+            
 
         container_id = container.id or ""
         with db.session_scope() as session:

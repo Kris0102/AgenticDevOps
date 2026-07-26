@@ -18,7 +18,7 @@ from agents.Planning.Planner.planner import Planner
 from agents.Planning.Planner.planner_tools import PlannerTools
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
-from sandbox.factory import sandbox_for
+from sandbox.factory import repo_root, sandbox_for
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -89,7 +89,7 @@ class PlannerRunner:
                 context_engine=context_engine,
                 repo_url=repo.repo_url if repo else "",
             )
-            planner_tools = PlannerTools(gateway=gateway)
+            planner_tools = PlannerTools(gateway=gateway, repo_root=repo_root(self.state))
             use_tools = os.getenv("USE_TOOLS", "true").lower() == "true"
             return planner_tools.build_tools() if use_tools else []
         except Exception as e:
@@ -109,7 +109,8 @@ class PlannerRunner:
     def _run_planner(self, tools: list[BaseTool]) -> Dict[str, Any]:
         config = self.state.get("config") or resolve_run_config()
         self._config = config
-        planner = Planner(run_id=self.run_id, tools=tools, config=config)
+        planner = Planner(run_id=self.run_id, tools=tools, config=config,
+                          repo_root=repo_root(self.state))
         try:
             return planner.invoke(self.state)
         finally:

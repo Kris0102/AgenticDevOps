@@ -26,7 +26,7 @@ class PlannerPermissions(RolePermissions):
 
     role = Roles.PLANNER
     tools = [Tools.SANDBOX_RUN, Tools.FS_READ_FILE, Tools.SEMANTIC_SEARCH]
-    allowed_commands = ["git", "python", "grep", "ls", "cat", "find","node", "cd"]
+    allowed_commands = ["git", "python", "grep", "ls", "cat", "find","node", "cd", "pwd"]
 
 
 class CoderPermissions(RolePermissions):
@@ -35,8 +35,8 @@ class CoderPermissions(RolePermissions):
     could self-report a pass the Tester never confirmed."""
 
     role = Roles.CODER
-    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]
-    allowed_commands = ["git", "python", "grep", "ls", "cat", "find", "mkdir", "rm", "touch", "node"]
+    tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]  # noqa: RUF012
+    allowed_commands = ["git", "python", "grep", "ls", "cat", "find", "mkdir", "rm", "touch", "node", "pwd", "sed"]  # noqa: RUF012
 
 
 class TesterPermissions(RolePermissions):
@@ -45,7 +45,7 @@ class TesterPermissions(RolePermissions):
 
     role = Roles.TESTER
     tools = [Tools.FS_WRITE_FILE, Tools.FS_READ_FILE, Tools.REPO_DIFF, Tools.SANDBOX_RUN, Tools.SEMANTIC_SEARCH]
-    allowed_commands = ["git", "python", "pip", "pytest", "node", "npm", "npx", "apt-get", "grep", "ls", "cat", "find", "mkdir", "mv"]
+    allowed_commands = ["git", "python", "pip", "pytest", "node", "npm", "npx", "apt-get", "grep", "ls", "cat", "find", "mkdir", "mv", "pwd", "sed"]
 
 
 class ReviewerPermissions(RolePermissions):

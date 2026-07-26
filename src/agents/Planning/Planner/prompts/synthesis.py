@@ -8,6 +8,7 @@ def build_synthesis_prompt(
     previous_attempt_feedback: Optional[str] = None,
     revision_context: Optional[str] = None,
     lessons_block: str = "",
+    repo_root: str = "/workspace/repo",
 ) -> str:
     # Machine quality-gate feedback ("too vague", normalizer failure)
     feedback_block = ""
@@ -39,7 +40,7 @@ Treat each rejection note as a hard constraint.
 """
 
     return f"""You are the Planner Agent for an Agentic DevOps System.
-A Coder agent will execute each microtask by editing files inside a Docker sandbox at /workspace/repo.
+A Coder agent will execute each microtask by editing files inside a Docker sandbox at {repo_root}.
 The Coder sees ONLY what you write here — it has no other context. Be precise.
 
 You must reply with a valid JSON object matching the schema below. No markdown, no extra text.
@@ -65,14 +66,14 @@ When the objective does ask for tests, a test microtask is fine; otherwise omit 
 For EACH microtask you MUST provide:
 
 1. target_files — exact absolute paths inside the sandbox.
-   GOOD: ["/workspace/repo/server/package.json"]
+   GOOD: ["{repo_root}/server/package.json"]
    BAD:  [] or ["server/"] or ["backend files"]
 
 2. description — the WHAT and WHERE. Must include ALL of:
    - What file(s) to create or edit
    - Exactly what goes in them (endpoints, components, config keys — at the level of "what exists when done")
    - Any dependency on a data_contract type defined above
-   GOOD: "Create /workspace/repo/server/index.js — an Express app exposing one route,
+   GOOD: "Create {repo_root}/server/index.js — an Express app exposing one route,
           GET /api/results, returning a hardcoded array of 3 Result objects
           (shape defined in data_contracts)."
    BAD:  "Set up the Express server with a results endpoint."

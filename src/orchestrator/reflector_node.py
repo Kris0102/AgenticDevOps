@@ -24,7 +24,7 @@ from orchestrator.state import (
     RunConfig,
     RunStatus,
 )
-from sandbox.factory import sandbox_for
+from sandbox.factory import repo_root, sandbox_for
 from context_engine.engine import ContextEngine
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -79,7 +79,7 @@ class ReflectorRunner:
             config: Optional[RunConfig] = None
             try:
                 gateway = self._init_gateway(db_session)
-                reflector_tools = ReflectorTools(gateway=gateway)
+                reflector_tools = ReflectorTools(gateway=gateway, repo_root=repo_root(self.state))
                 config = self.state.get("config") or resolve_run_config()
                 reflector = Reflector(run_id=self.run_id, reflector_tools=reflector_tools, config=config)
                 # Always a failure here — the Reflector only runs after a tester FAIL.

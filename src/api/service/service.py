@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import subprocess
 import threading
@@ -53,7 +54,7 @@ from db.lessons import HUMAN_AGENT, OPERATOR_RULE_LIMIT, LessonStore
 from db.semanticMemory.semantic_store import SemanticStore
 from db.models import Artifact as ArtifactRow, Lesson, MicrotaskRecord, Run, Sandbox
 from db.models import Event as EventRow
-from db.repo_store import MASK, RepoEntry, RepoStore, normalize_repo_url
+from db.repo_store import MASK, RepoEntry, RepoNotFoundError, RepoStore, normalize_repo_url
 from db.settings_store import SettingsStore, resolve_run_config
 from gitops.commit_message import build_commit_message
 from gitops.github_api import GitHubRepoClient, RepoValidationKind, RepoValidationResult
@@ -64,6 +65,7 @@ from observability import Category, bind_run, clear_context, configure_logging, 
 from observability.log_bus import log_bus
 from orchestrator.bootstrap_node import BootStrapper
 from sandbox.factory import sandbox_for
+from sandbox.preflight import ImagePreflight
 from orchestrator.checkpointer import checkpointer, setup_checkpointer
 from orchestrator.hitl import HitlResume, Phase
 from orchestrator.orchestrator import graph
@@ -80,6 +82,7 @@ from orchestrator.state import (
     RunConfig,
     RunStatus,
     Repo,
+    SandboxSpec,
     create_initial_blackboard_state,
 )
 from tool_gateway.Roles import Roles
@@ -243,6 +246,40 @@ class Service:
                       model=agent.model, latency_ms=result.latency_ms)
         return config
 
+    def resolve_sandbox_spec(self, request: RunRequest) -> Optional[SandboxSpec]:
+        """The run's container shape. Precedence, mirroring `_resolve_push_target`:
+
+        1. `RunRequest.sandbox_spec` — a fully-specified shape from a scripted caller (the
+           SWE-bench adapter). Passed through untouched; it knows its own workdir/PATH.
+        2. The repo registry's `sandbox_image` — a dashboard user saying "run my project in
+           ITS image". Only the IMAGE changes: workdir/repo_dir keep their defaults, because
+           the repo is still cloned into the image at `/workspace/repo` as usual. This is the
+           common case and the one that gives the Tester a real environment.
+        3. None → `SandboxSpec()` defaults (the generic `agentic-sandbox:0.1`).
+
+        NOT re-validated here: the image was contract-checked when it was saved, and a run
+        must not pay a container probe on every start. A since-deleted image is re-pulled by
+        `containers.run`, and a since-broken one fails in bootstrap with the sandbox error it
+        deserves.
+        """
+        if request.sandbox_spec is not None:
+            return request.sandbox_spec
+        repo_id = request.repo.repo_id if request.repo else request.repo_id
+        if not repo_id:
+            return None
+        try:
+            image = RepoStore.get(repo_id).sandbox_image
+        except RepoNotFoundError:
+            # Deleted mid-flight; the generic sandbox is the safe fallback, same as the
+            # push-target resolver's treatment of a missing entry.
+            _log.warning("run.repo_entry_missing", repo_id=repo_id,
+                         recovery="using the default sandbox image")
+            return None
+        if not image:
+            return None
+        _log.info("run.sandbox_image_from_registry", repo_id=repo_id, image=image)
+        return SandboxSpec(image=image)
+
     # --------------------------------------------------------------- public API
 
     def run(self, request: RunRequest, run_id: str, config: Optional[RunConfig] = None) -> RunResponse:
@@ -274,9 +311,9 @@ class Service:
                 deploy_commit_message=request.commit_message,
                 deploy_mode=self.resolve_deploy_mode(request), # per-run override › global default
                 local_export_path=request.local_export_path,
-                # None → SandboxSpec() defaults (the generic agent sandbox). Set by the
-                # benchmark adapter to a pre-provisioned per-instance image.
-                sandbox_spec=request.sandbox_spec,
+                # Per-run spec (benchmark) › the repo registry's image › the generic
+                # sandbox. Resolved ONCE here so every node and any later resume agree.
+                sandbox_spec=self.resolve_sandbox_spec(request),
             )
             bootstrap = self._bootstrap(run_id, state)
             if bootstrap.get("status") == RunStatus.FAILED:
@@ -857,6 +894,51 @@ class Service:
                 yield ": keep-alive\n\n"   # comment frame keeps the connection warm
             await asyncio.sleep(_LOG_STREAM_POLL_SECONDS)
             
+    async def stream_image_preflight(self, image: str,
+                                     workdir: str = "/workspace") -> AsyncIterator[str]:
+        """Validate a sandbox image over SSE, reporting pull progress as it goes.
+
+        Exists because a multi-GB pull can take minutes: the blocking check on repo save is
+        correct but indistinguishable from a hang. The dashboard calls this first, watches the
+        bar, and only then saves — by which point the image is local and the save is instant.
+        The save-time check stays as the backstop, so this is an affordance, not a gate.
+
+        `ImagePreflight` is synchronous and blocks on Docker I/O, so it runs in a worker thread
+        and events are handed back through a queue — running it inline would block the whole
+        event loop and stall every other request for the duration of the pull.
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        _DONE = object()
+
+        def produce() -> None:
+            try:
+                for progress in ImagePreflight().stream_check(image, workdir=workdir):
+                    loop.call_soon_threadsafe(queue.put_nowait, progress.as_event())
+            except Exception as exc:              # noqa: BLE001 — never leave the client hanging
+                _log.warning("sandbox.image_preflight_stream_failed", image=image, error=str(exc))
+                loop.call_soon_threadsafe(queue.put_nowait, {
+                    "phase": "result", "done": True, "ok": False, "percent": None,
+                    "detail": "preflight failed", "problems": [],
+                    "message": f"image '{image}' could not be checked: {exc}",
+                })
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+        await loop.run_in_executor(None, lambda: None)   # ensure the default executor exists
+        task = loop.run_in_executor(None, produce)
+        try:
+            while True:
+                event = await queue.get()
+                if event is _DONE:
+                    return
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            # A client that navigates away mid-pull abandons the stream; the pull continues in
+            # Docker (which is fine and desirable — the layers are still cached) and the worker
+            # thread drains into a queue nobody reads.
+            task.cancel()
+
     def get_runs(self) -> List[RunResponseWithDetails]:
         """All runs for the dashboard home, newest first. One SQL query — the coarse
         run_state is derived from the persisted `status` + the in-memory active set, so this
@@ -882,6 +964,7 @@ class Service:
             base_sha=run.base_sha,
             task_description=self._ensure_task(session, run),
             deploy_mode=run.deploy_mode,
+            sandbox_image=run.sandbox_image,
             pushed_files=pushed_files,
             llm_provider=run.llm_provider,
             llm_model=run.llm_model,
@@ -1120,9 +1203,10 @@ class Service:
         result = self._github.validate_repo(canonical, token)
         self._reject_if_unreadable(result)
         self._reject_default_branch_push(req.push_branch_override, result.default_branch)
+        self._reject_unusable_sandbox_image(req.sandbox_image)
         entry = RepoStore.create(repo_url=canonical, label=req.label, token=req.token,
                                  push_branch_override=req.push_branch_override,
-                                 validation=result)
+                                 validation=result, sandbox_image=req.sandbox_image)
         return self._repo_view(entry)
 
     def update_repo(self, repo_id: str, req: RepoUpdateRequest) -> RepoView:
@@ -1130,8 +1214,13 @@ class Service:
         renewal surfaces on save, not on the next run."""
         current = RepoStore.get(repo_id)                      # RepoNotFoundError → 404
         self._reject_default_branch_push(req.push_branch_override, current.default_branch)
+        # Only probe when the image actually changed — '' clears it (nothing to check) and an
+        # unchanged value was already validated when it was first saved.
+        if req.sandbox_image and req.sandbox_image != current.sandbox_image:
+            self._reject_unusable_sandbox_image(req.sandbox_image)
         entry = RepoStore.update(repo_id, label=req.label, token=req.token,
-                                 push_branch_override=req.push_branch_override)
+                                 push_branch_override=req.push_branch_override,
+                                 sandbox_image=req.sandbox_image)
         token_changed = req.token is not None and req.token != MASK
         if token_changed:
             self.validate_repo(repo_id)
@@ -1215,6 +1304,26 @@ class Service:
                 f"push_branch_override '{override}' is the repo's default branch — "
                 "agents propose on a separate branch, never land directly"
             )
+
+    @staticmethod
+    def _reject_unusable_sandbox_image(image: Optional[str]) -> None:
+        """Contract-check a sandbox image at SAVE time (ValueError → 422).
+
+        The sandbox silently assumes `git`, `sh`, `sleep` and a `timeout` that accepts
+        `--kill-after` (every command is wrapped in it). Those were free while the image was
+        ours alone. Validating here turns "every command in the run fails with exit 1, four
+        minutes in" into "this image is missing git" before anything is stored.
+
+        Note the check is behavioural, not a `which`: busybox HAS `timeout` and rejects
+        `--kill-after`, so an Alpine image would pass a presence test and then break every
+        command. Pulls the image if absent, which is also the point where a typo'd name is
+        caught rather than surfacing as a mid-run pull failure.
+        """
+        if not image or not image.strip():
+            return                        # unset / cleared — the default image is used
+        result = ImagePreflight().check(image.strip())
+        if not result.ok:
+            raise ValueError(result.message())
 
     def resolve_repo(self, request: RunRequest) -> "Repo":
         """Run-preflight (mirror of resolve_and_preflight): turn the request's repo

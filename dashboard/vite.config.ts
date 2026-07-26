@@ -17,6 +17,9 @@ export default defineConfig({
       // Lesson edit/delete are keyed by lesson_id alone, so they sit at the root
       // rather than under /repos — they need their own entry here or they 404 in dev.
       '/lessons': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // Sandbox-image preflight SSE (ADR 0039). Not under /repos: an image is checked
+      // BEFORE a repo exists to attach it to.
+      '/images': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

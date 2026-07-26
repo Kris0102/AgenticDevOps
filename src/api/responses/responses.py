@@ -85,6 +85,8 @@ class RepoView(BaseModel):
     token: Optional[str] = None
     default_branch: Optional[str] = None
     push_branch_override: Optional[str] = None
+    # Sandbox image for this repo's runs; None → the generic agentic-sandbox:0.1 (ADR 0039).
+    sandbox_image: Optional[str] = None
     last_validated_at: Optional[datetime] = None
     last_validation_result: Optional[RepoValidationResult] = None
     created_at: Optional[datetime] = None
@@ -192,6 +194,9 @@ class RunResponseWithDetails(RunResponse):
     # The run's label on the list (ADR 0036): 'dry_run' | 'push' | 'pr' | 'local_only'.
     # None for runs created before the column existed.
     deploy_mode: Optional[str] = None
+    # Sandbox image the agents ran in (ADR 0039). None for runs predating the column — those
+    # all used the generic image, but it was never recorded, so nothing is asserted about them.
+    sandbox_image: Optional[str] = None
     pushed_files: Optional[int] = None        # files shipped by the deploy push (None = no push)
     llm_provider: Optional[str] = None        # settings hub — provider/model this run used
     llm_model: Optional[str] = None

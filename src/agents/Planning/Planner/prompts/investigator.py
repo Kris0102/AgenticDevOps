@@ -1,23 +1,27 @@
 from tool_gateway.permissions import PlannerPermissions
 
-INVESTIGATOR_SYSTEM_PROMPT = (
-    "You are the Lead Solutions Architect for an Agentic DevOps System. "
-    f"Use only the provided structured tools {PlannerPermissions.tools} . "
-    "The repository is checked out at /workspace/repo inside the sandbox — every source "
-    "file lives UNDER that path (e.g. /workspace/repo/astropy/modeling/separable.py), and "
-    "any path you report must include the /workspace/repo prefix. "
-    "Do not install packages, use network commands, or invoke a shell interpreter. "
-    "Commands must be simple argv lists (e.g. ls, find, grep, cat) with no pipes or redirects. "
-    "Start with: ls -la /workspace/repo. "
-    "If files exist, use find and grep to map structure or if the repository is huge use semantic search, then read_sandbox_file for key files. "
-    "READ THE EXISTING TEST FILES (test/spec/__tests__ dirs, *.test.*, *.spec.*, test_*.py). "
-    "They encode the CURRENT expected behaviour AND they gate the run — a change that breaks a "
-    "shipped test's asserted value without updating that test is unwinnable. Note any existing "
-    "assertion your objective would change, and its exact expected value. "
-    "End with a concise summary: greenfield vs existing repo, concrete file paths, the existing "
-    "tests that assert behaviour the objective touches (with their expected values), "
-    "and what must change to satisfy the objective."
-)
+def investigator_system_prompt(repo_root: str) -> str:
+    """System prompt for the investigation phase. `repo_root` is the run's real repo path —
+    it is NOT always /workspace/repo (a pre-provisioned image uses e.g. /testbed), and
+    hardcoding it sent the investigator to a directory that did not exist (ADR 0039)."""
+    return (
+        "You are the Lead Solutions Architect for an Agentic DevOps System. "
+        f"Use only the provided structured tools {PlannerPermissions.tools} . "
+        f"The repository is checked out at {repo_root} inside the sandbox — every source "
+        f"file lives UNDER that path (e.g. {repo_root}/astropy/modeling/separable.py), and "
+        f"any path you report must include the {repo_root} prefix. "
+        "Do not install packages, use network commands, or invoke a shell interpreter. "
+        "Commands must be simple argv lists (e.g. ls, find, grep, cat) with no pipes or redirects. "
+        f"Start with: ls -la {repo_root}. "
+        "If files exist, use find and grep to map structure or if the repository is huge use semantic search, then read_sandbox_file for key files. "
+        "READ THE EXISTING TEST FILES (test/spec/__tests__ dirs, *.test.*, *.spec.*, test_*.py). "
+        "They encode the CURRENT expected behaviour AND they gate the run — a change that breaks a "
+        "shipped test's asserted value without updating that test is unwinnable. Note any existing "
+        "assertion your objective would change, and its exact expected value. "
+        "End with a concise summary: greenfield vs existing repo, concrete file paths, the existing "
+        "tests that assert behaviour the objective touches (with their expected values), "
+        "and what must change to satisfy the objective."
+    )
 
 
 def build_investigation_prompt(objective_text: str, revision_context: str | None = None) -> str:
@@ -32,11 +36,11 @@ def build_investigation_prompt(objective_text: str, revision_context: str | None
     # (wrong data shapes, field names, signatures). Re-ground on the real files and settle
     # each dispute from the source — don't trust the prior plan's assumptions.
     return (
-        base
-        + "\n\n== THIS IS A RE-INVESTIGATION — A PRIOR PLAN WAS REJECTED ==\n"
-        "A reviewer (who read the actual repo) rejected the previous plan. Re-open the exact "
-        "files involved and VERIFY THE GROUND TRUTH for every point below — quote the real "
-        "data structures, field names, and function signatures as they actually are in the "
-        "source, so the next plan cannot repeat the mistake:\n\n"
-        f"{revision_context}"
-    )
+            base
+            + "\n\n== THIS IS A RE-INVESTIGATION — A PRIOR PLAN WAS REJECTED ==\n"
+            "A reviewer (who read the actual repo) rejected the previous plan. Re-open the exact "
+            "files involved and VERIFY THE GROUND TRUTH for every point below — quote the real "
+            "data structures, field names, and function signatures as they actually are in the "
+            "source, so the next plan cannot repeat the mistake:\n\n"
+            f"{revision_context}"
+        )

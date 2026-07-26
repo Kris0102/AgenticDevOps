@@ -138,7 +138,17 @@ def create_code_file_log(
 
                     for entry in attempts_log:
                         attempt = entry.get("attempt", "?")
-                        outcome = "no diff — retrying" if entry.get("diff_empty") else "diff produced"
+                        # "diff produced" alone hid the case this file exists to debug: a diff
+                        # full of some OTHER microtask's files while this one's targets were
+                        # never opened (run 80240f95). Name it.
+                        untouched = entry.get("untouched_targets") or []
+                        if entry.get("diff_empty"):
+                            outcome = "no diff — retrying"
+                        elif untouched:
+                            outcome = f"diff produced, but {len(untouched)} target(s) untouched: " \
+                                      + ", ".join(untouched)
+                        else:
+                            outcome = "diff produced"
                         f.write(f"{'─' * 70}\n")
                         f.write(f"ATTEMPT {attempt}  [{outcome}]\n")
                         f.write(f"{'─' * 70}\n\n")

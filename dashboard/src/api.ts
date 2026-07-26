@@ -56,6 +56,9 @@ export interface RunResponseWithDetails extends RunResponse {
   base_sha?: string | null
   task_description?: string | null   // what the run was asked to do
   deploy_mode?: DeployMode | null    // the run's deploy label; null for pre-ADR-0036 runs
+  // Sandbox image the agents ran in (ADR 0039). null = pre-column run; those used the
+  // generic image but it was never recorded, so the UI asserts nothing about them.
+  sandbox_image?: string | null
   pushed_files?: number | null       // files shipped by the deploy push
   llm_provider?: string | null       // provider/model this run used
   llm_model?: string | null
@@ -221,6 +224,8 @@ export interface RepoView {
   token?: string | null
   default_branch?: string | null
   push_branch_override?: string | null
+  // Docker image the sandbox runs in for this repo; null = the generic agentic-sandbox:0.1.
+  sandbox_image?: string | null
   last_validated_at?: string | null
   last_validation_result?: RepoValidationResult | null
   created_at?: string | null
@@ -231,12 +236,16 @@ export interface RepoCreateRequest {
   label?: string | null
   token?: string | null
   push_branch_override?: string | null
+  // Contract-checked server-side before it is stored (git / sh / sleep / `timeout
+  // --kill-after`); a violation comes back as a 422 with the missing pieces named.
+  sandbox_image?: string | null
 }
 
 export interface RepoUpdateRequest {
   label?: string | null
   token?: string | null                // mask = keep stored, '' = clear
   push_branch_override?: string | null // '' = clear, omitted = keep
+  sandbox_image?: string | null        // '' = clear, omitted = keep
 }
 
 // One per-repo lesson (ADR 0018) or human operator rule (ADR 0034).

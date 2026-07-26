@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { ImageCheck } from './ImageCheck'
+import { shortImage } from '../imageLabel'
 import {
   api,
   type RepoCreateRequest,
@@ -12,6 +14,14 @@ import {
 //
 // Visual language mirrors the run boxes: the card's left edge + a tinted pill carry
 // the validation state, facts sit in a quiet uppercase-key / mono-value row.
+
+// Shown under the sandbox-image field on both the add and edit forms. The contract is the
+// non-obvious part: the sandbox wraps every command in `timeout --kill-after`, so an image
+// without GNU coreutils fails everything. The server checks and names what's missing.
+const SANDBOX_IMAGE_HINT =
+  'optional — an image with this project\'s toolchain, so tests actually run. ' +
+  'Needs git, sh, sleep and GNU coreutils. Pulled and checked on save. ' +
+  'Runs with the same privileges as the sandbox.'
 
 function relTime(iso?: string | null): string | null {
   if (!iso) return null
@@ -93,6 +103,7 @@ function RepoCard({ repo, onChanged, onDeleted }: {
   const [label, setLabel] = useState(repo.label)
   const [token, setToken] = useState(repo.token ?? '')
   const [pushOverride, setPushOverride] = useState(repo.push_branch_override ?? '')
+  const [sandboxImage, setSandboxImage] = useState(repo.sandbox_image ?? '')
   const [reveal, setReveal] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -122,6 +133,7 @@ function RepoCard({ repo, onChanged, onDeleted }: {
         label,
         token,                                   // mask kept = stored token unchanged
         push_branch_override: pushOverride,      // '' clears
+        sandbox_image: sandboxImage,             // '' clears; re-validated server-side
       })
       onChanged(updated); setEditing(false)
     } catch (e) { setError(String(e)) } finally { setBusy(null) }
@@ -161,6 +173,10 @@ function RepoCard({ repo, onChanged, onDeleted }: {
           {repo.push_branch_override
             ? <span className="rv">{repo.push_branch_override}</span>
             : <span className="rv quiet">agent/run-&lt;run_id&gt;</span>}</span>
+        <span className="rfact"><span className="rk">sandbox</span>
+          {repo.sandbox_image
+            ? <span className="rv" title={repo.sandbox_image}>{shortImage(repo.sandbox_image)}</span>
+            : <span className="rv quiet">default</span>}</span>
         <span className="rfact"><span className="rk">token</span>
           <span className={`rv ${repo.token ? '' : 'quiet'}`}>{repo.token ? 'per-repo' : 'global'}</span></span>
         {checked && (
@@ -186,6 +202,10 @@ function RepoCard({ repo, onChanged, onDeleted }: {
           <label className="fld"><span>push branch override <em>optional — never the default branch</em></span>
             <input placeholder={'agent/run-<run_id>'} value={pushOverride}
               onChange={(e) => setPushOverride(e.target.value)} /></label>
+          <label className="fld span2"><span>sandbox image <em>{SANDBOX_IMAGE_HINT}</em></span>
+            <input placeholder="agentic-sandbox:0.1 (default)" value={sandboxImage}
+              onChange={(e) => setSandboxImage(e.target.value)} />
+            <ImageCheck image={sandboxImage} /></label>
           <div className="np-actions span2">
             <button className="primary" disabled={!!busy} onClick={save}>
               {busy === 'saving' ? 'saving…' : 'Save changes'}
@@ -260,6 +280,10 @@ export function ReposPage({ onClose }: { onClose: () => void }) {
             <label className="fld span2"><span>push branch override <em>optional — never the default branch</em></span>
               <input placeholder={'agent/run-<run_id>'} value={form.push_branch_override ?? ''}
                 onChange={(e) => setForm({ ...form, push_branch_override: e.target.value || null })} /></label>
+            <label className="fld span2"><span>sandbox image <em>{SANDBOX_IMAGE_HINT}</em></span>
+              <input placeholder="agentic-sandbox:0.1 (default)" value={form.sandbox_image ?? ''}
+                onChange={(e) => setForm({ ...form, sandbox_image: e.target.value || null })} />
+              <ImageCheck image={form.sandbox_image ?? ''} /></label>
           </div>
           {error && <div className="error">{error}</div>}
           {justAdded && (

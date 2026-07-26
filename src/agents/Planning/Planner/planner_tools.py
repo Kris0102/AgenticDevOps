@@ -12,12 +12,19 @@ from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 from sandbox.Tools import Tools
 
+# Default only — the real path comes from the run's SandboxSpec via
+# sandbox.factory.repo_root(state), injected by the node. Hardcoding it made every command run
+# in a nonexistent directory on a pre-provisioned image (ADR 0039).
+DEFAULT_REPO_ROOT = "/workspace/repo"
+
+
 
 # This can later be a MCP tool implementation for the Planner agent, exposing a safe interface to execute commands and read files from the Docker sandbox.
 class PlannerTools:
-    def __init__(self, gateway: ToolGateway):
+    def __init__(self, gateway: ToolGateway, repo_root: str = DEFAULT_REPO_ROOT):
         self.gateway = gateway
         self.role = Roles.PLANNER
+        self.repo_root = repo_root
 
     def build_tools(self) -> list[BaseTool]:
         execute_tool = StructuredTool.from_function(
@@ -25,10 +32,10 @@ class PlannerTools:
             name="execute_in_sandbox",
             description=(
                 "Run an allowlisted command inside the Docker sandbox. The repo is at "
-                "/workspace/repo. "
+                f"{self.repo_root}. "
                 "Pass a single argv string with no shell, pipes, or redirects. "
                 "Allowed bases: " + ", ".join(get_permissions(Roles.PLANNER).allowed_commands) + ". "
-                "Examples: 'ls -la /workspace/repo', 'grep -rn Planner /workspace/repo/src'"
+                f"Examples: 'ls -la {self.repo_root}', 'grep -rn Planner {self.repo_root}/src'"
             ),
         )
         

@@ -409,6 +409,26 @@ async def stream_logs(run_id: str, after: int = 0) -> StreamingResponse:
         },
     )
     
+@app.get("/images/preflight/stream")
+async def stream_image_preflight(image: str, workdir: str = "/workspace") -> StreamingResponse:
+    """Check a sandbox image over SSE, streaming pull progress (ADR 0039).
+
+    The same validation `POST/PUT /repos` runs, but incremental: a multi-GB pull otherwise
+    blocks the save with no way to tell it apart from a hang. Frames are
+    `{phase, detail, percent, done}` plus `{ok, message, problems}` on the terminal one.
+    Purely an affordance — the save-time check remains the real gate, and by the time it runs
+    the image is already local so it returns immediately."""
+    return StreamingResponse(
+        service.stream_image_preflight(image, workdir=workdir),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",   # tell nginx not to buffer the stream
+        },
+    )
+
+
 @app.get("/runs", response_model=List[RunResponseWithDetails])
 def get_runs() -> List[RunResponseWithDetails]:
     """All previous runs, newest first — the dashboard home list."""

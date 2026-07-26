@@ -137,6 +137,10 @@ class BootStrapper:
                     status=status.value,
                     task_description=task,
                     deploy_mode=str(deploy_mode) if deploy_mode else None,
+                    # The image the agents actually ran in — recorded from the resolved spec,
+                    # not the registry, so it stays truthful if the repo's image is changed
+                    # or the repo is deleted after this run (ADR 0039).
+                    sandbox_image=self.spec.image,
                     # Denormalized headline model for the run list — the Coder is the
                     # headline agent (code gen). Per-agent models (GH #71) live on the
                     # checkpointed RunConfig; this column is display-only.

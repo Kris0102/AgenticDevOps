@@ -124,14 +124,20 @@ class RepoCreateRequest(BaseModel):
     label: Optional[str] = None
     token: Optional[str] = None
     push_branch_override: Optional[str] = None
+    # Docker image the sandbox runs in for this repo (None → the generic
+    # agentic-sandbox:0.1). Point it at an image carrying this project's toolchain and
+    # dependencies so the Tester can actually run its suite (ADR 0039). Validated against
+    # the sandbox contract before it is stored — a violation is a 422, not a broken run.
+    sandbox_image: Optional[str] = None
 
 
 class RepoUpdateRequest(BaseModel):
     """Edit a registered repo. `token` left as the mask (or omitted) keeps the stored
-    value, '' clears it. `push_branch_override` '' clears, omitted keeps."""
+    value, '' clears it. `push_branch_override` / `sandbox_image` '' clears, omitted keeps."""
     label: Optional[str] = None
     token: Optional[str] = None
     push_branch_override: Optional[str] = None
+    sandbox_image: Optional[str] = None
 
 
 class LessonCreateRequest(BaseModel):

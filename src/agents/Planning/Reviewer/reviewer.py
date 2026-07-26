@@ -25,7 +25,8 @@ from providers import TokenUsage, build_chat_llm, structured_output_method, sum_
 
 from agents.Planning.Reviewer.prompts.reviewer_prompt import build_investigation_prompt, build_review_prompt
 from db.lessons import LessonStore
-from agents.Planning.Reviewer.prompts.reviewer_prompt import REVIEWER_SYSTEM_PROMPT
+from agents.Planning.Planner.quality import DEFAULT_REPO_ROOT
+from agents.Planning.Reviewer.prompts.reviewer_prompt import reviewer_system_prompt
 from agents.Planning.Reviewer.review_output import create_review_file_as_output
 from agents.Planning.Reviewer.reviewer_tools import ReviewerTools
 from observability import Category, get_logger
@@ -98,7 +99,8 @@ def _build_review_context(plan: Plan, microtasks: List[Microtask]) -> str:
 
 
 class Reviewer:
-    def __init__(self, run_id: str, config: RunConfig, tools: Optional[Sequence[BaseTool]] = None):
+    def __init__(self, run_id: str, config: RunConfig, tools: Optional[Sequence[BaseTool]] = None,
+                 repo_root: str = DEFAULT_REPO_ROOT):
         """Initializes the Reviewer Agent.
         
         In this MAS architecture, environment actions (like semantic search, file reads)
@@ -108,6 +110,9 @@ class Reviewer:
         simple approve/reject decision with a given reason.
         """
         self.run_id = run_id
+        # The run's real repo path — the reviewer must be told the SAME root the planner
+        # was, or it rejects correct paths (ADR 0022 precedent; ADR 0039 for the path).
+        self.repo_root = repo_root
         self.tools = list(tools or [])
         self.llm_config = config.llm.reviewer
         self.max_tool_steps = config.knobs.reviewer_max_tool_steps
@@ -132,7 +137,7 @@ class Reviewer:
                 self.investigator_agent = create_agent(
                     self.llm,
                     tools=self.tools,
-                    system_prompt=REVIEWER_SYSTEM_PROMPT,
+                    system_prompt=reviewer_system_prompt(self.repo_root),
                 )
             else:
                 self.investigator_agent = None
@@ -162,7 +167,7 @@ class Reviewer:
         investigation_summary = "No independent investigation performed (no tools provided)."
         if self.investigator_agent:
             _log.info("reviewer.investigating", tools=len(self.tools))
-            investigation_prompt = build_investigation_prompt(objective_text, review_context)
+            investigation_prompt = build_investigation_prompt(objective_text, review_context, self.repo_root)
 
             try:
                 investigative_state = self.investigator_agent.invoke(
@@ -222,7 +227,7 @@ class Reviewer:
         _log.info("reviewer.reviewing", microtasks=len(microtasks))
 
         # add the objective, planner's result and the reviewer's investigation summary to the final review prompt
-        prompt = build_review_prompt(objective_text, review_context, investigation_summary)
+        prompt = build_review_prompt(objective_text, review_context, self.repo_root, investigation_summary)
 
         # Advisory: surface the top-k confirmed plan lessons from past runs on THIS repo
         # (ADR 0018). Semantic top-k, so it stays bounded no matter how many accumulate.

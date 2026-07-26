@@ -49,6 +49,18 @@ def sandbox_for(state: Optional[Mapping[str, Any]]) -> DockerSandboxTools:
     return DockerSandboxTools(
         image=spec.image,
         workdir=spec.workdir,
+        repo_dir=spec.repo_dir,
         network_mode=spec.network_mode,
         path_prepend=spec.path_prepend,
     )
+
+
+def repo_root(state: Optional[Mapping[str, Any]]) -> str:
+    """Absolute path of the repo inside this run's container.
+
+    THE source of that path for agent code. Every agent tool used to hardcode
+    `/workspace/repo`, so a pre-provisioned image (repo at `/testbed`) made every command run
+    in a directory that did not exist — exit 127 before any code was evaluated, reported as a
+    broken environment rather than a wrong path. Nothing agent-side may hardcode it again.
+    """
+    return spec_from(state).workspace_path

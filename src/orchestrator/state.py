@@ -165,6 +165,36 @@ class Sandbox(BaseModel):
     status: str
     last_command: Optional[Dict[str, Any]] = None
 
+
+class SandboxSpec(BaseModel):
+    """Per-run container shape. The defaults reproduce the generic agent sandbox, so a run
+    that says nothing behaves exactly as before. A benchmark run overrides `image`/`workdir`
+    to point at a PRE-PROVISIONED image — one that already ships the repo checked out at the
+    base commit plus a working dependency environment (e.g. a SWE-bench instance image,
+    where the repo is at /testbed and its deps live in a conda env).
+
+    There is deliberately NO `pre_provisioned` boolean: bootstrap DERIVES that by probing for
+    `<workspace_path>/.git` in the container and skipping the clone when it finds one. A flag
+    would be a second source of truth for something the container already answers.
+    """
+    image: str = "agentic-sandbox:0.1"
+    workdir: str = "/workspace"
+    # Subdirectory of `workdir` holding the repo. "" means the repo IS `workdir` — SWE-bench
+    # images check out straight into /testbed with no nesting.
+    repo_dir: str = "repo"
+    # Prepended to PATH on every exec. This is how an interpreter that lives inside the
+    # image (conda env, venv) becomes the default `python`/`pytest` without wrapping every
+    # command in `conda activate`. Verified sufficient for SWE-bench images.
+    path_prepend: Optional[str] = None
+    # Docker network mode ("bridge" | "none" | "host"). None = Docker's default (bridge).
+    # NB: "none" breaks `git clone`, so it is only viable alongside a pre-provisioned image.
+    network_mode: Optional[str] = None
+
+    @property
+    def workspace_path(self) -> str:
+        """Absolute path of the repo inside the container."""
+        return f"{self.workdir}/{self.repo_dir}" if self.repo_dir else self.workdir
+
 class Objective(BaseModel):
     title: str
     description: str
@@ -346,7 +376,10 @@ class Constraints(BaseModel):
     max_total_tokens: Optional[int] = None
     allowed_languages: Optional[List[str]] = None
     forbidden_paths: Optional[List[str]] = None
-    allowed_network: str
+    # NB: `allowed_network` used to live here. It was set by every caller and read by
+    # nobody — the container's network came from Docker's default either way. Network is
+    # now a real, enforced field on `SandboxSpec.network_mode`. Old checkpoints that still
+    # carry `allowed_network` load fine (pydantic ignores extras).
     risk_level: str
 
 class Policy(BaseModel):
@@ -570,6 +603,10 @@ class BlackboardState(TypedDict):
     trigger: Trigger
     repo: Repo
     sandbox: Sandbox
+    # Container shape for this run (image/workdir/PATH/network). Optional so checkpoints
+    # written before it existed still load — `sandbox.factory.sandbox_for` falls back to
+    # SandboxSpec() defaults, which are the historic hardcoded values.
+    sandbox_spec: Optional[SandboxSpec]
     objective: Objective
     constraints: Constraints
     policy: Policy
@@ -657,9 +694,11 @@ def create_initial_blackboard_state(
     deploy_commit_message: Optional[str] = None,
     deploy_mode: DeployMode = DeployMode.PUSH,
     local_export_path: Optional[str] = None,
+    sandbox_spec: Optional[SandboxSpec] = None,
 ) -> BlackboardState:
     """Build a complete BlackboardState for graph.invoke (all TypedDict keys required)."""
     now = _utc_now_iso()
+    spec = sandbox_spec or SandboxSpec()
     return BlackboardState(
         schema_version="1.0.0",
         run_id=run_id,
@@ -670,9 +709,13 @@ def create_initial_blackboard_state(
         repo=repo,
         sandbox=Sandbox(
             sandbox_id=f"sbox_{run_id}",
-            workspace_path="/workspace",
+            # Pre-clone sentinel: equal to the spec's workdir until the repo materializes.
+            # Bootstrap compares against `spec.workdir` to decide "not set up yet", so this
+            # MUST track the spec rather than the old hardcoded "/workspace".
+            workspace_path=spec.workdir,
             status="not_created",
         ),
+        sandbox_spec=spec,
         objective=objective,
         constraints=constraints,
         policy=policy,

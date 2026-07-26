@@ -63,7 +63,7 @@ from Exceptions.RunExecutionError import RunExecutionError
 from observability import Category, bind_run, clear_context, configure_logging, get_logger
 from observability.log_bus import log_bus
 from orchestrator.bootstrap_node import BootStrapper
-from sandbox.sandbox_tools import DockerSandboxTools
+from sandbox.factory import sandbox_for
 from orchestrator.checkpointer import checkpointer, setup_checkpointer
 from orchestrator.hitl import HitlResume, Phase
 from orchestrator.orchestrator import graph
@@ -274,6 +274,9 @@ class Service:
                 deploy_commit_message=request.commit_message,
                 deploy_mode=self.resolve_deploy_mode(request), # per-run override › global default
                 local_export_path=request.local_export_path,
+                # None → SandboxSpec() defaults (the generic agent sandbox). Set by the
+                # benchmark adapter to a pre-provisioned per-instance image.
+                sandbox_spec=request.sandbox_spec,
             )
             bootstrap = self._bootstrap(run_id, state)
             if bootstrap.get("status") == RunStatus.FAILED:
@@ -565,7 +568,7 @@ class Service:
             # Fail the run cleanly rather than crash mid-continue (GH #56). Skip the check for a
             # run still at NEEDS_BOOTSTRAP — it never had a sandbox yet, so "missing" is expected.
             snapshot: BlackboardState = graph.get_state(self._config(run_id)).values or {}  # type: ignore[assignment]
-            sandbox = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            sandbox = sandbox_for(snapshot)
             if snapshot.get("status") is not RunStatus.NEEDS_BOOTSTRAP and not sandbox.sandbox_exists(
                     sandbox_id=sandbox.get_sandbox_id(run_id=run_id, verify=False),
                     start_if_created_but_not_running=True):
@@ -740,7 +743,7 @@ class Service:
         files: List[str] = []
         if sandbox is not None:
             try:
-                files = GitOps(DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")) \
+                files = GitOps(sandbox_for(state)) \
                     .changed_files(sandbox_id=sandbox.sandbox_id)
             except Exception as e:
                 # Preview only — a dead/slow sandbox must not break the gate the human is
@@ -1810,9 +1813,9 @@ class Service:
         try:
             if not force and not SettingsStore.get().defaults.teardown_on_terminal:
                 return
-            DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace").sandbox_destroy(
-                sandbox_id=f"sbox_{run_id}"
-            )
+            # No state in scope, and none needed: sandbox_destroy resolves the container
+            # from the `sandboxes` table by id and never reads image/workdir.
+            sandbox_for(None).sandbox_destroy(sandbox_id=f"sbox_{run_id}")
             _log.info("sandbox.teardown_on_terminal", run_id=run_id)
         except Exception as exc:
             _log.warning("sandbox.teardown_failed", run_id=run_id, error=str(exc))
@@ -1823,9 +1826,9 @@ class Service:
         (that flag governs whether a FINISHED run keeps its container for inspection, which
         is moot once the run is deleted). Best-effort; a missing container is not an error."""
         try:
-            DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace").sandbox_destroy(
-                sandbox_id=f"sbox_{run_id}"
-            )
+            # No state in scope, and none needed: sandbox_destroy resolves the container
+            # from the `sandboxes` table by id and never reads image/workdir.
+            sandbox_for(None).sandbox_destroy(sandbox_id=f"sbox_{run_id}")
             _log.info("sandbox.destroyed_on_delete", run_id=run_id)
         except Exception as exc:
             _log.warning("sandbox.destroy_failed", run_id=run_id, error=str(exc))

@@ -12,7 +12,8 @@ from gitops.pr_body import build_pr_body
 from observability import Category, get_logger
 from orchestrator.run_failure import RunFailureHandler
 from orchestrator.state import BlackboardState, DeployMode, EventType, Repo, Sandbox
-from sandbox.sandbox_tools import DockerSandboxTools, ExecResult, SandboxError
+from sandbox.factory import sandbox_for
+from sandbox.sandbox_tools import ExecResult, SandboxError
 from tool_gateway.Roles import Roles
 
 _log = get_logger(Category.DEPLOYER)
@@ -36,7 +37,7 @@ class DeployRunner:
         self.state = state
         self.run_id = state.get("run_id")
         self.name = Roles.DEPLOYER.value
-        self.gitops = GitOps(DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace"))
+        self.gitops = GitOps(sandbox_for(self.state))
 
     def invoke(self) -> Dict[str, Any]:
         sandbox: Sandbox = self.state.get("sandbox")

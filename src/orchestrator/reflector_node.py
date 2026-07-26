@@ -24,7 +24,7 @@ from orchestrator.state import (
     RunConfig,
     RunStatus,
 )
-from sandbox.sandbox_tools import DockerSandboxTools
+from sandbox.factory import sandbox_for
 from context_engine.engine import ContextEngine
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -329,7 +329,7 @@ class ReflectorRunner:
     # ------------------------------------------------------------------ #
 
     def _init_gateway(self, db_session) -> ToolGateway:
-        sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+        sandbox_tools = sandbox_for(self.state)
         repo = self.state.get("repo")
         # Search-only ContextEngine so the Reflector can locate related code while diagnosing
         # a failure via the semantic index (GH #71 follow-up).

@@ -28,7 +28,7 @@ from orchestrator.state import (
     RunConfig,
     RunStatus,
 )
-from sandbox.sandbox_tools import DockerSandboxTools
+from sandbox.factory import sandbox_for
 from context_engine.engine import ContextEngine
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -164,7 +164,7 @@ class TesterRunner:
         return any(mt.microtask_id != current_id and mt.status not in _FINISHED for mt in microtasks)
 
     def _init_gateway(self, db_session) -> ToolGateway:
-        sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+        sandbox_tools = sandbox_for(self.state)
         repo = self.state.get("repo")
         # Search-only ContextEngine so the test-writer can locate the code under test via the
         # semantic index instead of blind file reads (GH #71 follow-up).

@@ -19,6 +19,7 @@ from context_engine.engine import ContextEngine
 from observability import Category, get_logger
 from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunConfig, RunStatus
 from agents.Planning.Reviewer.reviewer import Reviewer
+from sandbox.factory import sandbox_for
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.gateway import ToolGateway
 from tool_gateway.Roles import Roles
@@ -37,7 +38,7 @@ class ReviewerRunner:
 
     def _init_tools(self, db_session) -> list[BaseTool]:
         try:
-            self.sandbox_tools = DockerSandboxTools(image="agentic-sandbox:0.1", workdir="/workspace")
+            self.sandbox_tools = sandbox_for(self.state)
             repo = self.state.get("repo")
             context_engine = ContextEngine()
             gateway = ToolGateway(

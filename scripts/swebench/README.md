@@ -161,6 +161,31 @@ but worth checking if you see it again:
 Look at the coder debug file under `output/<ts>_<run_id>/implementing/` to see the actual
 files the coder touched.
 
+## The sandbox: two images, two purposes (ADR 0038)
+
+Generation and grading run in **different** containers. Getting this wrong was a real bug —
+see the 2026-07-26 rows in `docs/problems-log.md`.
+
+| Phase | Image | Provides |
+|---|---|---|
+| Generation (the MAS writes the patch) | `swebench/sweb.eval.x86_64.<instance>` — resolved per instance | repo at `/testbed` at the base commit, deps in a conda env, **Python 3.9** |
+| Grading (`run_evaluation`) | the same per-instance image, built by the harness | the hidden FAIL_TO_PASS / PASS_TO_PASS tests |
+
+The adapter sets `RunRequest.sandbox_spec` per instance, and bootstrap detects the repo is
+already present (probing for `/testbed/.git`) and **skips the clone**. This is what lets the
+Tester actually run the repo's suite instead of erroring on missing imports.
+
+- Images are **~4GB each** and pulled on demand. ~40 fit in 927GB; all 500 Verified do not —
+  `docker image prune` between batches.
+- `--generic-sandbox` runs in `agentic-sandbox:0.1` instead. Patches still generate, but the
+  repo's deps *and Python version* are absent, so the Tester cannot verify anything. Resolve
+  rates from generic and image-backed runs are **not comparable** — say which you used.
+- `--sandbox-network none` is available here (no clone needed, so nothing requires egress) and
+  denies the agents network access. It also breaks any test that installs at runtime.
+- A wrong image fails the run loudly: `base_sha` must be an ancestor of the image's HEAD.
+  (Instance images sit one commit above `base_commit` — a `pyproject.toml` build fix — which is
+  also why the patch is diffed against `HEAD`, not `base_commit`.)
+
 ## Notes / limits
 
 - The adapter uses `deploy_mode=dry_run` + a `deploy` HITL gate: the run pauses at deploy

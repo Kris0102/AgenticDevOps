@@ -50,7 +50,6 @@ export function buildRunRequest(opts: NewRunOpts) {
       max_total_tokens: opts.maxTotalTokens ?? null,
       allowed_languages: ['python', 'javascript'],
       forbidden_paths: ['src/secrets/'],
-      allowed_network: 'none',
       risk_level: 'medium',
     },
     policy: {

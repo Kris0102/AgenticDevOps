@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, DEPLOY_MODE_LABEL, type EventView, type MicrotaskRow, type PipelineProgress, type RunResponseWithDetails } from '../api'
+import { runImageLabel } from '../imageLabel'
 
 // "What happened in this run" at a glance, built ONLY from durable tables (events +
 // microtasks) — so it's just as rich for a run finished last week as for a live one.
@@ -211,6 +212,11 @@ export function RunOverview({ runId, live, capVersion, progress }: { runId: stri
         <p className="ov-model">
           model: <code>{info.llm_model}</code>{info.llm_provider ? ` · ${info.llm_provider}` : ''}
           {info.deploy_mode && DEPLOY_MODE_LABEL[info.deploy_mode] ? ` · deploy: ${DEPLOY_MODE_LABEL[info.deploy_mode]}` : ''}
+          {/* Which container the agents actually ran in — the difference between a real
+              Tester verdict and an unverified one (ADR 0039). Full name in the tooltip. */}
+          {info.sandbox_image && (
+            <> · sandbox: <code title={info.sandbox_image}>{runImageLabel(info.sandbox_image)}</code></>
+          )}
         </p>
       )}
 

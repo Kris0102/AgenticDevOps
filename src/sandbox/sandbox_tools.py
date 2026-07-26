@@ -116,9 +116,15 @@ class DockerSandboxTools:
         network_mode: Optional[str] = None,
         labels_base: Optional[Dict[str, str]] = None,
         path_prepend: Optional[str] = None,
+        repo_dir: str = "repo",
     ) -> None:
         self.image = image
         self.workdir = workdir
+        # Subdirectory of `workdir` holding the repo; "" means the repo IS `workdir` (a
+        # pre-provisioned image checks out straight into it). Carried here so `repo_diff` and
+        # the gateway derive the working directory instead of assuming `<workdir>/repo` —
+        # assuming it made every command run in a nonexistent `/testbed/repo` (ADR 0039).
+        self.repo_dir = repo_dir
         self.cpu_quota = cpu_quota
         self.mem_limit = mem_limit
         self.network_mode = network_mode  # e.g. "none" for no network
@@ -127,6 +133,14 @@ class DockerSandboxTools:
         # ones that pass no `env` — resolves an in-image interpreter (conda env, venv) first.
         self.path_prepend = path_prepend
         self.client = docker.from_env()
+
+    @property
+    def workspace_path(self) -> str:
+        """Absolute path of the repo inside the container — the cwd for repo commands."""
+        return self._join(self.repo_dir)
+
+    def _join(self, repo_dir: str) -> str:
+        return f"{self.workdir}/{repo_dir}" if repo_dir else self.workdir
 
     def _container_env(self) -> Optional[List[str]]:
         """Container environment for creation. Resolves the IMAGE's real PATH and prepends
@@ -213,6 +227,13 @@ class DockerSandboxTools:
                 mem_limit=self.mem_limit,
                 cpu_quota=self.cpu_quota,
                 environment=self._container_env(),
+                # Override any ENTRYPOINT the image declares. Without this, an image built
+                # with e.g. `ENTRYPOINT ["python"]` turns our keep-alive into
+                # `python sleep infinity`: the container exits instantly and every later
+                # exec fails against a dead container. A no-op for images that declare no
+                # entrypoint (both of ours) — it matters only now that a user-supplied image
+                # can be named. Verified against a purpose-built ENTRYPOINT image.
+                entrypoint=[],
             )
 
             container.exec_run(cmd=["mkdir", "-p", self.workdir], workdir="/")
@@ -342,12 +363,12 @@ class DockerSandboxTools:
     # ADR 0012). `repo_diff` stays here — it's local working-tree inspection the coder
     # uses for grounded verification, not a remote/GitHub operation.
 
-    def repo_diff(self, *, sandbox_id: str, repo_dir: str = "repo") -> str:
+    def repo_diff(self, *, sandbox_id: str, repo_dir: Optional[str] = None) -> str:
         diff = self.sandbox_exec(
             sandbox_id=sandbox_id,
             cmd=["git", "diff"],
             timeout_s=60,
-            cwd=f"{self.workdir}/{repo_dir}",
+            cwd=self.workspace_path if repo_dir is None else self._join(repo_dir),
         )
         return _filter_diff(diff.stdout)
     

@@ -28,7 +28,7 @@ from orchestrator.state import (
     RunConfig,
     RunStatus,
 )
-from sandbox.factory import sandbox_for
+from sandbox.factory import repo_root, sandbox_for
 from context_engine.engine import ContextEngine
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
@@ -76,7 +76,7 @@ class TesterRunner:
             config: Optional[RunConfig] = None
             try:
                 gateway = self._init_gateway(db_session)
-                tester_tools = TesterTools(gateway=gateway)
+                tester_tools = TesterTools(gateway=gateway, repo_root=repo_root(self.state))
                 config= self.state.get("config") or resolve_run_config()
                 pipeline = TestPipeline(run_id=self.run_id, tester_tools=tester_tools, config=config)
                 result = pipeline.run(self.state, microtask, final_validation=final_validation)

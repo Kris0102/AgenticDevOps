@@ -121,12 +121,14 @@ def _quality_report(result: "PlannerOutput") -> str:
     return summary + "\n" + "\n".join(lines)
 
 
-# The sandbox always clones the repo to /workspace/repo (bootstrapper). Any target/context
-# path must resolve UNDER that root.
-_REPO_ROOT = "/workspace/repo"
+# Default only. The real root comes from the run's SandboxSpec (sandbox.factory.repo_root) and
+# is threaded in from the Planner — a pre-provisioned image keeps the repo elsewhere (e.g.
+# /testbed), and re-rooting every target_file to a hardcoded /workspace/repo pointed the whole
+# plan at a directory that did not exist (ADR 0039).
+DEFAULT_REPO_ROOT = "/workspace/repo"
 
 
-def _normalize_repo_path(path: str) -> str:
+def _normalize_repo_path(path: str, repo_root: str = DEFAULT_REPO_ROOT) -> str:
     """Re-root a planner-emitted file path to the real sandbox repo root.
 
     The synthesis contract asks for `/workspace/repo/...` absolute paths, but a weaker model
@@ -136,26 +138,27 @@ def _normalize_repo_path(path: str) -> str:
     (invisible to `git diff`), and the tester's build check hits `[Errno 2]`. The coder then
     rationalises "file already correct, no change needed" and the microtask loops to BLOCKED
     on a path typo. Normalise every form to an absolute path under the repo root:
-      /workspace/repo/x  → unchanged
-      /workspace/x       → /workspace/repo/x   (the dropped-`repo` bug)
-      /x  or  x          → /workspace/repo/x   (any other absolute/relative → repo-relative)
+      <repo_root>/x   → unchanged
+      /workspace/x    → <repo_root>/x   (the dropped-`repo` bug)
+      /x  or  x       → <repo_root>/x   (any other absolute/relative → repo-relative)
     """
     p = path.strip()
     if not p:
         return p
-    if p == _REPO_ROOT or p.startswith(_REPO_ROOT + "/"):
+    if p == repo_root or p.startswith(repo_root + "/"):
         return p
     if p.startswith("/workspace/"):
-        return _REPO_ROOT + "/" + p[len("/workspace/"):]
-    return _REPO_ROOT + "/" + p.lstrip("/")
+        return repo_root + "/" + p[len("/workspace/"):]
+    return repo_root + "/" + p.lstrip("/")
 
 
-def _normalize_paths(paths: List[str]) -> List[str]:
-    return [_normalize_repo_path(p) for p in paths]
+def _normalize_paths(paths: List[str], repo_root: str = DEFAULT_REPO_ROOT) -> List[str]:
+    return [_normalize_repo_path(p, repo_root) for p in paths]
 
 
 # Imported to the planner.py
-def _normalize_output(result: "PlannerOutput") -> "PlannerOutput":
+def _normalize_output(result: "PlannerOutput",
+                      repo_root: str = DEFAULT_REPO_ROOT) -> "PlannerOutput":
     from agents.Planning.Planner.planner import PlannerOutput
 
     microtasks: List[Microtask] = []
@@ -166,8 +169,8 @@ def _normalize_output(result: "PlannerOutput") -> "PlannerOutput":
         # and the tester's build check all consume these, so a dropped-`repo` typo must be
         # corrected here, at the single point microtasks are finalised.
         task = task.model_copy(update={
-            "target_files": _normalize_paths(task.target_files),
-            "context_files": _normalize_paths(task.context_files or []),
+            "target_files": _normalize_paths(task.target_files, repo_root),
+            "context_files": _normalize_paths(task.context_files or [], repo_root),
         })
         tid = f"'{task.title}' ({task.microtask_id})"
         flags = _check_microtask(task)

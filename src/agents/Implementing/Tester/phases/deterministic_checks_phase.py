@@ -194,14 +194,30 @@ class DeterministicChecksPhase(TestPhase):
     # Marker dir in the run-lived sandbox so dep install runs ONCE per run, not per
     # microtask/retry (the slow part — npm install / pip downloads). NOTE: if a later
     # microtask adds a dependency it won't be picked up until the sandbox is recreated.
-    _DEPS_MARKER = "/workspace/.tester_deps_ready"
+    # Marker/stash names, kept OUTSIDE the repo so they never show up in a diff. The parent
+    # directory is derived from the run's repo root — a literal "/workspace" does not exist on
+    # a pre-provisioned image, so the marker silently never cached and the stash never moved
+    # (ADR 0039).
+    _DEPS_MARKER_NAME = ".tester_deps_ready"
+
+    @property
+    def _side_dir(self) -> str:
+        """Directory beside the repo for tester bookkeeping (never inside it)."""
+        root = self.tools.repo_root.rstrip("/")
+        parent = root.rsplit("/", 1)[0]
+        return parent or "/"
+
+    @property
+    def _deps_marker(self) -> str:
+        return f"{self._side_dir}/{self._DEPS_MARKER_NAME}"
 
     def _deps_cached(self) -> bool:
-        r = self.tools.run(["find", "/workspace", "-maxdepth", "1", "-name", ".tester_deps_ready"], timeout_s=10)
+        r = self.tools.run(["find", self._side_dir, "-maxdepth", "1",
+                            "-name", self._DEPS_MARKER_NAME], timeout_s=10)
         return bool(r.get("stdout", "").strip())
 
     def _mark_deps_cached(self) -> None:
-        self.tools.run(["mkdir", "-p", self._DEPS_MARKER], timeout_s=10)
+        self.tools.run(["mkdir", "-p", self._deps_marker], timeout_s=10)
 
     def _install_python_deps(self) -> None:
         if self._deps_cached():
@@ -219,7 +235,11 @@ class DeterministicChecksPhase(TestPhase):
     # ----------------------------------------------------------- javascript checks
     # The Tester's ephemeral synth dir (ADR 0019), and where we stash it while Track A runs.
     _AGENTIC_DIR = ".agentic_tests"
-    _AGENTIC_HIDDEN = "/workspace/.agentic_tests_hidden"
+    _AGENTIC_HIDDEN_NAME = ".agentic_tests_hidden"
+
+    @property
+    def _agentic_hidden(self) -> str:
+        return f"{self._side_dir}/{self._AGENTIC_HIDDEN_NAME}"
 
     def _js_suite(self) -> CheckResult:
         """Run the repo's OWN suite (Track A) — and ONLY the repo's own tests.
@@ -255,12 +275,12 @@ class DeterministicChecksPhase(TestPhase):
             .get("stdout", "").strip()
         )
         if present:
-            self.tools.run(["mv", self._AGENTIC_DIR, self._AGENTIC_HIDDEN], timeout_s=15)
+            self.tools.run(["mv", self._AGENTIC_DIR, self._agentic_hidden], timeout_s=15)
         try:
             yield
         finally:
             if present:
-                self.tools.run(["mv", self._AGENTIC_HIDDEN, self._AGENTIC_DIR], timeout_s=15)
+                self.tools.run(["mv", self._agentic_hidden, self._AGENTIC_DIR], timeout_s=15)
 
     def _js_build(self) -> Optional[CheckResult]:
         if not self._npm_has_script("build"):
@@ -313,11 +333,13 @@ class DeterministicChecksPhase(TestPhase):
                 checks.append(check)
         return checks
 
-    @staticmethod
-    def _repo_relative(path: str) -> str:
+    def _repo_relative(self, path: str) -> str:
         """Planner/Coder paths are sometimes absolute sandbox paths — normalize to
-        repo-root-relative so the ancestor walk works."""
-        for prefix in ("/workspace/repo/", "workspace/repo/"):
+        repo-root-relative so the ancestor walk works. The root is the RUN's root, not a
+        hardcoded /workspace/repo (ADR 0039); the legacy prefix is still stripped so a model
+        echoing the old path is handled."""
+        root = self.tools.repo_root.rstrip("/")
+        for prefix in (f"{root}/", f"{root.lstrip('/')}/", "/workspace/repo/", "workspace/repo/"):
             if path.startswith(prefix):
                 return path[len(prefix):]
         return path.lstrip("/")

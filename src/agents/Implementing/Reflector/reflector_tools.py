@@ -9,23 +9,28 @@ from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 from sandbox.Tools import Tools
 
-REPO_ROOT = "/workspace/repo"
+# Default only. The REAL path comes from the run's SandboxSpec via
+# sandbox.factory.repo_root(state) and is injected by the node — a pre-provisioned image keeps
+# the repo somewhere else entirely (e.g. /testbed), and hardcoding this made every command run
+# in a nonexistent directory (exit 127, ADR 0039).
+DEFAULT_REPO_ROOT = "/workspace/repo"
 
 
-def to_sandbox_path(path: str) -> str:
+def to_sandbox_path(path: str, repo_root: str = DEFAULT_REPO_ROOT) -> str:
     """Normalize a repo-relative path to the absolute sandbox path."""
     if path.startswith("/"):
         return path
-    return f"{REPO_ROOT}/{path}"
+    return f"{repo_root}/{path}"
 
 
 class ReflectorTools:
     """Read-only tool set for the Reflector. No writes, no test execution —
     the reflector investigates failure causes but never modifies anything."""
 
-    def __init__(self, gateway: ToolGateway):
+    def __init__(self, gateway: ToolGateway, repo_root: str = DEFAULT_REPO_ROOT):
         self.gateway = gateway
         self.role = Roles.REFLECTOR
+        self.repo_root = repo_root
 
     def build_tools(self) -> list[BaseTool]:
         read_tool = StructuredTool.from_function(
@@ -52,7 +57,7 @@ class ReflectorTools:
             name="execute_in_sandbox",
             description=(
                 "Run a read-only allowlisted command inside the repo at "
-                f"{REPO_ROOT}. Pass a single argv string with no shell, pipes, or redirects. "
+                f"{self.repo_root}. Pass a single argv string with no shell, pipes, or redirects. "
                 "Allowed bases: " + ", ".join(get_permissions(Roles.REFLECTOR).allowed_commands) + ". "
                 "Use for exploring repo structure (ls, find, grep, cat)."
             ),
@@ -73,7 +78,7 @@ class ReflectorTools:
         result = self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.FS_READ_FILE,
-            args={"path": to_sandbox_path(filepath)},
+            args={"path": to_sandbox_path(filepath, self.repo_root)},
         )
         if "error" in result:
             return result["error"]
@@ -85,7 +90,7 @@ class ReflectorTools:
         self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.SANDBOX_RUN,
-            args={"cmd": ["git", "add", "-N", "."], "cwd": REPO_ROOT},
+            args={"cmd": ["git", "add", "-N", "."], "cwd": self.repo_root},
         )
         result = self.gateway.execute_tool(
             actor_role=self.role,
@@ -101,7 +106,7 @@ class ReflectorTools:
         result = self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.SANDBOX_RUN,
-            args={"cmd": cmd_list, "cwd": REPO_ROOT},
+            args={"cmd": cmd_list, "cwd": self.repo_root},
         )
         if "error" in result:
             return result["error"]

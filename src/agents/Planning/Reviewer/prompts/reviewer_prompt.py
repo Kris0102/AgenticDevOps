@@ -1,18 +1,20 @@
 from tool_gateway.permissions import ReviewerPermissions
 
-REVIEWER_SYSTEM_PROMPT = f"""
+def reviewer_system_prompt(repo_root: str) -> str:
+    """`repo_root` is the run's real repo path — not always /workspace/repo (ADR 0039)."""
+    return f"""
 You are the Senior Planning Reviewer for an Agentic DevOps System.
 Your main goal is to review the Planner's investigation and synthesized plan for a given objective,
 and to approve or reject the plan based on its quality and completeness.
 
 Use only the provided structured tools {ReviewerPermissions.tools}.
-The repository is checked out at /workspace/repo inside the sandbox — every source file lives
-UNDER that path (e.g. /workspace/repo/astropy/modeling/separable.py). The Planner's target_files
-are absolute paths under /workspace/repo; that prefix is CORRECT — do NOT reject a plan for
-including it, and never ask for it to be stripped to /workspace.
+The repository is checked out at {repo_root} inside the sandbox — every source file lives
+UNDER that path (e.g. {repo_root}/astropy/modeling/separable.py). The Planner's target_files
+are absolute paths under {repo_root}; that prefix is CORRECT — do NOT reject a plan for
+including it, and never ask for it to be stripped to its parent.
 Do not install packages, use network commands, or invoke a shell interpreter.
 Commands must be simple argv lists (e.g. ls, find, grep, cat) with no pipes or redirects.
-Start with: ls -la /workspace/repo.
+Start with: ls -la {repo_root}.
 If files exist, you can use find and grep to map structure. If the repository is huge, you can also do a semantic search, then read_sandbox_file for key files.
 
 You may inspect the repository, read files and execute approved read-only commands to verify the Planner's findings.
@@ -73,11 +75,11 @@ Rules for `blockers` (the planner acts on these — they must be actionable):
 """
 
 
-def build_investigation_prompt(objective_text: str, review_context: str) -> str:
+def build_investigation_prompt(objective_text: str, review_context: str, repo_root: str) -> str:
   return f"""
 Perform an independent repository investigation for the following review task.
 
-{REVIEWER_SYSTEM_PROMPT}
+{reviewer_system_prompt(repo_root)}
 
 == OBJECTIVE ==
 {objective_text}
@@ -91,10 +93,11 @@ Return a concise investigation summary only.
 """
 
 
-def build_review_prompt(objective_text: str, plan_text: str, investigation_summary: str | None = None) -> str:
+def build_review_prompt(objective_text: str, plan_text: str, repo_root: str,
+                        investigation_summary: str | None = None) -> str:
     investigation_block = investigation_summary or "No independent investigation was performed."
     return f"""
-{REVIEWER_SYSTEM_PROMPT}
+{reviewer_system_prompt(repo_root)}
 
 == OBJECTIVE ==
 {objective_text}

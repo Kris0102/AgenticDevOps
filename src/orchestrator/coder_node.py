@@ -25,7 +25,7 @@ from agents.Implementing.Coder.prompt.coder_prompt import _MISSING_FILE_SENTINEL
 from context_engine.engine import ContextEngine
 from observability import Category, get_logger
 from sandbox.Tools import Tools
-from sandbox.factory import sandbox_for
+from sandbox.factory import repo_root, sandbox_for
 from tool_gateway.Roles import Roles
 from tool_gateway.gateway import ToolGateway
 
@@ -67,7 +67,7 @@ class CoderRunner:
                 self._check_stop_limit(microtask)
 
                 gateway = self._init_gateway(db_session)
-                coder_tools = CoderTools(gateway=gateway)
+                coder_tools = CoderTools(gateway=gateway, repo_root=repo_root(self.state))
                 file_contents = self._gather_file_context(gateway, microtask)
 
                 config = self.state.get("config") or resolve_run_config()

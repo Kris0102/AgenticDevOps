@@ -485,6 +485,9 @@ button.danger:hover { border-color: var(--red); }
 .ov-model { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
 .ov-model code, .rb-model { font-family: var(--mono); color: var(--accent); }
 .rb-model { font-size: 12px; }
+/* which container the run's agents executed in (ADR 0039). Quieter than the model badge —
+   it matters when diagnosing an unverified Tester verdict, not at a glance. */
+.rb-image { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
 /* ---- pipeline graph ---- */
 .panel.pipeline { margin-bottom: 12px; background: linear-gradient(180deg, #161b22 0%, #10151c 100%); }
@@ -933,6 +936,47 @@ button.primary.sm { padding: 4px 10px; font-size: 12px; font-weight: 500; }
 
 /* "Check & add" result: pill + note for the repo just registered */
 .addrepo-result { margin-top: 8px; }
+
+/* sandbox-image check (ADR 0039). A multi-GB pull takes minutes; without a bar the save
+   just blocks and reads as hung. Same traffic-light vocabulary as .valnote, so an image
+   result and an access result are recognisably the same kind of statement. */
+.imgchk { margin-top: 8px; }
+.imgchk-head { display: flex; align-items: center; gap: 10px; }
+.imgchk-status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.imgchk.ok  .imgchk-status { color: var(--green); }
+.imgchk.bad .imgchk-status { color: var(--red); }
+
+.imgchk-bar {
+  margin-top: 8px; height: 4px; border-radius: 2px;
+  background: var(--border); overflow: hidden;
+}
+.imgchk-fill {
+  height: 100%; background: var(--accent); border-radius: 2px;
+  transition: width 180ms linear;
+}
+/* Docker reports no totals until the first layer starts, so there is genuinely no
+   percentage yet. A sliding sliver says "working" without inventing a number — a bar
+   sitting at 0% reads as stuck. */
+.imgchk-fill.indet {
+  width: 30%; transition: none;
+  animation: imgchk-slide 1.1s ease-in-out infinite;
+}
+@keyframes imgchk-slide {
+  0%   { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+
+.imgchk-detail {
+  margin-top: 5px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.imgchk-problems {
+  margin-top: 8px; font-family: var(--mono); font-size: 12px;
+  color: var(--red); background: #f851490a; border: 1px solid #f8514933;
+  border-radius: 6px; padding: 6px 9px; word-break: break-word;
+}
+.imgchk-problems ul { margin: 0; padding-left: 16px; }
+.imgchk-problems li + li { margin-top: 4px; }
 
 /* edit drawer: hairline-separated, never floats free of its card */
 .repoedit { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }

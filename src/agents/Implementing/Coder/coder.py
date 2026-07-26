@@ -19,7 +19,7 @@ from agents.Implementing.Coder.coder_support import format_react_transcript
 from observability import Category, get_logger
 from agents.Implementing.Coder.coder_tools import CoderTools
 from agents.Implementing.Coder.prompt.coder_prompt import (
-    CODER_SYSTEM_PROMPT,
+    coder_system_prompt,
     build_coder_prompt,
 )
 from db.lessons import LessonStore
@@ -69,6 +69,27 @@ def _files_from_diff(diff_text: str) -> List[str]:
     return files
 
 
+def _untouched_targets(diff_text: str, target_files: List[str], repo_root: str) -> List[str]:
+    """Declared target files that do NOT appear in the diff.
+
+    `target_files` are absolute sandbox paths (`quality._normalize_repo_path` guarantees it);
+    git reports repo-relative ones, so the root is stripped before comparing. A target the
+    planner declared but the coder never opened is the signal that a microtask claimed work it
+    did not do — see run 80240f95, where "fix separable.py" passed without separable.py ever
+    being written, because an earlier microtask's debug script kept the diff non-empty.
+    """
+    if not target_files:
+        return []
+    changed = set(_files_from_diff(diff_text))
+    root = repo_root.rstrip("/") + "/"
+    untouched: List[str] = []
+    for target in target_files:
+        rel = target[len(root):] if target.startswith(root) else target.lstrip("/")
+        if rel not in changed:
+            untouched.append(target)
+    return untouched
+
+
 class Coder:
     """Implements exactly ONE microtask per invocation by editing files in the
     sandbox through gateway-routed tools.
@@ -101,7 +122,7 @@ class Coder:
             self.coding_agent = create_agent(
                 self.llm,
                 tools=self.coder_tools.build_tools(),
-                system_prompt=CODER_SYSTEM_PROMPT,
+                system_prompt=coder_system_prompt(self.coder_tools.repo_root),
             )
         except Exception as e:
             _log.error("coder.init_failed", error=str(e))
@@ -164,6 +185,10 @@ class Coder:
         can continue the SAME conversation), plus a per-attempt log for create_code_file_log."""
         retry_feedback: Optional[str] = None
         attempts_log: List[Dict[str, Any]] = []
+        # Bound before the loop: a retries knob of 0 skips the body entirely, and the final
+        # raise reads this — an unbound name there would surface as a NameError instead of the
+        # run failure the caller is equipped to handle.
+        missed_all = False
         for attempt in range(1, self.max_empty_diff_retries + 1):
             plan = state.get("plan")
             if not plan:
@@ -224,35 +249,65 @@ class Coder:
             transcript = format_react_transcript(agent_result.get("messages", []))
             diff_text = self.coder_tools.get_repo_diff()
             diff_empty = not diff_text.strip()
+            # A non-empty diff is NOT proof this microtask did its work: an earlier microtask's
+            # file (a debug script, say) keeps the diff non-empty forever, so the emptiness test
+            # alone passes a microtask that never touched what it was asked to change. That is
+            # exactly how run 80240f95 marked "fix separable.py" COMPLETED without ever opening
+            # separable.py, then BLOCKED two microtasks later on the consequences.
+            untouched = _untouched_targets(diff_text, microtask.target_files,
+                                           self.coder_tools.repo_root)
+            missed_all = bool(microtask.target_files) and len(untouched) == len(microtask.target_files)
             attempts_log.append({
                 "attempt": attempt,
                 "prompt": prompt,
                 "transcript": transcript + ("\n[HIT RECURSION LIMIT]" if recursion_exceeded else ""),
                 "diff_empty": diff_empty,
+                "untouched_targets": untouched,
             })
-            if not diff_empty:
+            if not diff_empty and not missed_all:
                 if recursion_exceeded:
                     _log.info(
                         "coder.diff_recovered_after_recursion_limit",
                         microtask_id=microtask.microtask_id,
                         attempt=attempt,
                     )
+                if untouched:
+                    # Some (not all) targets untouched — surfaced, not gated. The planner often
+                    # lists files that only MIGHT need changing, so failing here would reject
+                    # legitimately-complete work; the tester's checks remain the real verdict.
+                    _log.warning("coder.targets_partially_untouched",
+                                 microtask_id=microtask.microtask_id, untouched=untouched)
                 return diff_text, agent_result.get("messages", []), attempts_log
 
-            retry_feedback = (
-                "Your previous attempt hit the tool call limit without writing any files. "
-                "Be direct: call write_sandbox_file ONCE per target file with the complete "
-                "new content, then stop — do not call get_repo_diff in a loop."
-                if recursion_exceeded else
-                "Your previous attempt produced an EMPTY git diff — no file in the "
-                "repo actually changed. You must call write_sandbox_file with the "
-                "complete new content of each target file."
-            )
-            _log.warning("coder.empty_diff_retry", microtask_id=microtask.microtask_id, attempt=attempt)
+            if missed_all and not diff_empty:
+                retry_feedback = (
+                    "Your previous attempt changed files, but NONE of this microtask's target "
+                    f"files: {', '.join(untouched)}. Files changed by earlier microtasks do not "
+                    "count. Call write_sandbox_file on the target file(s) above with their "
+                    "complete new content."
+                )
+                _log.warning("coder.no_target_touched", microtask_id=microtask.microtask_id,
+                             attempt=attempt, targets=list(microtask.target_files))
+            else:
+                retry_feedback = (
+                    "Your previous attempt hit the tool call limit without writing any files. "
+                    "Be direct: call write_sandbox_file ONCE per target file with the complete "
+                    "new content, then stop — do not call get_repo_diff in a loop."
+                    if recursion_exceeded else
+                    "Your previous attempt produced an EMPTY git diff — no file in the "
+                    "repo actually changed. You must call write_sandbox_file with the "
+                    "complete new content of each target file."
+                )
+                _log.warning("coder.empty_diff_retry", microtask_id=microtask.microtask_id,
+                             attempt=attempt)
 
         raise RunExecutionError(
             phase="code",
             reason=(
+                f"Coder changed none of the target files for microtask "
+                f"'{microtask.microtask_id}' ({', '.join(microtask.target_files)}) "
+                f"after {self.max_empty_diff_retries} attempt(s)."
+                if missed_all else
                 f"Coder produced no changes for microtask '{microtask.microtask_id}' "
                 f"after {self.max_empty_diff_retries} attempt(s)."
             ),

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, DEPLOY_MODE_LABEL, type RunResponseWithDetails, type RunState } from '../api'
+import { runImageLabel } from '../imageLabel'
 
 // Previous-runs home: every run as a labelled box (repo, TASK, state, when, push size),
 // filterable by text and sortable. Click a box to open that run. Import restores an
@@ -215,6 +216,11 @@ export function RunsHome({ activeRunId, onOpen }: { activeRunId: string | null; 
               <span title={fmtWhen(run.created_at)}>{fmtAgo(run.created_at)}</span>
               {run.base_sha && <span className="rb-sha" title="base sha">@{run.base_sha.slice(0, 7)}</span>}
               {run.llm_model && <span className="rb-model" title={`model: ${run.llm_model}`}>⌁ {run.llm_model.split('/').pop()}</span>}
+              {runImageLabel(run.sandbox_image) && (
+                <span className="rb-image" title={`sandbox image: ${run.sandbox_image}`}>
+                  ▣ {runImageLabel(run.sandbox_image)}
+                </span>
+              )}
               {run.deploy_mode && DEPLOY_MODE_LABEL[run.deploy_mode] && (
                 <span className={`rb-mode mode-${run.deploy_mode}`} title="what this run's deploy step does">
                   {DEPLOY_MODE_LABEL[run.deploy_mode]}

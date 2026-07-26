@@ -74,6 +74,8 @@ class RepoEntry(BaseModel):
     token: Optional[str] = None
     default_branch: Optional[str] = None
     push_branch_override: Optional[str] = None
+    # Sandbox image for runs against this repo. None → the generic agentic-sandbox:0.1.
+    sandbox_image: Optional[str] = None
     last_validated_at: Optional[datetime] = None
     last_validation_result: Optional[RepoValidationResult] = None
     created_at: Optional[datetime] = None
@@ -86,6 +88,7 @@ def _entry(row: RepoRecord) -> RepoEntry:
         token=MASK if row.token else None, # token thrown away on read; only the store can decrypt it, it is added in create/update
         default_branch=row.default_branch,
         push_branch_override=row.push_branch_override,
+        sandbox_image=row.sandbox_image,
         last_validated_at=row.last_validated_at,
         last_validation_result=(RepoValidationResult.model_validate(row.last_validation_result)
                                 if row.last_validation_result else None),
@@ -117,7 +120,8 @@ class RepoStore:
     @staticmethod
     def create(*, repo_url: str, label: Optional[str], token: Optional[str],
                push_branch_override: Optional[str],
-               validation: RepoValidationResult) -> RepoEntry:
+               validation: RepoValidationResult,
+               sandbox_image: Optional[str] = None) -> RepoEntry:
         """`repo_url` must already be canonical and validated by the caller."""
         with db.session_scope() as session:
             existing = session.query(RepoRecord).filter(RepoRecord.repo_url == repo_url).one_or_none()
@@ -130,6 +134,7 @@ class RepoStore:
                 token=encrypt(token) if token else None,
                 default_branch=validation.default_branch,
                 push_branch_override=push_branch_override or None,
+                sandbox_image=sandbox_image or None,
                 last_validated_at=datetime.now(timezone.utc),
                 last_validation_result=validation.model_dump(mode="json"),
                 # set explicitly — the column default fires at flush, after _entry reads it
@@ -141,10 +146,11 @@ class RepoStore:
 
     @staticmethod
     def update(repo_id: str, *, label: Optional[str] = None, token: Optional[str] = None,
-               push_branch_override: Optional[str] = None) -> RepoEntry:
+               push_branch_override: Optional[str] = None,
+               sandbox_image: Optional[str] = None) -> RepoEntry:
         """Mask-preservation (same rule as SettingsStore.update): token == mask or
         None keeps the stored value, '' clears it, anything else replaces it.
-        push_branch_override: None keeps, '' clears."""
+        push_branch_override / sandbox_image: None keeps, '' clears."""
         with db.session_scope() as session:
             row = session.get(RepoRecord, repo_id)
             if row is None:
@@ -159,6 +165,10 @@ class RepoStore:
                 row.push_branch_override = None
             elif push_branch_override is not None:
                 row.push_branch_override = push_branch_override
+            if sandbox_image == "":
+                row.sandbox_image = None
+            elif sandbox_image is not None:
+                row.sandbox_image = sandbox_image
             return _entry(row)
 
     @staticmethod

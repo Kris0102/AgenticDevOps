@@ -19,7 +19,7 @@ from context_engine.engine import ContextEngine
 from observability import Category, get_logger
 from orchestrator.state import BlackboardState, Constraints, EventType, Iteration, RunConfig, RunStatus
 from agents.Planning.Reviewer.reviewer import Reviewer
-from sandbox.factory import sandbox_for
+from sandbox.factory import repo_root, sandbox_for
 from sandbox.sandbox_tools import DockerSandboxTools
 from tool_gateway.gateway import ToolGateway
 from tool_gateway.Roles import Roles
@@ -48,7 +48,7 @@ class ReviewerRunner:
                 context_engine=context_engine,
                 repo_url=repo.repo_url if repo else "",
             )
-            reviewer_tools = ReviewerTools(gateway=gateway)
+            reviewer_tools = ReviewerTools(gateway=gateway, repo_root=repo_root(self.state))
             use_tools = os.getenv("USE_TOOLS", "true").lower() == "true"
             return reviewer_tools.build_tools() if use_tools else []
         except Exception as error:
@@ -98,7 +98,8 @@ class ReviewerRunner:
             try:
                 tools = self._init_tools(db_session)
                 config = self.state.get("config") or resolve_run_config()
-                reviewer_agent = Reviewer(run_id=self.run_id, tools=tools, config=config)
+                reviewer_agent = Reviewer(run_id=self.run_id, tools=tools, config=config,
+                                          repo_root=repo_root(self.state))
                 result = reviewer_agent.invoke(self.state)
             except RetriableError:
                 self._record_crash_usage(db_session, iteration, reviewer_agent, config)

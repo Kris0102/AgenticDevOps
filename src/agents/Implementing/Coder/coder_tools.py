@@ -13,11 +13,14 @@ from tool_gateway.permissions import get_permissions
 from tool_gateway.Roles import Roles
 from sandbox.Tools import Tools
 
-# The repo is always cloned to <workdir>/repo by the bootstrapper.
-REPO_ROOT = "/workspace/repo"
+# Default only. The REAL path comes from the run's SandboxSpec via
+# sandbox.factory.repo_root(state) and is injected by the node — a pre-provisioned image keeps
+# the repo somewhere else entirely (e.g. /testbed), and hardcoding this made every command run
+# in a nonexistent directory (exit 127, ADR 0039).
+DEFAULT_REPO_ROOT = "/workspace/repo"
 
 
-def to_sandbox_path(path: str) -> str:
+def to_sandbox_path(path: str, repo_root: str = DEFAULT_REPO_ROOT) -> str:
     """Normalize a path to its absolute location under the sandbox repo root.
 
     Handles the repo-relative form the Planner declares AND re-roots a malformed absolute
@@ -26,19 +29,20 @@ def to_sandbox_path(path: str) -> str:
     `git diff`; run b6487b43). Backstop to the planner-side normalisation in quality.py, for
     any path the coder itself constructs at runtime."""
     p = path.strip()
-    if p == REPO_ROOT or p.startswith(REPO_ROOT + "/"):
+    if p == repo_root or p.startswith(repo_root + "/"):
         return p
     if p.startswith("/workspace/"):
-        return f"{REPO_ROOT}/{p[len('/workspace/'):]}"
-    return f"{REPO_ROOT}/{p.lstrip('/')}"
+        return f"{repo_root}/{p[len('/workspace/'):]}"
+    return f"{repo_root}/{p.lstrip('/')}"
 
 
 # Like PlannerTools, this can later become an MCP tool implementation exposing a
 # safe interface for the Coder to read/write files and run commands in the sandbox.
 class CoderTools:
-    def __init__(self, gateway: ToolGateway):
+    def __init__(self, gateway: ToolGateway, repo_root: str = DEFAULT_REPO_ROOT):
         self.gateway = gateway
         self.role = Roles.CODER
+        self.repo_root = repo_root
 
     def build_tools(self) -> list[BaseTool]:
         read_tool = StructuredTool.from_function(
@@ -75,7 +79,7 @@ class CoderTools:
             name="execute_in_sandbox",
             description=(
                 "Run an allowlisted read-only command inside the repo at "
-                f"{REPO_ROOT}. Pass a single argv string with no shell, pipes, or "
+                f"{self.repo_root}. Pass a single argv string with no shell, pipes, or "
                 "redirects. Allowed bases: " + ", ".join(get_permissions(Roles.CODER).allowed_commands) + ". "
                 "Use for exploration only (grep/ls/find/cat) — do NOT run tests."
             ),
@@ -96,7 +100,7 @@ class CoderTools:
         result = self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.FS_READ_FILE,
-            args={"path": to_sandbox_path(filepath)},
+            args={"path": to_sandbox_path(filepath, self.repo_root)},
         )
         if "error" in result:
             return result["error"]
@@ -108,7 +112,7 @@ class CoderTools:
         result = self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.FS_WRITE_FILE,
-            args={"path": to_sandbox_path(filepath), "content": content},
+            args={"path": to_sandbox_path(filepath, self.repo_root), "content": content},
         )
         if "error" in result:
             return result["error"]
@@ -121,7 +125,7 @@ class CoderTools:
         self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.SANDBOX_RUN,
-            args={"cmd": ["git", "add", "-N", "."], "cwd": REPO_ROOT},
+            args={"cmd": ["git", "add", "-N", "."], "cwd": self.repo_root},
         )
         result = self.gateway.execute_tool(
             actor_role=self.role,
@@ -145,7 +149,7 @@ class CoderTools:
         return self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.SANDBOX_RUN,
-            args={"cmd": argv, "cwd": REPO_ROOT, "timeout_s": timeout_s},
+            args={"cmd": argv, "cwd": self.repo_root, "timeout_s": timeout_s},
         )
 
     def execute_in_sandbox(self, command: str) -> str:
@@ -153,7 +157,7 @@ class CoderTools:
         result = self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.SANDBOX_RUN,
-            args={"cmd": cmd_list, "cwd": REPO_ROOT},
+            args={"cmd": cmd_list, "cwd": self.repo_root},
         )
         if "error" in result:
             return result["error"]

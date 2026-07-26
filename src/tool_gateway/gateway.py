@@ -29,7 +29,7 @@ class ToolGateway:
         self.context_engine = context_engine
         self.repo_url = repo_url
 
-    def _log_event(self, actor: str, event_type: str, payload: Dict[str, Any]):
+    def _log_event(self, actor: str, event_type: str, payload: dict[str, Any]):
         # Durable audit (dashboard source) → Postgres events table.
         EventLogger.log(self.db, self.run_id, actor, event_type, payload)
         # Ephemeral ops log → console/JSON. Surfaces "which tools ran / were denied"
@@ -40,7 +40,7 @@ class ToolGateway:
         emit = _log.warning if event_type == EventType.TOOL_DENIED else _log.info
         emit(str(event_type), actor=actor, **fields)
 
-    def execute_tool(self, actor_role: Roles, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_tool(self, actor_role: Roles, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     
         actor_role_str = actor_role.value
         permissions = get_permissions(actor_role)
@@ -106,7 +106,8 @@ class ToolGateway:
                 case Tools.REPO_DIFF:
                     diff_out = self.sandbox_tools.repo_diff(
                         sandbox_id=sandbox_id,
-                        repo_dir=args.get("repo_dir", "repo")
+                        # None → the sandbox derives it from its own spec, instead of assuming "repo".
+                        repo_dir=args.get("repo_dir")
                     )
                     result = {"status": "returned_diff", "diff": diff_out}
                 case Tools.SANDBOX_RUN:
@@ -114,7 +115,10 @@ class ToolGateway:
                         sandbox_id=sandbox_id,
                         cmd=args.get("cmd",""),
                         timeout_s=args.get("timeout_s", 60),
-                        cwd=args.get("cwd", "/workspace")
+                        # Default to the repo root this sandbox actually uses. The old literal
+                        # "/workspace" pointed outside the repo (and did not exist at all on a
+                        # pre-provisioned image) whenever a caller omitted cwd — ADR 0039.
+                        cwd=args.get("cwd") or self.sandbox_tools.workspace_path
                     )
                     result = {
                         "status": "ran_sandbox",

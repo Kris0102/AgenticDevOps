@@ -32,6 +32,11 @@ class Run(Base):
     # The run's deploy label (ADR 0036, DeployMode value: dry_run/push/pr/local_only) —
     # shown on the dashboard run list. Nullable: runs from before the column existed.
     deploy_mode: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Sandbox image this run's agents actually ran in (ADR 0039). Denormalized off the
+    # checkpointed `SandboxSpec` for the same reason as `llm_model`/`deploy_mode`: the run
+    # list renders from ONE SQL query, and a `graph.get_state` per row is far too expensive.
+    # NULL = the generic agentic-sandbox:0.1, or a run predating the column.
+    sandbox_image: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Which provider/model this run executed under (settings hub) — shown on the dashboard.
     llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     llm_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -166,6 +171,12 @@ class RepoRecord(Base):
     token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     default_branch: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     push_branch_override: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Docker image the agents' sandbox runs in for this repo. None → the generic
+    # `agentic-sandbox:0.1`. Set it to an image carrying THIS project's toolchain and
+    # dependencies so the Tester can actually execute the repo's suite instead of
+    # collecting import errors (ADR 0039). Validated against the sandbox contract
+    # (git/sh/sleep/`timeout --kill-after`) before it is stored.
+    sandbox_image: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     last_validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_validation_result: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

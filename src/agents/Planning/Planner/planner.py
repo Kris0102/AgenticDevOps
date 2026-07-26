@@ -23,11 +23,11 @@ from agents.Planning.Planner.investigation_support import (
 from providers import TokenUsage, build_chat_llm, structured_output_method, sum_usage
 from agents.Planning.Planner.plan_output import create_plan_file_as_output
 from agents.Planning.Planner.prompts.investigator import (
-    INVESTIGATOR_SYSTEM_PROMPT,
+    investigator_system_prompt,
     build_investigation_prompt,
 )
 from agents.Planning.Planner.prompts.synthesis import build_synthesis_prompt
-from agents.Planning.Planner.quality import _normalize_output
+from agents.Planning.Planner.quality import DEFAULT_REPO_ROOT, _normalize_output
 from db.lessons import LessonStore
 from Exceptions.BadMicroTaskExceptions import BadMicroTaskException
 from observability import Category, get_logger
@@ -146,6 +146,7 @@ class PlannerOutput(BaseModel):
 
 class Planner:
     def __init__(self, run_id: str, config: RunConfig, tools: Optional[Sequence[BaseTool]] = None,
+                 repo_root: str = DEFAULT_REPO_ROOT,
                 ):
         """
         Initializes the Planner Agent.
@@ -153,6 +154,9 @@ class Planner:
         must be routed through the Tool Gateway.
         """
         self.run_id = run_id
+        # The run's real repo path inside the container — threaded to every prompt and to
+        # the path normaliser. Not always /workspace/repo (ADR 0039).
+        self.repo_root = repo_root
         self.tools = list(tools or [])
         # make run config mandatory. Fallback only in the nodes!
         self.llm_config = config.llm.planner 
@@ -183,7 +187,7 @@ class Planner:
                 self.investigator_agent = create_agent(
                     self.llm,
                     tools=self.tools,
-                    system_prompt=INVESTIGATOR_SYSTEM_PROMPT,
+                    system_prompt=investigator_system_prompt(self.repo_root),
                 )
             else:
                 self.investigator_agent = None
@@ -329,6 +333,7 @@ class Planner:
             synthesis_prompt = build_synthesis_prompt(
                 obj_text, investigation_summary, schema_json,
                 previous_attempt_feedback, revision_context, lessons_block,
+                repo_root=self.repo_root,
             )
             # Since we use `.with_structured_output`, we can just invoke it with the prompt.
             try:
@@ -367,7 +372,7 @@ class Planner:
 
             # Quality validation — raises BadMicroTaskException with specific failures if microtasks are too vague
             try:
-                result = _normalize_output(raw_result)
+                result = _normalize_output(raw_result, self.repo_root)
                 # Carry forward accumulated review_feedback so multi-reject history is
                 # preserved. LLM-generated plan starts with review_feedback=[] by default;
                 # re-attaching prior entries means _write_feedback's next append sees the

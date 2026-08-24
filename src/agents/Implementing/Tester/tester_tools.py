@@ -1,4 +1,5 @@
 import shlex
+from typing import Optional
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -97,16 +98,39 @@ class TesterTools:
     def semantic_search(self, query: str, top_k: int = 8) -> str:
         return run_semantic_search(self.gateway, self.role, query, top_k)
 
-    def read_sandbox_file(self, filepath: str) -> str:
-        result = self.gateway.execute_tool(
+    def _read_raw(self, filepath: str) -> dict:
+        return self.gateway.execute_tool(
             actor_role=self.role,
             tool_name=Tools.FS_READ_FILE,
             args={"path": to_sandbox_path(filepath, self.repo_root)},
         )
+
+    def read_sandbox_file(self, filepath: str) -> str:
+        """LLM-facing read: returns the error MESSAGE as its result on failure, so the model
+        can see what went wrong and react. Never use this for a programmatic read — see
+        `read_file_or_none`."""
+        result = self._read_raw(filepath)
         if "error" in result:
             return result["error"]
         return truncate_for_llm(result.get("content", "Empty file or could not read."),
                                  limit=MAX_FILE_READ_CHARS)
+
+    def read_file_or_none(self, filepath: str) -> Optional[str]:
+        """Programmatic read for the phases: None when the file could not be read, and the
+        full untruncated content otherwise.
+
+        Distinct from `read_sandbox_file` on purpose. That one returns the error TEXT as its
+        return value — correct for an LLM tool, a trap for a phase, which then treats the
+        string as file CONTENT. That is exactly how the trivial-guard came to report "no
+        expect()/assert() calls found" about a test file that had never been written: it
+        was scanning `read_file failed: cat: … No such file or directory` for assertions.
+        Also raises on a GONE sandbox, so a destroyed container can't read as "file
+        missing" → "nothing synthesized" → unverified pass (same laundering as `run`)."""
+        result = self._read_raw(filepath)
+        _raise_if_sandbox_gone(result)
+        if "error" in result:
+            return None
+        return result.get("content", "")
 
     def write_sandbox_file(self, filepath: str, content: str) -> str:
         result = self.gateway.execute_tool(

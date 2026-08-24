@@ -42,10 +42,18 @@ class DetectProjectPhase(TestPhase):
         `scripts.test` is ground truth (what the repo actually runs); devDependencies are the
         fallback. Defaults to node:test — Node's built-in runner needs no dependency, so it's
         the only safe default for a repo that declares no framework (Jest would need install)."""
-        raw = self.tools.read_sandbox_file("package.json")
+        # read_file_or_none, not read_sandbox_file: the LLM-facing wrapper returns its error
+        # TEXT on failure AND truncates at MAX_FILE_READ_CHARS. Either one makes json.loads
+        # raise, and this silently degrades to node:test — running a jest repo's tests under
+        # the wrong runner, the tester's #1 false negative. A big package.json must still parse.
+        raw = self.tools.read_file_or_none("package.json")
+        if raw is None:
+            _log.warning("tester.detect.no_package_json", reason="defaulting to node:test")
+            return "node:test"
         try:
             pkg = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
+            _log.warning("tester.detect.bad_package_json", reason="unparseable — defaulting to node:test")
             return "node:test"
         test_script = str((pkg.get("scripts") or {}).get("test", "")).lower()
         dep_names = {

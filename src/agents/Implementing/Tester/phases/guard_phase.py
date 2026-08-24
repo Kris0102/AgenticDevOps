@@ -25,7 +25,11 @@ class TrivialGuardPhase(TestPhase):
         self.tools = tools
 
     def should_run(self, ctx: TestContext) -> bool:
-        return bool(ctx.synth_test_file)
+        # No file on disk ⇒ nothing to grade. Running anyway scored the read-error string and
+        # reported "no assertions found" about a file that never existed (`synth_write_failed`).
+        # Skipping leaves `guard_ok=True`, which here means NOT GRADED — VerdictPhase and the
+        # artifact renderer both branch on `synth_write_failed` before trusting it.
+        return bool(ctx.synth_test_file) and not ctx.synth_write_failed
 
     def run(self, ctx: TestContext) -> TestContext:
         dependency_failure = None
@@ -55,8 +59,13 @@ class TrivialGuardPhase(TestPhase):
         if not specs:
             return ""
 
-        package_json = self.tools.read_sandbox_file("package.json")
-        declared = grounding.js_declared_dependency_names(package_json)
+        # read_file_or_none, not read_sandbox_file: the latter returns its error text, which
+        # would be parsed as a package.json body — every import then reads as "undeclared".
+        package_json = self.tools.read_file_or_none("package.json")
+        if package_json is None:
+            _log.warning("tester.guard.no_package_json", run_id=ctx.run_id,
+                         reason="cannot verify declared deps — treating declarations as empty")
+        declared = grounding.js_declared_dependency_names(package_json or "")
         checker = json.dumps(sorted(specs))
         result = self.tools.run([
             "node",

@@ -134,6 +134,8 @@ class VerdictPhase(TestPhase):
         c = ctx.synth_exec_check
         if not ctx.synth_test_file:
             return "not run — no test synthesized this iteration"
+        if ctx.synth_write_failed:
+            return f"not run — synthesis produced no file ({ctx.synth_write_failed})"
         if not ctx.guard_ok:
             return "excluded — trivial-guard rejected (did not gate; Track A decided)"
         if c is None:
@@ -162,6 +164,9 @@ class VerdictPhase(TestPhase):
         tail = " — passing through UN-VERIFIED; review the diff at the gate"
         if ctx.synth_untestable_reason:
             return f"unverified — synthesis skipped: {ctx.synth_untestable_reason}; no other check decided{tail}"
+        if ctx.synth_write_failed:
+            return (f"unverified — synthesis produced no test file ({ctx.synth_write_failed}) "
+                    f"and no other check decided{tail}")
         if ctx.synth_test_file and not ctx.guard_ok:
             return f"unverified — synthesized tests were rejected ({ctx.guard_reason}) and no other check decided{tail}"
         if ctx.synth_exec_check and ctx.synth_exec_check.status == CheckStatus.ERRORED:
@@ -199,7 +204,11 @@ class VerdictPhase(TestPhase):
             lines.append(f"Track B (synthesized):    {ctx.synth_exec_check.status}{note}")
         else:
             lines.append("Track B (synthesized):    not run")
-        lines.append(f"Synth guard:              {'ok — ' + ctx.guard_reason if ctx.guard_ok else 'REJECTED — ' + ctx.guard_reason}")
+        if ctx.synth_write_failed:
+            # The guard never ran, so neither "ok" nor "REJECTED" would be true.
+            lines.append(f"Synth guard:              n/a — no file to grade ({ctx.synth_write_failed})")
+        else:
+            lines.append(f"Synth guard:              {'ok — ' + ctx.guard_reason if ctx.guard_ok else 'REJECTED — ' + ctx.guard_reason}")
         # Embed ONLY the Track B synth run (no artifact of its own). Track A checks are linked,
         # not duplicated — their full output lives in their own per-check artifacts.
         if ctx.synth_exec_check and ctx.synth_exec_check.artifact_text:

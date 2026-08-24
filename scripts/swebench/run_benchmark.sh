@@ -28,6 +28,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 # ------------------------------------------------------------------ defaults / args
 DATASET="princeton-nlp/SWE-bench_Verified"
@@ -35,10 +36,12 @@ LIMIT="20"
 OFFSET="0"
 INSTANCE=""
 MAX_TOKENS=""
-OUT="predictions.jsonl"
+OUT_DIR="scripts/swebench"
+if [[ ! -d "$OUT_DIR" ]]; then mkdir -p "$OUT_DIR"; fi
+OUT="${OUT_DIR}/predictions${TIMESTAMP}.jsonl"
 GRADE="0"
 SKIP_INFRA="0"
-RUN_ID="agenticdevops_$(date +%Y%m%d_%H%M%S)"
+RUN_ID="agenticdevops_${TIMESTAMP}"
 
 EXTRA=()          # forwarded verbatim to adapter.py (everything after a literal `--`)
 while [[ $# -gt 0 ]]; do

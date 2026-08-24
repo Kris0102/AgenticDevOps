@@ -133,8 +133,25 @@ class SynthesisPhase(TestPhase):
                          microtask_id=ctx.microtask.microtask_id, limit=self.recursion_limit,
                          reason="test-writer hit its tool-call budget — degrading, not crashing")
 
+        # `synth_test_file` is set even when nothing was written — `synth_artifact()` keys the
+        # "the tester tried but produced nothing" artifact off it, and that visibility is the
+        # point. But CONFIRM the file exists before reading it: `read_sandbox_file` hands back
+        # its error TEXT on failure, and that string then flows into the trivial-guard as if it
+        # were test source, which rejects it with "no expect()/assert() calls found" — a
+        # verdict about a file that was never written. Record the real fact instead.
         ctx.synth_test_file = test_file
-        ctx.synth_test_content = self.tools.read_sandbox_file(test_file)
+        if self._test_exists(ctx):
+            ctx.synth_test_content = self.tools.read_file_or_none(test_file) or ""
+        else:
+            ctx.synth_test_content = ""
+            ctx.synth_write_failed = (
+                "the test-writer produced no file — it never called write_sandbox_file, or hit "
+                f"its {self.recursion_limit}-step tool budget"
+            )
+            _log.warning("tester.synth_no_file", run_id=ctx.run_id,
+                         microtask_id=ctx.microtask.microtask_id, test_file=test_file,
+                         reason=ctx.synth_write_failed)
         _log.info("tester.write_tests.done", run_id=ctx.run_id,
-                  microtask_id=ctx.microtask.microtask_id, test_file=test_file)
+                  microtask_id=ctx.microtask.microtask_id, test_file=test_file,
+                  written=not ctx.synth_write_failed)
         return ctx

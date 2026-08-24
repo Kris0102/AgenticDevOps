@@ -53,7 +53,10 @@ class ExecutePhase(TestPhase):
         self.tools = tools
 
     def should_run(self, ctx: TestContext) -> bool:
-        return bool(ctx.synth_test_file) and ctx.guard_ok
+        # `guard_ok` is also True when the guard was SKIPPED for want of a file, so check
+        # `synth_write_failed` too — running a runner against a nonexistent path yields a
+        # collection/module error that reads as a harness problem rather than the real fact.
+        return bool(ctx.synth_test_file) and ctx.guard_ok and not ctx.synth_write_failed
 
     @staticmethod
     def _js_command(ctx: TestContext) -> list[str]:

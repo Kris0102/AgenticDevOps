@@ -300,7 +300,15 @@ class TesterRunner:
         test is written. Distinct from the per-check `test-*` artifacts — this is the actual
         test FILE the LLM authored, not a run's stdout."""
         artifact_ref = f"art_{self.run_id}_synthtest_{microtask_id}_{now.strftime('%Y%m%d%H%M%S%f')}"
-        guard = "passed" if synth.get("guard_ok") else f"REJECTED — {synth.get('guard_reason', '')}"
+        # Three states, not two: `guard_ok` is True both when the guard PASSED and when it
+        # never ran for want of a file. Printing "passed" for the latter claims a check that
+        # never happened, so `write_failed` is tested first.
+        if synth.get("write_failed"):
+            guard = f"n/a — no file to grade ({synth['write_failed']})"
+        elif synth.get("guard_ok"):
+            guard = "passed"
+        else:
+            guard = f"REJECTED — {synth.get('guard_reason', '')}"
         header = (
             f"Synthesized test file: {synth.get('file', '')}\n"
             f"Execution status: {synth.get('status', 'unknown')}\n"

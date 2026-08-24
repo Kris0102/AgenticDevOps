@@ -46,6 +46,12 @@ class TestContext:
     # harness (e.g. .tsx targets under a pytest harness) — flows into the unverified
     # verdict reason so the dashboard says WHY nothing ran (run 27198e26).
     synth_untestable_reason: str = ""
+    # Set when synthesis RAN but the test-writer never produced the file (never called
+    # write_sandbox_file, or hit its tool-call budget). Distinct from a TRIVIAL file: there is
+    # no source to grade at all, so the guard must not run — scoring the read-error string
+    # made it report "no expect()/assert() calls found" about a nonexistent file, sending the
+    # reflector after a test that was never written.
+    synth_write_failed: str = ""
     guard_ok: bool = True
     guard_reason: str = ""
     synth_exec_check: Optional[CheckResult] = None
@@ -78,6 +84,8 @@ class TestContext:
             return None
         if self.synth_exec_check is not None:
             status = str(self.synth_exec_check.status)
+        elif self.synth_write_failed:
+            status = "no file written"
         elif not self.guard_ok:
             status = "rejected (trivial-guard)"
         else:
@@ -89,6 +97,9 @@ class TestContext:
             "verdict_role": self.synth_verdict_role,
             "guard_ok": self.guard_ok,
             "guard_reason": self.guard_reason,
+            # Non-empty ⇒ the guard never ran, so `guard_ok=True` here means "not graded",
+            # NOT "passed". Renderers must distinguish the two.
+            "write_failed": self.synth_write_failed,
         }
 
     def to_result(self) -> Dict[str, Any]:
